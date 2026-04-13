@@ -1,0 +1,21 @@
+# =========================================================
+# Vuelos programados - Red Tasf.B2B América del Sur
+# Formato: ORIGEN-DESTINO-HH:mm-HH:mm-CAPACIDAD
+# Cada línea = 1 vuelo diario. Capacidad en número de maletas.
+# =========================================================
+SKBO-SEQM-03:34-04:21-0300
+SKBO-SPIM-06:00-08:15-0250
+SKBO-SVMI-07:00-09:30-0200
+SKBO-SCEL-10:00-14:30-0350
+SKBO-SLLP-15:00-18:30-0150
+SEQM-SKBO-05:00-05:47-0300
+SEQM-SPIM-08:30-10:00-0200
+SVMI-SBBR-12:00-16:00-0180
+SVMI-SKBO-14:00-16:30-0200
+SPIM-SCEL-14:00-16:30-0220
+SPIM-SKBO-09:00-11:15-0250
+SBBR-SCEL-20:00-01:00-0300
+SCEL-SPIM-07:00-09:30-0220
+SCEL-SBBR-02:00-07:00-0300
+SLLP-SKBO-05:00-08:30-0150
+

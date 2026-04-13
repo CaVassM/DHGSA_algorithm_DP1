@@ -1,0 +1,12 @@
+# =========================================================
+# Aeropuertos - Red Tasf.B2B América del Sur
+# Formato: ID ICAO Ciudad Pais CodigoCorto GMT Capacidad Latitud: DD° MM' SS" N/S Longitud: DDD° MM' SS" E/W
+# =========================================================
+01 SKBO Bogota Colombia bogo -5 430 Latitud: 04° 42' 05" N Longitud: 74° 08' 49" W
+02 SEQM Quito Ecuador quit -5 380 Latitud: 00° 07' 48" S Longitud: 78° 21' 26" W
+03 SVMI Caracas Venezuela cara -4 320 Latitud: 10° 36' 21" N Longitud: 66° 59' 25" W
+04 SBBR Brasilia Brasil bras -3 500 Latitud: 15° 52' 17" S Longitud: 47° 55' 12" W
+05 SPIM Lima Peru lima -5 450 Latitud: 12° 01' 37" S Longitud: 77° 06' 52" W
+06 SLLP LaPaz Bolivia lapz -4 280 Latitud: 16° 35' 39" S Longitud: 68° 11' 57" W
+07 SCEL Santiago Chile sant -3 600 Latitud: 33° 23' 34" S Longitud: 70° 47' 08" W
+
