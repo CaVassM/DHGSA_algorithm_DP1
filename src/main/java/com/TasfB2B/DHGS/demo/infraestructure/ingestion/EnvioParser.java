@@ -160,13 +160,21 @@ public class EnvioParser {
      *          "envios_EBCI_.txt" → "EBCI"
      */
     private String extraerOrigenDeNombreArchivo(String nombreArchivo) {
-        // Patrón: envios_XXXX_.txt
+        // Patrón: envios_XXXX_.txt o _envios_XXXX_.txt
         if (nombreArchivo == null) return null;
 
         String sinExtension = nombreArchivo.replace(".txt", "");
         String[] partes = sinExtension.split("_");
 
-        // Buscar el código ICAO (generalmente el segundo campo)
+        // Buscar el código ICAO (4 letras mayúsculas)
+        for (String parte : partes) {
+            String p = parte.trim();
+            if (p.length() == 4 && p.matches("[A-Z]{4}")) {
+                return p;
+            }
+        }
+
+        // Fallback: segundo campo no vacío
         if (partes.length >= 2) {
             String codigo = partes[1].trim();
             if (!codigo.isEmpty()) {

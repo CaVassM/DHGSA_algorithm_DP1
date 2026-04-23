@@ -46,6 +46,7 @@ public class CalculadorFitness {
      * @return valor de fitness (menor = mejor)
      */
     public double calcular(Individuo individuo, int epocaActual, int totalEpocas) {
+        // Si esta vacio el individio con los envios asignados, entonces va a retornar el valor MAX. Es el peor caso de fitness.
         if (individuo == null || individuo.getEnviosAsignados() == null ||
             individuo.getEnviosAsignados().isEmpty()) {
             individuo.setFitness(Double.MAX_VALUE);

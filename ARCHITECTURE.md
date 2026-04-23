@@ -25,7 +25,7 @@
 │   dhgs/                DHGSAlgorithm ← orquestador                  │
 │                        Individuo     ← solución candidata           │
 │                        Poblacion     ← gestión evolutiva            │
-│                        FitnessEvaluator                             │
+│                        FitnessEvaluator (legacy)                    │
 │                                                                     │
 │   operators/           OXCrossover                                  │
 │                        LocalSearchDelete, Add, SwapOut              │
@@ -34,11 +34,13 @@
 ├─────────────────────────────────────────────────────────────────────┤
 │                      INFRASTRUCTURE                                 │
 │                                                                     │
-│   ingestion/           AeropuertoParser, VueloParser, EnvioParser   │
+│   ingestion/           AeropuertoParser (UTF-8/UTF-16 auto)    │
+│                        VueloParser, EnvioParser                │
+│                        Soporta formatos test y real             │
 │                                                                     │
 │   util/                GrafoVuelos (Dijkstra)                       │
 │                        AlgoritmoSPLIT                               │
-│                        CalculadorFitness                            │
+│                        CalculadorFitness ← fitness ACTIVO           │
 │                        ConstructorSolucionesIniciales                │
 │                        Validador                                    │
 └─────────────────────────────────────────────────────────────────────┘
@@ -52,9 +54,15 @@
                     ┌──────────────────┐
                     │  ARCHIVOS DATOS  │
                     │                  │
-                    │ estudiantes.txt  │
-                    │ planes_vuelo.txt │
-                    │ envios_XXXX_.txt │
+                    │ PRUEBA:          │
+                    │  estudiantes.txt │
+                    │  planes_vuelo.txt│
+                    │  envios_XXXX_.txt│
+                    │                  │
+                    │ REALES:          │
+                    │  estudiantes_real│
+                    │  planes_vuelo_rl │
+                    │  _envios_XXXX_   │
                     └────────┬─────────┘
                              │
                     ┌────────▼─────────┐
@@ -169,6 +177,10 @@ Individuo
 │
 └── esFactible: boolean                    ← Sin violaciones duras
 ```
+
+> **Nota**: aunque existe una clase `FitnessEvaluator`, la evaluación que usa el
+> algoritmo en ejecución real pasa por `CalculadorFitness` (constructor inicial,
+> búsqueda local, `DHGSAlgorithm` y tests actuales).
 
 ---
 

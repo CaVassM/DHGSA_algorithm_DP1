@@ -7,10 +7,14 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Parser para el archivo estudiantes.txt que contiene los aeropuertos.
@@ -43,11 +47,13 @@ public class AeropuertoParser {
         List<Aeropuerto> aeropuertos = new ArrayList<>();
 
         try {
-            List<String> lineas = Files.readAllLines(archivo);
+            // Detectar encoding: si empieza con BOM UTF-16 BE (0xFEFF), usar UTF-16
+            Charset charset = detectarEncoding(archivo);
+            List<String> lineas = Files.readAllLines(archivo, charset);
 
             for (String linea : lineas) {
-                linea = linea.trim();
-                if (linea.isEmpty() || linea.startsWith("#")) continue;
+                linea = linea.trim().replaceAll("[\\uFEFF\\u200B\\u00A0]", "").replaceAll("\\t", " ");
+                if (linea.isEmpty() || linea.startsWith("#") || linea.startsWith("*")) continue;
 
                 try {
                     Aeropuerto aeropuerto = parsearLinea(linea);
@@ -68,22 +74,39 @@ public class AeropuertoParser {
         return aeropuertos;
     }
 
+    // Regex que captura: ID, ICAO, Ciudad (puede tener espacios), País (puede tener espacios/punto),
+    // código corto, GMT (+/-N), capacidad, y luego Latitud/Longitude
+    private static final Pattern LINEA_PATTERN = Pattern.compile(
+            "^(\\d+)\\s+([A-Z]{4})\\s+(.+?)\\s{2,}(\\S+(?:\\s+\\S+)?)\\s{2,}(\\w+)\\s+([+-]?\\d+)\\s+(\\d+)\\s+(Latitud|Latitude).*"
+    );
+
     /**
      * Parsea una línea individual del archivo de aeropuertos.
+     * Soporta ambos formatos (test y real).
      */
     private Aeropuerto parsearLinea(String linea) {
-        // Separar la parte de coordenadas (después de "Latitud:")
-        int idxLatitud = linea.indexOf("Latitud:");
+        // Detectar label de coordenadas
+        int idxLatitud = linea.indexOf("Latitude:");
+        String latLabel = "Latitude:";
+        String lonLabel = "Longitude:";
         if (idxLatitud < 0) {
-            log.warn("Línea sin coordenadas: '{}'", linea);
-            return null;
+            idxLatitud = linea.indexOf("Latitud:");
+            latLabel = "Latitud:";
+            lonLabel = "Longitud:";
+        }
+        if (idxLatitud < 0) {
+            return null; // Línea sin coordenadas, se ignora silenciosamente
         }
 
         String parteCampos = linea.substring(0, idxLatitud).trim();
         String parteCoordenadas = linea.substring(idxLatitud).trim();
 
-        // Parsear campos principales
-        String[] campos = parteCampos.split("\\s+");
+        // Intentar parseo con regex primero (maneja ciudades/países multi-palabra)
+        String[] campos = parseFieldsRobust(parteCampos);
+        if (campos == null || campos.length < 7) {
+            // Fallback: split simple
+            campos = parteCampos.split("\\s+");
+        }
         if (campos.length < 7) {
             log.warn("Línea con campos insuficientes: '{}'", linea);
             return null;
@@ -102,7 +125,7 @@ public class AeropuertoParser {
         aeropuerto.setContinente(inferirContinente(campos[1]));
 
         // Parsear coordenadas DMS
-        Coordenada coordenada = parsearCoordenadas(parteCoordenadas);
+        Coordenada coordenada = parsearCoordenadas(parteCoordenadas, latLabel, lonLabel);
         aeropuerto.setLatitud(coordenada.latitud());
         aeropuerto.setLongitud(coordenada.longitud());
 
@@ -112,17 +135,18 @@ public class AeropuertoParser {
     /**
      * Extrae y parsea las coordenadas DMS de la cadena de coordenadas.
      * Formato: "Latitud: 04° 42' 05" N Longitud: 74° 08' 49" W"
+     * o:       "Latitude: 04° 42' 05" N Longitude: 74° 08' 49" W"
      */
-    private Coordenada parsearCoordenadas(String texto) {
+    private Coordenada parsearCoordenadas(String texto, String latLabel, String lonLabel) {
         try {
             // Separar latitud y longitud
-            int idxLongitud = texto.indexOf("Longitud:");
+            int idxLongitud = texto.indexOf(lonLabel);
             if (idxLongitud < 0) {
                 return new Coordenada(0.0, 0.0);
             }
 
-            String latitudTexto = texto.substring("Latitud:".length(), idxLongitud).trim();
-            String longitudTexto = texto.substring(idxLongitud + "Longitud:".length()).trim();
+            String latitudTexto = texto.substring(latLabel.length(), idxLongitud).trim();
+            String longitudTexto = texto.substring(idxLongitud + lonLabel.length()).trim();
 
             double latitud = Coordenada.parseDMS(latitudTexto);
             double longitud = Coordenada.parseDMS(longitudTexto);
@@ -132,6 +156,104 @@ public class AeropuertoParser {
             log.warn("Error parseando coordenadas: '{}' - {}", texto, e.getMessage());
             return new Coordenada(0.0, 0.0);
         }
+    }
+
+    /**
+     * Detecta el encoding del archivo leyendo los primeros bytes (BOM).
+     */
+    private Charset detectarEncoding(Path archivo) {
+        try {
+            byte[] bytes = Files.readAllBytes(archivo);
+            if (bytes.length >= 2) {
+                if ((bytes[0] & 0xFF) == 0xFE && (bytes[1] & 0xFF) == 0xFF) {
+                    return StandardCharsets.UTF_16;
+                }
+                if ((bytes[0] & 0xFF) == 0xFF && (bytes[1] & 0xFF) == 0xFE) {
+                    return StandardCharsets.UTF_16;
+                }
+            }
+        } catch (IOException e) {
+            log.warn("Error detectando encoding: {}", e.getMessage());
+        }
+        return StandardCharsets.UTF_8;
+    }
+
+    /**
+     * Parsea los campos antes de las coordenadas de forma robusta.
+     * Busca: ID(num), ICAO(4 mayúsculas), luego busca desde el final:
+     * capacidad(num), GMT(+/-num), código corto(alfa), y lo que queda es ciudad + país.
+     */
+    private String[] parseFieldsRobust(String parteCampos) {
+        // Tokenizar por espacios
+        String[] tokens = parteCampos.split("\\s+");
+        if (tokens.length < 7) return null;
+
+        // tokens[0] = ID, tokens[1] = ICAO (4 letras mayúsculas)
+        if (!tokens[1].matches("[A-Z]{4}")) return null;
+
+        String id = tokens[0];
+        String icao = tokens[1];
+
+        // Desde el final: último token = capacidad, penúltimo = GMT, antepenúltimo = código corto
+        String capacidad = tokens[tokens.length - 1];
+        String gmt = tokens[tokens.length - 2];
+        String codigoCorto = tokens[tokens.length - 3];
+
+        // Verificar que capacidad y gmt son numéricos
+        try {
+            Integer.parseInt(capacidad);
+            Integer.parseInt(gmt);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+
+        // Lo que queda entre tokens[2] y tokens[length-4] es ciudad + país
+        // Necesitamos separarlos. El país es la última "palabra" antes del código corto.
+        // Pero el país puede ser multi-palabra (ej: "Arabia Saudita", "Emiratos A.U")
+        // Estrategia: unir todo y usar la ciudad como primer grupo, país como segundo
+        // Usamos heurística: buscar la ciudad y país como los campos restantes
+        int cityStart = 2;
+        int cityEnd = tokens.length - 3; // exclusive
+
+        if (cityEnd - cityStart < 2) {
+            // Solo hay un token para ciudad+país: split simple fallback
+            return tokens;
+        }
+
+        // Heurística: el país son los últimos tokens del grupo intermedio
+        // Buscar separación por doble espacio en la cadena original
+        // Re-construir la parte intermedia
+        int icaoEnd = parteCampos.indexOf(icao) + icao.length();
+        int codeStart = parteCampos.lastIndexOf(codigoCorto);
+        String middlePart = parteCampos.substring(icaoEnd, codeStart).trim();
+
+        // Buscar separación: típicamente hay 2+ espacios entre ciudad y país
+        String[] middleSplit = middlePart.split("\\s{2,}");
+        String ciudad, pais;
+        if (middleSplit.length >= 2) {
+            ciudad = middleSplit[0].trim();
+            pais = middleSplit[1].trim();
+        } else {
+            // No hay doble espacio → usar tokens individuales
+            // El primer token intermedio es ciudad, el resto es país
+            int numMiddleTokens = cityEnd - cityStart;
+            if (numMiddleTokens == 2) {
+                // Exactamente 2 tokens: ciudad y país simples
+                ciudad = tokens[cityStart];
+                pais = tokens[cityStart + 1];
+            } else {
+                // Múltiples tokens sin doble espacio: primer token = ciudad, resto = país
+                ciudad = tokens[cityStart];
+                StringBuilder paisBuilder = new StringBuilder();
+                for (int i = cityStart + 1; i < cityEnd; i++) {
+                    if (paisBuilder.length() > 0) paisBuilder.append(" ");
+                    paisBuilder.append(tokens[i]);
+                }
+                pais = paisBuilder.toString();
+            }
+        }
+
+        return new String[]{id, icao, ciudad, pais, codigoCorto, gmt, capacidad};
     }
 
     /**
@@ -155,8 +277,9 @@ public class AeropuertoParser {
             case 'T' -> "Caribe";
             case 'E' -> "Europa Norte";
             case 'L' -> "Europa Sur";
-            case 'U' -> "Rusia";
+            case 'U' -> "Europa Norte"; // CIS (Bielorrusia, Azerbaiyán, etc.)
             case 'Z', 'V', 'W', 'R' -> "Asia";
+            case 'O' -> "Asia"; // Medio Oriente / Asia Occidental
             case 'F', 'D', 'G', 'H' -> "Africa";
             case 'Y' -> "Oceania";
             default -> "Desconocido";

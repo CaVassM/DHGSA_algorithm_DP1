@@ -43,13 +43,17 @@ public class Individuo {
     }
 
     /**
-     * Calcula el fitness normalizado según la fórmula DHGS.
-     * TODO: Afinar con el paper — por ahora esqueleto funcional.
+     * Helper LEGACY conservado por compatibilidad.
      *
-     * fitness = costoTotal / (factorEpoca * (n + 1))
-     * donde factorEpoca = ((epoca-1)/totalEpocas + 1)
-     * y n = número de envíos asignados
+     * <p>IMPORTANTE: el flujo real del algoritmo NO usa este método para evaluar
+     * individuos. El fitness activo del proyecto se calcula en
+     * {@code CalculadorFitness.calcular(...)} y es el que consumen:
+     * población, búsqueda local, constructor de soluciones y {@code DHGSAlgorithm}.
+     *
+     * <p>Este método mantiene una fórmula antigua/experimental normalizada por época,
+     * útil solo como referencia histórica. No representa la función objetivo vigente.
      */
+    @Deprecated(since = "2026-04")
     public double calcularFitness(int epoca, int totalEpocas) {
         double costoTotal = calcularCostoTotal();
         double factorEpoca = (totalEpocas > 0)

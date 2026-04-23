@@ -4,20 +4,14 @@ import com.TasfB2B.DHGS.demo.domain.model.RutaEnvio;
 import com.TasfB2B.DHGS.demo.domain.valueobject.ParametrosPenalizacion;
 
 /**
- * Evaluador de fitness para soluciones DHGS.
+ * Evaluador LEGACY/experimental de fitness para soluciones DHGS.
  *
- * Fórmula:
- * fitness = (pDist * Sdist + pCap * Scap + pTime * Stime + pLate * Slate)
- *           / (factorEpoca * (n + 1))
- *
- * donde:
- * - Sdist = suma distancias de rutas
- * - Scap = penalización por exceso capacidad
- * - Stime = penalización por violar deadlines
- * - Slate = suma de end-times (urgencias)
- * - n = número de envíos asignados
- * - factorEpoca = ((epoca-1)/totalEpocas + 1)
+ * <p>Esta clase NO está conectada al flujo real de ejecución. El algoritmo actual
+ * usa {@code CalculadorFitness} como fuente de verdad para evaluar individuos.
+ * Se conserva únicamente como referencia histórica de una fórmula normalizada por
+ * época que se exploró durante el desarrollo.
  */
+@Deprecated(since = "2026-04")
 public class FitnessEvaluator {
 
     private ParametrosPenalizacion parametros;
@@ -39,10 +33,10 @@ public class FitnessEvaluator {
     }
 
     /**
-     * Evalúa el fitness de un individuo considerando penalizaciones y normalización por época.
+     * Evalúa un fitness legacy normalizado por época.
      *
-     * TODO: La fórmula exacta debe refinarse con el paper DHGS.
-     * Por ahora implementa la estructura base.
+     * <p>No debe usarse para comparar resultados del algoritmo actual ni para
+     * interpretar los tests/documentación operativa del proyecto.
      */
     public double evaluar(Individuo individuo, int epocaActual, int totalEpocas) {
         if (individuo == null || individuo.getEnviosAsignados() == null) {
@@ -56,7 +50,7 @@ public class FitnessEvaluator {
         double sLate = individuo.getLateness();
 
         // Aplicar pesos de penalización
-        double costoTotal = (1.0 * sDist)
+        double costoTotal = sDist
                 + (parametros.getPenCapacidad() * sCap)
                 + (parametros.getPenTiempo() * sTime)
                 + (parametros.getPenLateness() * sLate);

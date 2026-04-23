@@ -44,7 +44,8 @@ public class AlgoritmoSPLIT {
         }
 
         for (Envio envio : giantTour) {
-            RutaEnvio ruta = asignarMejorRuta(envio);
+            // Devuelve una secuencia ya de rutas.
+            RutaEnvio ruta = asignarMejorRuta(envio); // Dijkstra
             if (ruta != null) {
                 asignaciones.put(envio, ruta);
             }

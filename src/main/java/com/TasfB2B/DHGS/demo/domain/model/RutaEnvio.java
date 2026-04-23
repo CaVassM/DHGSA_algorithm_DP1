@@ -81,6 +81,7 @@ public class RutaEnvio {
     // Recalcula tiempo inicio y tiempoLlegadaEstimado basandose en la seucencia de vuelos y horarios.
     // Cuando se modifica un ruta, los tiempos se invalidan. este metodo lo recalcula.
     // Util para cuando sea aplica operadores de local search que modifican la ruta.
+    // Ahh de toda la secuencia obtenida en dijkstra, saca el inicio y salida.
     public void calcularTiempos() {
         // Lo mismo que el anterior
         if (envio == null || envio.getFechaHoraCreacion() == null || secuenciaVuelos == null || secuenciaVuelos.isEmpty()) {

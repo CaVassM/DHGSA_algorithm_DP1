@@ -72,6 +72,12 @@ class IngestionCargaDatosTest {
         return Paths.get(url.toURI());
     }
 
+    // Utilidad: filtra archivos de envío (con o sin prefijo _)
+    private static boolean esArchivoEnvio(Path p) {
+        String name = p.getFileName().toString();
+        return name.endsWith(".txt") && (name.startsWith("envios_") || name.startsWith("_envios_"));
+    }
+
     // =========================================================
     // TEST 1: Aeropuertos
     // =========================================================
@@ -172,8 +178,7 @@ class IngestionCargaDatosTest {
 
         try (Stream<Path> stream = Files.list(dirEnvios)) {
             List<Path> archivos = stream
-                    .filter(p -> p.getFileName().toString().startsWith("envios_")
-                              && p.getFileName().toString().endsWith(".txt"))
+                    .filter(IngestionCargaDatosTest::esArchivoEnvio)
                     .sorted()
                     .collect(Collectors.toList());
 
@@ -260,8 +265,7 @@ class IngestionCargaDatosTest {
         List<Envio> todosEnvios = new ArrayList<>();
 
         try (Stream<Path> stream = Files.list(dirEnvios)) {
-            stream.filter(p -> p.getFileName().toString().startsWith("envios_")
-                            && p.getFileName().toString().endsWith(".txt"))
+            stream.filter(IngestionCargaDatosTest::esArchivoEnvio)
                   .sorted()
                   .forEach(archivo -> todosEnvios.addAll(envioParser.parsear(archivo, mapaAeropuertos)));
         }

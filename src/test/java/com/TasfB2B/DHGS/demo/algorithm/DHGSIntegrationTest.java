@@ -80,14 +80,14 @@ class DHGSIntegrationTest {
         grafoVuelos = new GrafoVuelos();
         grafoVuelos.construir(aeropuertos, vuelos);
 
-        System.out.println("╔══════════════════════════════════════════════════╗");
-        System.out.println("║       DATOS CARGADOS PARA INTEGRACIÓN           ║");
-        System.out.println("╠══════════════════════════════════════════════════╣");
-        System.out.printf("║  Aeropuertos: %-34d ║%n", aeropuertos.size());
-        System.out.printf("║  Vuelos:      %-34d ║%n", vuelos.size());
-        System.out.printf("║  Envíos:      %-34d ║%n", envios.size());
-        System.out.printf("║  Grafo:       %-34s ║%n", grafoVuelos);
-        System.out.println("╚══════════════════════════════════════════════════╝");
+        System.out.println("=================================================");
+        System.out.println("   DATOS CARGADOS PARA INTEGRACION              ");
+        System.out.println("=================================================");
+        System.out.printf("  Aeropuertos : %d%n", aeropuertos.size());
+        System.out.printf("  Vuelos      : %d%n", vuelos.size());
+        System.out.printf("  Envios      : %d%n", envios.size());
+        System.out.printf("  Grafo       : %s%n", grafoVuelos);
+        System.out.println("=================================================");
     }
 
     @Test
@@ -150,11 +150,11 @@ class DHGSIntegrationTest {
         int poblacion = 25;
         Duration limite = Duration.ofSeconds(10);
 
-        System.out.println("\n╔══════════════════════════════════════════════════╗");
-        System.out.println("║          EJECUTANDO DHGS                         ║");
-        System.out.printf("║  Época: %d/%d | Población: %d | Límite: %ds     ║%n",
+        System.out.println("\n=================================================");
+        System.out.println("           EJECUTANDO DHGS                       ");
+        System.out.printf( "  Epoca: %d/%d | Poblacion: %d | Limite: %ds%n",
                 epoca, totalEpocas, poblacion, limite.getSeconds());
-        System.out.println("╚══════════════════════════════════════════════════╝\n");
+        System.out.println("=================================================\n");
 
         long t0 = System.currentTimeMillis();
         Individuo resultado = dhgs.ejecutar(envios, epoca, totalEpocas, poblacion, limite);
@@ -187,11 +187,11 @@ class DHGSIntegrationTest {
             Envio e = entry.getKey();
             RutaEnvio r = entry.getValue();
             String vuelos_str = r.getSecuenciaVuelos().stream()
-                    .map(v -> v.getAeropuertoOrigen().getCodigoICAO() + "→"
+                    .map(v -> v.getAeropuertoOrigen().getCodigoICAO() + "->"
                             + v.getAeropuertoDestino().getCodigoICAO())
                     .collect(Collectors.joining(" → "));
 
-            System.out.printf("  [%s] %s→%s (%d maletas) vía: %s | dist=%.0f km | costo=%.0f%n",
+            System.out.printf("  [%s] %s->%s (%d maletas) via: %s | dist=%.0f km | costo=%.0f%n",
                     e.getId(),
                     e.getAeropuertoOrigen().getCodigoICAO(),
                     e.getAeropuertoDestino().getCodigoICAO(),
@@ -203,9 +203,9 @@ class DHGSIntegrationTest {
 
         // Envíos no asignados
         if (resultado.getEnviosNoAsignados() != null && !resultado.getEnviosNoAsignados().isEmpty()) {
-            System.out.println("\n=== ENVÍOS NO ASIGNADOS ===");
+            System.out.println("\n--- ENVIOS NO ASIGNADOS ---");
             for (Envio e : resultado.getEnviosNoAsignados()) {
-                System.out.printf("  [%s] %s→%s (%d maletas) mustGo=%s%n",
+                System.out.printf("  [%s] %s->%s (%d maletas) mustGo=%s%n",
                         e.getId(),
                         e.getAeropuertoOrigen().getCodigoICAO(),
                         e.getAeropuertoDestino().getCodigoICAO(),
@@ -216,11 +216,11 @@ class DHGSIntegrationTest {
 
         // Validación con Validador
         List<String> violaciones = validador.validarIndividuo(resultado);
-        System.out.println("\n=== VALIDACIÓN ===");
+        System.out.println("\n--- VALIDACION ---");
         if (violaciones.isEmpty()) {
-            System.out.println("  Sin violaciones — solución completamente factible");
+            System.out.println("  [OK] Sin violaciones -- solucion completamente factible");
         } else {
-            violaciones.forEach(v -> System.out.println("  ⚠️  " + v));
+            violaciones.forEach(v -> System.out.println("  [!] " + v));
         }
     }
 

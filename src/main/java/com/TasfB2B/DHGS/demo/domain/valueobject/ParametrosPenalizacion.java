@@ -7,9 +7,18 @@ import lombok.Setter;
  * Parámetros de penalización adaptativos para el algoritmo DHGS.
  * Se ajustan dinámicamente según el ratio de soluciones factibles/infactibles.
  *
- * Fórmula de fitness:
- * fitness = (pDist * Sdist + pCap * Scap + pTime * Stime + pLate * Slate)
- *           / ((epoca-1)/totalEpocas + 1) * (n + 1)
+ * <p>En el flujo ACTIVO del proyecto estos parámetros alimentan a
+ * {@code CalculadorFitness}, que usa principalmente:
+ *
+ * <pre>
+ * fitness = costoDistancia
+ *         + penCapacidad * violacionesCapacidad
+ *         + penTiempo * violacionesTiempo
+ *         + penalizacionNoAsignados
+ * </pre>
+ *
+ * <p>`penLateness` se mantiene por compatibilidad con fórmulas legacy/experimentales,
+ * pero no participa en la evaluación operativa actual.
  */
 @Getter
 @Setter
@@ -17,7 +26,7 @@ public class ParametrosPenalizacion {
 
     private double penCapacidad;       // Penalización por violación de capacidad (vuelos/almacenes)
     private double penTiempo;          // Penalización por violación de deadlines
-    private double penLateness;        // Penalización por urgencia (fijo = 100)
+    private double penLateness;        // Reservado para fórmulas legacy/experimentales
     private double factorNormalizacion; // Factor de normalización
 
     // Constantes de ajuste
