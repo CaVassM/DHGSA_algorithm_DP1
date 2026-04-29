@@ -41,11 +41,17 @@ public class RutaEnvio {
             return false;
         }
 
-        // Ahora se verifica conexiones
+        // Ahora se verifica conexiones geográficas y temporales
         for (int i = 0; i < secuenciaVuelos.size() - 1; i++) {
             Vuelo actual = secuenciaVuelos.get(i);
             Vuelo siguiente = secuenciaVuelos.get(i + 1);
             if (!mismoAeropuerto(actual.getAeropuertoDestino(), siguiente.getAeropuertoOrigen())) {
+                return false;
+            }
+            LocalDateTime llegadaActual = obtenerLlegadaProgramada(actual,
+                    i == 0 ? envio.getFechaHoraCreacion() : obtenerLlegadaProgramada(secuenciaVuelos.get(i - 1), envio.getFechaHoraCreacion()));
+            LocalDateTime salidaSiguiente = obtenerSalidaProgramada(siguiente, llegadaActual);
+            if (llegadaActual != null && salidaSiguiente != null && salidaSiguiente.isBefore(llegadaActual)) {
                 return false;
             }
         }
@@ -93,11 +99,11 @@ public class RutaEnvio {
 
         for (int i = 0; i < secuenciaVuelos.size(); i++) {
             Vuelo vuelo = secuenciaVuelos.get(i);
-            LocalDateTime salida = ajustarSalida(momentoActual, vuelo.getHoraSalida());
-            Duration duracionVuelo = vuelo.getDuracion() != null
-                    ? vuelo.getDuracion()
-                    : Duration.ofMinutes(vuelo.getTiempoVuelo());
-            LocalDateTime llegada = salida.plus(duracionVuelo);
+            LocalDateTime salida = obtenerSalidaProgramada(vuelo, momentoActual);
+            LocalDateTime llegada = obtenerLlegadaProgramada(vuelo, momentoActual);
+            if (salida == null || llegada == null || llegada.isBefore(salida)) {
+                return;
+            }
 
             if (i == 0) {
                 this.tiempoInicio = salida;
@@ -134,6 +140,27 @@ public class RutaEnvio {
             salida = salida.plusDays(1);
         }
         return salida;
+    }
+
+    private LocalDateTime obtenerSalidaProgramada(Vuelo vuelo, LocalDateTime referencia) {
+        if (vuelo instanceof InstanciaVuelo instancia && instancia.getFechaHoraSalida() != null) {
+            return instancia.getFechaHoraSalida();
+        }
+        return ajustarSalida(referencia, vuelo.getHoraSalida());
+    }
+
+    private LocalDateTime obtenerLlegadaProgramada(Vuelo vuelo, LocalDateTime referencia) {
+        if (vuelo instanceof InstanciaVuelo instancia && instancia.getFechaHoraLlegada() != null) {
+            return instancia.getFechaHoraLlegada();
+        }
+        LocalDateTime salida = obtenerSalidaProgramada(vuelo, referencia);
+        if (salida == null) {
+            return null;
+        }
+        Duration duracionVuelo = vuelo.getDuracion() != null
+                ? vuelo.getDuracion()
+                : Duration.ofMinutes(vuelo.getTiempoVuelo());
+        return salida.plus(duracionVuelo);
     }
 
     private boolean mismoAeropuerto(Aeropuerto a1, Aeropuerto a2) {

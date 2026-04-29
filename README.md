@@ -1,210 +1,246 @@
-# Tasf.B2B — DHGS: Asignación Óptima de Maletas a Vuelos
+# Tasf.B2B — DHGS para asignación de envíos a vuelos
 
-Sistema de optimización logística que asigna envíos de maletas a secuencias de vuelos comerciales, minimizando costo total y respetando restricciones de capacidad y tiempo.
+Sistema de planificación logística que asigna envíos de maletas a rutas aéreas usando **DHGS (Dynamic Hybrid Genetic Search)** sobre un horizonte configurable. La experimentación numérica de referencia quedó automatizada en escenarios de **3, 5 y 7 días**.
 
-Basado en el algoritmo **DHGS (Dynamic Hybrid Genetic Search)**.
+## Estado actual del sistema
 
----
+El proyecto quedó alineado al siguiente alcance:
+
+- simulación configurable por duración; la experimentación numérica de referencia usa **3, 5 y 7 días**
+- épocas de **4 horas**
+- vuelos recurrentes diarios materializados como **`InstanciaVuelo`**
+- ruteo temporal sobre fechas absolutas de salida y llegada
+- operación en **condiciones ideales**, sin cancelaciones ni disrupciones
+- pruebas de datos reales enfocadas en **experimentación numérica con ventanas reales de 3, 5 y 7 días**
+
+## Qué optimiza realmente el algoritmo hoy
+
+En el estado actual, DHGS **sí optimiza**, pero conviene ser preciso sobre **qué** está optimizando:
+
+1. **selección de qué envíos despachar en la época**
+2. **elección de la mejor ruta temporal por envío** usando `AlgoritmoSPLIT` + `GrafoVuelos`
+3. **reducción del costo total** medido como `distancia × maletas`
+4. **reducción de penalizaciones** por:
+   - exceso de capacidad en vuelos
+   - retrasos respecto al deadline
+   - exceso de almacén por aeropuerto
+   - envíos no asignados
+
+### Importante sobre `GiantTour`
+
+`representacionGigante` **sí tiene coherencia estructural**, pero su papel actual es principalmente:
+
+- representación genética para `OXCrossover`
+- soporte de consistencia entre `enviosAsignados` y `enviosNoAsignados`
+- rastro explícito de qué envíos pertenecen a la solución
+
+Con el `SPLIT` vigente, la ruta de un envío se calcula **de forma independiente** del orden del tour. Por eso, hoy el orden del `GiantTour` **no cambia** la ruta elegida para un mismo conjunto de envíos; lo que sí cambia la solución es **agregar, quitar o sustituir envíos**.
+
+Por esa razón, en el algoritmo principal quedaron activos solo los operadores locales que sí alteran el conjunto de envíos:
+
+- `LocalSearchDelete`
+- `LocalSearchAdd`
+- `LocalSearchSwapOut`
+
+Los operadores de reordenamiento (`Relocate`, `Swap`, `2-Opt`) se conservan en el código para una etapa futura en la que `SPLIT` sea sensible al orden.
+
+Esta conclusión ya no se apoya solo en inspección visual del código: `LocalSearchConsistencyTest` verifica explícitamente que con el `SPLIT` actual los operadores de reordenamiento no mejoran ni fitness ni asignaciones sobre un caso controlado.
 
 ## Requisitos
 
-| Herramienta | Versión mínima |
-|-------------|---------------|
-| Java        | 21            |
-| Maven       | 3.9+ (incluido via `mvnw`) |
+| Herramienta | Versión |
+|---|---:|
+| Java | 21 |
+| Maven | Wrapper incluido (`mvnw`) |
 
-No se requiere base de datos ni servicios externos.
+## Ejecución rápida
 
----
-
-## Inicio Rápido
+### Compilar el proyecto
 
 ```bash
-# Clonar / descomprimir el proyecto
-cd demo
+./mvnw clean compile
+```
 
-# Compilar y ejecutar todos los tests (incluye simulación DHGS)
+```powershell
+.\mvnw.cmd clean compile
+```
+
+### Ejecutar toda la suite
+
+```bash
 ./mvnw clean test
-
-# Ejecutar solo el test de carga de datos de prueba
-./mvnw test -Dtest=IngestionCargaDatosTest
-
-# Ejecutar solo el test de carga de datos reales
-./mvnw test -Dtest=IngestionDatosRealesTest
-
-# Ejecutar la simulación DHGS con datos de prueba
-./mvnw test -Dtest=DHGSIntegrationTest
-
-# Ejecutar la simulación DHGS con datos reales
-./mvnw test -Dtest=DHGSRealDataTest
 ```
 
----
-
-## Estructura del Proyecto
-
-```
-src/
-├── main/java/com/TasfB2B/DHGS/demo/
-│   ├── algorithm/
-│   │   ├── dhgs/              ← Núcleo del algoritmo genético
-│   │   │   ├── DHGSAlgorithm  ← Orquestador principal
-│   │   │   ├── Individuo      ← Solución candidata
-│   │   │   ├── Poblacion      ← Gestión de población
-│   │   │   └── FitnessEvaluator (legacy, no usado por el flujo actual)
-│   │   └── operators/         ← Operadores genéticos
-│   │       ├── OXCrossover          ← Cruce ordenado
-│   │       ├── LocalSearchDelete    ← Remover envíos problemáticos
-│   │       ├── LocalSearchAdd       ← Insertar envíos no asignados
-│   │       ├── LocalSearchSwapOut   ← Intercambiar dentro/fuera
-│   │       ├── LocalSearchSwap      ← Intercambiar posiciones
-│   │       ├── LocalSearchRelocate  ← Reubicar en giant tour
-│   │       └── LocalSearch2Opt      ← Inversión de segmento
-│   ├── domain/
-│   │   ├── model/             ← Entidades de negocio
-│   │   │   ├── Aeropuerto     ← Nodo del grafo (Haversine)
-│   │   │   ├── Vuelo          ← Arco del grafo
-│   │   │   ├── Envio          ← Solicitud de transporte
-│   │   │   ├── RutaEnvio      ← Secuencia de vuelos asignada
-│   │   │   └── AlmacenEstado  ← Estado de almacén
-│   │   ├── service/           ← Lógica de simulación
-│   │   │   ├── SimuladorEpocas
-│   │   │   └── EpocaData
-│   │   └── valueobject/       ← Objetos de valor
-│   │       ├── Coordenada     ← Parser DMS a decimal
-│   │       └── ParametrosPenalizacion
-│   └── infraestructure/
-│       ├── ingestion/         ← Parsers de datos
-│       │   ├── AeropuertoParser  ← Soporta UTF-8 y UTF-16 BE
-│       │   ├── VueloParser
-│       │   └── EnvioParser       ← Soporta envios_ y _envios_ prefijos
-│       └── util/              ← Utilidades algorítmicas
-│           ├── GrafoVuelos         ← Grafo + Dijkstra
-│           ├── AlgoritmoSPLIT      ← Asignación envío→ruta
-│           ├── CalculadorFitness   ← Función objetivo
-│           ├── ConstructorSolucionesIniciales
-│           └── Validador
-│
-├── test/
-│   ├── java/.../
-│   │   ├── ingestion/
-│   │   │   ├── IngestionCargaDatosTest      ← Datos de prueba (7 aerop, 15 vuelos, 14 envíos)
-│   │   │   └── IngestionDatosRealesTest     ← Datos reales (30 aerop, 2866 vuelos, ~9M envíos)
-│   │   ├── algorithm/
-│   │   │   ├── DHGSIntegrationTest          ← DHGS con datos de prueba
-│   │   │   └── DHGSRealDataTest             ← DHGS con datos reales (muestreo)
-│   │   └── domain/model/DomainModelTests    ← Tests unitarios
-│   └── resources/
-│       ├── test-ingestion.properties        ← Rutas de archivos (test + real)
-│       └── datos/
-│           ├── estudiantes.txt              ← 7 aeropuertos (prueba)
-│           ├── estudiantes_real.txt         ← 30 aeropuertos (real, UTF-16 BE)
-│           ├── planes_vuelo.txt             ← 15 vuelos (prueba)
-│           ├── planes_vuelo_real.txt        ← 2866 vuelos (real)
-│           ├── envios_preliminar_test/      ← 3 archivos envíos (prueba, 14 total)
-│           │   ├── envios_SKBO_.txt
-│           │   ├── envios_SEQM_.txt
-│           │   └── envios_SPIM_.txt
-│           └── envios_preliminar/           ← 30 archivos envíos (real, ~9M total)
-│               ├── _envios_SKBO_.txt        (380k envíos)
-│               ├── _envios_SBBR_.txt        (459k envíos)
-│               └── ... (30 archivos, uno por aeropuerto)
+```powershell
+.\mvnw.cmd clean test
 ```
 
----
+### Ejecutar solo las pruebas principales de algoritmo
 
-## Datasets
-
-### Datos de Prueba (test)
-| Recurso | Archivo | Cantidad |
-|---------|---------|----------|
-| Aeropuertos | `estudiantes.txt` | 7 (solo Sudamérica) |
-| Vuelos | `planes_vuelo.txt` | 15 |
-| Envíos | `envios_preliminar_test/` | 14 (3 archivos) |
-
-### Datos Reales (real)
-| Recurso | Archivo | Cantidad |
-|---------|---------|----------|
-| Aeropuertos | `estudiantes_real.txt` | 30 (Sudamérica + Europa + Asia) |
-| Vuelos | `planes_vuelo_real.txt` | 2,866 |
-| Envíos | `envios_preliminar/` | ~9.5M (30 archivos, ~300k c/u) |
-
----
-
-## Formato de Datos de Entrada
-
-### Aeropuertos (`estudiantes.txt` / `estudiantes_real.txt`)
-```
-01 SKBO Bogota Colombia bogo -5 430 Latitud: 04° 42' 05" N Longitud: 74° 08' 49" W
-```
-Campos: `ID  ICAO  Ciudad  País  CódigoCorto  GMT  CapacidadAlmacén  Coordenadas`
-
-> **Nota**: El archivo real usa `Latitude:`/`Longitude:` y encoding UTF-16 BE. El parser detecta ambos formatos automáticamente.
-
-### Vuelos (`planes_vuelo.txt` / `planes_vuelo_real.txt`)
-```
-SKBO-SEQM-03:34-04:21-0300
-```
-Campos: `Origen-Destino-HoraSalida-HoraLlegada-Capacidad`
-
-### Envíos (`envios_XXXX_.txt` / `_envios_XXXX_.txt`)
-```
-00000001-20260102-00-47-SEQM-002-0032535
-```
-Campos: `ID-Fecha-Hora-Min-Destino-Maletas-Cliente`
-El aeropuerto **origen** se infiere del nombre del archivo.
-
-> **Nota**: Los archivos de prueba usan prefijo `envios_`, los reales `_envios_`. El parser extrae el código ICAO de 4 letras del nombre.
-
----
-
-## Función de Fitness
-
-```
-fitness = distanciaTotal
-        + 1000 × Σ max(0, maletasAsignadas − capacidadVuelo)²
-        + 5000 × Σ max(0, tiempoLlegada − deadline)²
-        + penalización por envíos no asignados
+```bash
+./mvnw -Dtest=DHGSIntegrationTest,DHGSInstanciasDiariasTest,DHGSExperimentacionNumericaTest test
 ```
 
-- **Menor fitness = mejor solución**
-- Penalización cuadrática: violaciones grandes se castigan exponencialmente
-- Must-go no asignados reciben penalización 10× mayor que opcionales
+```powershell
+.\mvnw.cmd -Dtest=DHGSIntegrationTest,DHGSInstanciasDiariasTest,DHGSExperimentacionNumericaTest test
+```
 
-> **Importante**: el fitness operativo del proyecto se calcula en `CalculadorFitness`.
-> El método `Individuo.calcularFitness(...)` y la clase `FitnessEvaluator` se conservan
-> como referencias legacy/experimentales y **no** participan en la ejecución real de
-> `DHGSAlgorithm` ni en los tests actuales.
+### Ejecutar solo la experimentación numérica del algoritmo DHGS
 
-### Resultados observados
+```bash
+./mvnw -Dtest=DHGSExperimentacionNumericaTest test
+```
 
-| Dataset | Envíos | Asignados | Fitness | Factible | Violaciones |
-|---------|--------|-----------|---------|----------|-------------|
-| Prueba (14) | 14 | 3 | 21,273 | ✅ | 0 |
-| Real (50 muestreo) | 50 | 29 | 453,596 | ✅ | 0 |
-| Real (200 greedy) | 200 | 200 | ~2.5M | — | — |
+```powershell
+.\mvnw.cmd -Dtest=DHGSExperimentacionNumericaTest test
+```
 
----
+> `DHGSExperimentacionNumericaTest` es la suite de referencia para experimentación numérica: ejecuta tres escenarios reproducibles (**3**, **5** y **7** días) y toma su configuración desde `src/test/resources/test-experiment.properties`.
 
-## Ejecución de la Simulación
+## Estructura relevante
 
-### Con datos de prueba (`DHGSIntegrationTest`)
-1. Carga 7 aeropuertos, 15 vuelos, 14 envíos
-2. Construye grafo de vuelos con distancias Haversine
-3. Ejecuta DHGS (población=25, límite=10s)
-4. Imprime resultado: rutas asignadas, costos, violaciones
+```text
+src/main/java/com/TasfB2B/DHGS/demo/
+├── algorithm/
+│   ├── dhgs/
+│   │   ├── DHGSAlgorithm
+│   │   ├── Individuo
+│   │   └── Poblacion
+│   └── operators/
+├── application/
+│   ├── dto/
+│   └── service/OptimizationService
+├── domain/
+│   ├── model/
+│   │   ├── Aeropuerto
+│   │   ├── Vuelo                (plantilla recurrente)
+│   │   ├── InstanciaVuelo       (ocurrencia diaria materializada)
+│   │   ├── Envio
+│   │   ├── RutaEnvio
+│   │   └── AlmacenEstado
+│   └── service/
+│       ├── SimuladorEpocas
+│       └── EpocaData
+└── infraestructure/
+    ├── ingestion/
+    └── util/
+        ├── GrafoVuelos
+        ├── AlgoritmoSPLIT
+        ├── CalculadorFitness
+        ├── ConstructorSolucionesIniciales
+        └── Validador
+```
 
-### Con datos reales (`DHGSRealDataTest`)
-1. Carga 30 aeropuertos, 2866 vuelos, muestreo de envíos (~50-200)
-2. Grafo de 30 nodos y 2866 arcos, conectividad 100%
-3. Ejecuta DHGS con muestreo progresivo (50 y 200 envíos)
-4. Verifica coherencia del fitness entre escalas
-5. Valida factibilidad y ausencia de violaciones
+## Modelo temporal actual
 
----
+### 1. Horizonte de simulación
 
-## Documentación Adicional
+- inicio: fecha indicada por el usuario o día anterior al primer envío
+- duración: configurable según el escenario
+- granularidad: **4 horas por época**
+- total: `duraciónEnDías × 6` épocas
 
-- [`ARCHITECTURE.md`](ARCHITECTURE.md) — Diagrama de arquitectura y flujo
-- [`PSEUDOCODE.md`](PSEUDOCODE.md) — Pseudocódigo del algoritmo DHGS
+### 2. Vuelos recurrentes
 
+`Vuelo` representa la plantilla recurrente.
+
+Antes de optimizar, `GrafoVuelos` materializa cada plantilla en tantas ocurrencias diarias de tipo `InstanciaVuelo` como días tenga el escenario configurado.
+
+Ejemplo:
+
+- plantilla: `SKBO -> SPIM`, salida `06:00`, llegada `08:15`
+- instancias generadas:
+  - `VL-...@2026-01-01`
+  - `VL-...@2026-01-02`
+  - `VL-...@2026-01-03`
+  - `VL-...@2026-01-04`
+  - `VL-...@2026-01-05`
+
+### 3. Envíos
+
+Cada envío:
+
+- tiene `fechaHoraCreacion`
+- entra a la época correspondiente
+- calcula deadline
+- actualiza `must-go` y prioridad en cada época
+- aporta `cantidadMaletas`, que afecta costo, factibilidad de vuelo y ocupación de almacén
+
+## Flujo actual
+
+1. Se parsean aeropuertos, vuelos plantilla y envíos.
+2. `SimuladorEpocas` genera las épocas del horizonte configurado.
+3. `GrafoVuelos` materializa vuelos diarios para los días del escenario activo.
+4. En cada época:
+   - se mezclan envíos nuevos y pendientes
+   - se recalculan prioridad y `must-go`
+   - DHGS genera y mejora soluciones
+   - se despachan envíos asignados y se postergan no asignados
+5. Se consolida el resultado final por época y total.
+
+## Cómo entran maletas, vuelos y almacenes en la lógica
+
+### Maletas
+
+- cada `Envio` tiene `cantidadMaletas`
+- el costo de una `RutaEnvio` es `distanciaTotal × cantidadMaletas`
+- la carga de cada vuelo se calcula sumando las maletas de todos los envíos que usan ese vuelo
+- la carga de almacén se calcula sumando las maletas de los envíos no asignados que permanecen en el aeropuerto origen
+
+### Capacidad de vuelos
+
+Durante la optimización de una época:
+
+- `GrafoVuelos` filtra vuelos cuya `capacidadDisponible` individual sea insuficiente para **ese envío**
+- luego `CalculadorFitness` y `Validador` revisan la **sobrecarga agregada** por vuelo sumando maletas de todos los envíos asignados
+
+Esto significa que la capacidad de vuelo hoy se trata de forma **ex post** a nivel agregado: la solución puede construirse y luego recibir penalización si varias asignaciones usan el mismo vuelo por encima de su capacidad total.
+
+### Almacén por aeropuerto
+
+El proyecto **sí** toma en cuenta almacenes:
+
+- `SimuladorEpocas` mantiene `AlmacenEstado` por aeropuerto a lo largo de las épocas
+- al llegar envíos nuevos, sus maletas se agregan al almacén origen
+- al despachar un envío, sus maletas salen del almacén origen
+- durante la optimización, `CalculadorFitness` penaliza el exceso de almacén usando las maletas de los envíos no asignados
+- `Validador` también reporta explícitamente si un aeropuerto supera su capacidad de almacén
+
+En otras palabras, el criterio de almacén vigente es: **las maletas que no salen en la época siguen ocupando espacio en el aeropuerto de origen**.
+
+## Pruebas actuales
+
+### Unitarias / integración ligera
+
+- `SimuladorEpocasTest`
+- `DomainModelTests`
+- `LocalSearchConsistencyTest`
+- `DHGSInstanciasDiariasTest`
+- `DHGSIntegrationTest`
+
+### Datos reales
+
+- `DHGSExperimentacionNumericaTest`
+  - escenario 1: **3 días**
+  - escenario 2: **5 días**
+  - escenario 3: **7 días**
+  - configuración cargada desde `test-experiment.properties`
+  - parámetros activos: fecha de inicio, duración por escenario, tamaño de población, límite por época y conteos esperados
+  - imprime tiempos de carga/filtrado, simulación y tiempo total por escenario
+
+## Qué no incluye este alcance
+
+Actualmente el sistema **no** modela:
+
+- cancelaciones de vuelos
+- disrupciones durante la simulación
+- replanificación por eventos operativos
+
+La base quedó preparada para eso en una siguiente iteración gracias al uso de `InstanciaVuelo`.
+
+## Documentación complementaria
+
+- [`ARCHITECTURE.md`](ARCHITECTURE.md)
+- [`PSEUDOCODE.md`](PSEUDOCODE.md)
+- [`RESULTS.md`](RESULTS.md)
+- [`HELP.md`](HELP.md)

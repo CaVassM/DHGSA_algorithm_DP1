@@ -1,216 +1,273 @@
 # Arquitectura — Tasf.B2B DHGS
 
-## Diagrama de Capas
+## Resumen arquitectónico actual
 
-```
+El sistema se encuentra en un primer alcance estable con las siguientes decisiones:
+
+- horizonte de simulación **configurable por escenario**
+- partición temporal en épocas de **4 horas**
+- `Vuelo` como **plantilla recurrente**
+- `InstanciaVuelo` como **ocurrencia diaria materializada**
+- optimización por época mediante **DHGS**
+- operación en **condiciones ideales**, sin cancelaciones ni disrupciones
+- la suite numérica de referencia usa escenarios de **3, 5 y 7 días** configurados desde `test-experiment.properties`
+
+---
+
+## Diagrama de capas
+
+```text
 ┌─────────────────────────────────────────────────────────────────────┐
 │                        PRESENTATION                                 │
-│   controller/          (API REST — futuro)                          │
+│   controller/          API REST / UI futura                         │
 ├─────────────────────────────────────────────────────────────────────┤
 │                        APPLICATION                                  │
 │   service/             OptimizationService                          │
-│   dto/                 Request/Response DTOs                        │
+│   dto/                 OptimizationRequest / Response               │
 ├─────────────────────────────────────────────────────────────────────┤
 │                          DOMAIN                                     │
 │                                                                     │
-│   model/               Aeropuerto, Vuelo, Envio, RutaEnvio,        │
-│                        AlmacenEstado                                │
+│   model/               Aeropuerto                                   │
+│                        Vuelo            ← plantilla recurrente       │
+│                        InstanciaVuelo   ← vuelo fechado diario       │
+│                        Envio                                     │
+│                        RutaEnvio                                  │
+│                        AlmacenEstado                              │
 │                                                                     │
-│   service/             SimuladorEpocas, EpocaData                   │
+│   service/             SimuladorEpocas                              │
+│                        EpocaData                                    │
 │                                                                     │
-│   valueobject/         Coordenada, ParametrosPenalizacion           │
+│   valueobject/         ParametrosPenalizacion                       │
 ├─────────────────────────────────────────────────────────────────────┤
 │                       ALGORITHM                                     │
 │                                                                     │
-│   dhgs/                DHGSAlgorithm ← orquestador                  │
-│                        Individuo     ← solución candidata           │
-│                        Poblacion     ← gestión evolutiva            │
-│                        FitnessEvaluator (legacy)                    │
+│   dhgs/                DHGSAlgorithm                                │
+│                        Individuo                                    │
+│                        Poblacion                                    │
 │                                                                     │
 │   operators/           OXCrossover                                  │
-│                        LocalSearchDelete, Add, SwapOut              │
-│                        LocalSearchSwap, Relocate, 2Opt              │
+│                        LocalSearchDelete                            │
+│                        LocalSearchAdd                               │
+│                        LocalSearchSwapOut                           │
+│                        LocalSearchRelocate                          │
+│                        LocalSearchSwap                              │
+│                        LocalSearch2Opt                              │
 │                        LocalSearchContext                           │
 ├─────────────────────────────────────────────────────────────────────┤
 │                      INFRASTRUCTURE                                 │
 │                                                                     │
-│   ingestion/           AeropuertoParser (UTF-8/UTF-16 auto)    │
-│                        VueloParser, EnvioParser                │
-│                        Soporta formatos test y real             │
+│   ingestion/           AeropuertoParser                             │
+│                        VueloParser                                  │
+│                        EnvioParser                                  │
 │                                                                     │
-│   util/                GrafoVuelos (Dijkstra)                       │
+│   util/                GrafoVuelos                                  │
 │                        AlgoritmoSPLIT                               │
-│                        CalculadorFitness ← fitness ACTIVO           │
-│                        ConstructorSolucionesIniciales                │
+│                        CalculadorFitness                            │
+│                        ConstructorSolucionesIniciales               │
 │                        Validador                                    │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Flujo de Datos Completo
+## Flujo de datos actual
 
-```
-                    ┌──────────────────┐
-                    │  ARCHIVOS DATOS  │
-                    │                  │
-                    │ PRUEBA:          │
-                    │  estudiantes.txt │
-                    │  planes_vuelo.txt│
-                    │  envios_XXXX_.txt│
-                    │                  │
-                    │ REALES:          │
-                    │  estudiantes_real│
-                    │  planes_vuelo_rl │
-                    │  _envios_XXXX_   │
-                    └────────┬─────────┘
-                             │
-                    ┌────────▼─────────┐
-                    │     PARSERS      │
-                    │                  │
-                    │ AeropuertoParser │
-                    │ VueloParser      │
-                    │ EnvioParser      │
-                    └────────┬─────────┘
-                             │
-              ┌──────────────▼──────────────┐
-              │       GRAFO DE VUELOS       │
-              │                             │
-              │  Nodos = Aeropuertos (ICAO) │
-              │  Arcos = Vuelos programados │
-              │  Peso  = Duración (min)     │
-              │  + Matriz distancias (km)   │
-              └──────────────┬──────────────┘
-                             │
-              ┌──────────────▼──────────────┐
-              │    SIMULADOR DE ÉPOCAS      │
-              │                             │
-              │  Divide tiempo en ventanas  │
-              │  de 4 horas. Por cada una:  │
-              │                             │
-              │  1. Preparar envíos         │
-              │  2. Actualizar must-go      │
-              │  3. Ejecutar DHGS ──────────┼──────────────┐
-              │  4. Procesar resultado      │              │
-              └──────────────┬──────────────┘              │
-                             │                             │
-                             │              ┌──────────────▼──────────────┐
-                             │              │      ALGORITMO DHGS        │
-                             │              │                             │
-                             │              │  ┌─────────────────────┐   │
-                             │              │  │ POBLACIÓN INICIAL   │   │
-                             │              │  │ Greedy + Lazy +     │   │
-                             │              │  │ Aleatorias          │   │
-                             │              │  └─────────┬───────────┘   │
-                             │              │            │               │
-                             │              │  ┌─────────▼───────────┐   │
-                             │              │  │  LOOP GENÉTICO      │   │
-                             │              │  │                     │   │
-                             │              │  │  1. Selección       │   │
-                             │              │  │     (torneo binario)│   │
-                             │              │  │          │          │   │
-                             │              │  │  2. Crossover (OX)  │   │
-                             │              │  │          │          │   │
-                             │              │  │  3. SPLIT           │   │
-                             │              │  │     (Dijkstra)      │   │
-                             │              │  │          │          │   │
-                             │              │  │  4. Local Search    │   │
-                             │              │  │     DELETE          │   │
-                             │              │  │     ADD             │   │
-                             │              │  │     SWAP-OUT        │   │
-                             │              │  │     RELOCATE        │   │
-                             │              │  │     SWAP            │   │
-                             │              │  │     2-OPT           │   │
-                             │              │  │          │          │   │
-                             │              │  │  5. Evaluación      │   │
-                             │              │  │     (fitness)       │   │
-                             │              │  │          │          │   │
-                             │              │  │  6. Gestión         │   │
-                             │              │  │     población       │   │
-                             │              │  │          │          │   │
-                             │              │  │  7. Ajuste          │   │
-                             │              │  │     penalizaciones  │   │
-                             │              │  └─────────┬───────────┘   │
-                             │              │            │               │
-                             │              │  ┌─────────▼───────────┐   │
-                             │              │  │  MEJOR SOLUCIÓN     │   │
-                             │              │  │  Individuo factible │   │
-                             │              │  │  con menor fitness  │   │
-                             │              │  └─────────────────────┘   │
-                             │              └──────────────┬──────────────┘
-                             │                             │
-              ┌──────────────▼──────────────┐              │
-              │       RESULTADO             │◄─────────────┘
-              │                             │
-              │  • Envíos asignados         │
-              │    (envío → ruta de vuelos) │
-              │  • Envíos postponidos       │
-              │  • Costo total              │
-              │  • Violaciones              │
-              └─────────────────────────────┘
+```text
+ARCHIVOS DE DATOS
+   │
+   ├─ aeropuertos
+   ├─ vuelos plantilla
+   └─ envíos
+   │
+   ▼
+PARSERS
+   │
+   ▼
+SIMULADOR DE ÉPOCAS
+   │
+   ├─ define fecha de inicio
+   ├─ genera (días × 24 / 4) épocas de 4 horas
+   └─ expone el horizonte del escenario configurado
+   │
+   ▼
+GRAFO DE VUELOS
+   │
+   ├─ recibe vuelos plantilla
+   ├─ materializa una instancia diaria por vuelo para cada día del escenario
+   └─ construye el grafo operativo del horizonte
+   │
+   ▼
+DHGS POR ÉPOCA
+   │
+   ├─ población inicial
+   ├─ loop genético
+   ├─ SPLIT + búsqueda local
+   └─ mejor individuo
+   │
+   ▼
+RESULTADO DE ÉPOCA
+   │
+   ├─ envíos asignados
+   ├─ envíos no asignados
+   ├─ costo
+   └─ estado de almacenes
 ```
 
 ---
 
-## Estructura de un Individuo (Solución)
+## Modelo temporal
 
-```
+### Épocas
+
+Cada época representa una ventana de decisión del negocio.
+
+- duración: **4 horas**
+- total: **`díasDelEscenario × 24 / 4`**
+- cobertura completa: **duración configurada del escenario**
+
+Las épocas sirven para:
+
+1. liberar envíos según su `fechaHoraCreacion`
+2. mezclar nuevos + pendientes
+3. recalcular `must-go` y prioridad
+4. ejecutar DHGS en una foto temporal del sistema
+
+### Vuelos
+
+El modelo actual distingue dos conceptos:
+
+#### `Vuelo`
+Plantilla recurrente base.
+
+Contiene:
+- origen / destino
+- hora de salida
+- hora de llegada
+- capacidad
+- distancia
+- duración
+
+#### `InstanciaVuelo`
+Ocurrencia concreta de un `Vuelo` dentro del horizonte.
+
+Contiene además:
+- `fechaOperacion`
+- `fechaHoraSalida`
+- `fechaHoraLlegada`
+- `idPlantilla`
+
+Esto permite que el grafo trabaje con arcos fechados y no con horarios abstractos solamente.
+
+---
+
+## Grafo actual
+
+`GrafoVuelos` sigue usando:
+
+- nodos = aeropuertos
+- arcos = vuelos materializados (`InstanciaVuelo`)
+
+Pero ahora la búsqueda considera:
+
+- capacidad requerida
+- tiempo mínimo de salida según el envío o la conexión previa
+- llegada más temprana factible al siguiente nodo
+
+En otras palabras, el grafo ya no representa solo conectividad geográfica; representa conectividad **temporalmente operable** dentro del horizonte configurado para cada escenario.
+
+---
+
+## Individuo de DHGS
+
+```text
 Individuo
-├── id: String
-├── epoca: int
-│
-├── representacionGigante: List<Envio>     ← Giant Tour (permutación)
-│
-├── enviosAsignados: Map<Envio, RutaEnvio> ← Resultado del SPLIT
-│   ├── Envio₁ → RutaEnvio [SKBO→SEQM]
-│   ├── Envio₂ → RutaEnvio [SKBO→SPIM→SCEL]
-│   └── ...
-│
-├── enviosNoAsignados: List<Envio>         ← Sin ruta / postponidos
-│
-├── Métricas:
-│   ├── fitness: double                    ← Valor objetivo (menor=mejor)
-│   ├── costoDistanciaTotal: double
-│   ├── violacionesCapacidad: double       ← Σ max(0, carga−cap)²
-│   ├── violacionesTiempo: double          ← Σ max(0, retraso)²
-│   └── lateness: double                   ← Σ retraso (lineal)
-│
-└── esFactible: boolean                    ← Sin violaciones duras
+├── representacionGigante: List<Envio>
+├── enviosAsignados: Map<Envio, RutaEnvio>
+├── enviosNoAsignados: List<Envio>
+├── fitness
+├── costoDistanciaTotal
+├── violacionesCapacidad
+├── violacionesTiempo
+├── violacionesAlmacen
+├── lateness
+└── esFactible
 ```
 
-> **Nota**: aunque existe una clase `FitnessEvaluator`, la evaluación que usa el
-> algoritmo en ejecución real pasa por `CalculadorFitness` (constructor inicial,
-> búsqueda local, `DHGSAlgorithm` y tests actuales).
+La `RutaEnvio` asociada a cada envío contiene una secuencia de `InstanciaVuelo` cuando el grafo fue materializado para el horizonte.
+
+### Papel real de `representacionGigante`
+
+En la implementación actual, `representacionGigante` es coherente como:
+
+- representación genética del individuo
+- entrada del `OXCrossover`
+- estructura de consistencia para saber qué envíos pertenecen a la solución
+
+Sin embargo, **no actúa todavía como secuenciador operativo fuerte**, porque `AlgoritmoSPLIT.split(...)` evalúa cada `Envio` de forma independiente. Por eso:
+
+- cambiar el orden del tour no altera la mejor ruta de un envío dado
+- los movimientos que solo reordenan (`Relocate`, `Swap`, `2-Opt`) no cambian el fitness con el `SPLIT` vigente
+- los movimientos que sí cambian la solución real hoy son los que modifican membresía: `Delete`, `Add`, `SwapOut`
+
+La decisión arquitectónica vigente es mantener el `GiantTour` por coherencia genética y validación, pero activar en producción solo los operadores que cambian el conjunto de envíos.
 
 ---
 
-## Gestión de Población
+## Restricciones activas en este alcance
 
-```
-Poblacion
-├── factibles: List<Individuo>    (máx 25)  ← Soluciones válidas
-├── infactibles: List<Individuo>  (máx 25)  ← Soluciones con violaciones
-├── mejorHistorico: Individuo               ← Mejor factible encontrado
-└── diversidad: double                      ← Desviación estándar fitness
+El sistema actualmente evalúa:
 
-Reglas:
-• Al agregar: si factible → actualiza mejorHistorico si es mejor
-• Si excede tamaño → elimina el peor (mayor fitness)
-• Selección: torneo binario sobre ambas subpoblaciones
-```
+- capacidad de vuelo por maletas agregadas
+- deadline del envío
+- continuidad temporal de la ruta
+- carga remanente en almacenes por aeropuerto
+- penalización por no asignados
+
+### Detalle lógico de maletas y capacidades
+
+#### Vuelos
+
+- `GrafoVuelos` descarta vuelos cuya `capacidadDisponible` no alcance para el envío individual
+- `CalculadorFitness` recalcula la carga total por vuelo sumando las maletas de todos los envíos asignados
+- `Validador` reporta explícitamente cuando esa suma excede la capacidad del vuelo
+
+Esto hace que la factibilidad agregada de capacidad se verifique al nivel del individuo completo, no solo por envío aislado.
+
+#### Almacenes
+
+- `SimuladorEpocas` mantiene `AlmacenEstado` global por aeropuerto
+- cuando un envío llega a una época, sus maletas se registran en el almacén origen
+- cuando el envío es despachado, esas maletas se remueven del almacén origen
+- durante la optimización, los envíos no asignados representan la carga que permanece ocupando almacén
+- `CalculadorFitness` penaliza el exceso cuadrático de almacén y `Validador` lo convierte en observación explícita
+
+Por tanto, la unidad física que atraviesa toda la arquitectura es la **maleta**, no solo el conteo de envíos.
+
+## Restricciones fuera de alcance por ahora
+
+En este estado del sistema **no** se procesan:
+
+- cancelaciones de vuelos
+- replanificación por disrupciones
+- estados operativos dinámicos por incidente
 
 ---
 
-## Operadores de Búsqueda Local
+## Pruebas alineadas al estado actual
 
-| Operador | Tipo | Qué hace | Cuándo mejora |
-|----------|------|----------|---------------|
-| **DELETE** | DHGS | Remueve opcionales asignados | Vuelo sobrecargado |
-| **ADD** | DHGS | Inserta no-asignados vía SPLIT | Hay capacidad libre |
-| **SWAP-OUT** | DHGS | Intercambia dentro↔fuera | Reemplaza envío caro por barato |
-| **SWAP** | HGS | Intercambia posiciones en giant tour | Mejor orden para SPLIT |
-| **RELOCATE** | HGS | Mueve envío a otra posición | Mejor agrupación |
-| **2-OPT** | HGS | Invierte segmento del tour | Reduce distancia total |
+### Unitarias / integración ligera
+- `DomainModelTests`
+- `SimuladorEpocasTest`
+- `LocalSearchConsistencyTest`
+- `DHGSInstanciasDiariasTest`
+- `DHGSIntegrationTest`
 
-Todos usan **first-improvement**: aceptan el primer movimiento que mejora y reinician.
+### Datos reales
+- `DHGSExperimentacionNumericaTest`
+  - escenario DHGS con **3 días**
+  - escenario DHGS con **5 días**
+  - escenario DHGS con **7 días**
+  - fecha de inicio y parámetros leídos desde `test-experiment.properties`
+  - total de épocas derivado automáticamente del escenario activo
 
+Estas pruebas reflejan el estado funcional vigente del proyecto.

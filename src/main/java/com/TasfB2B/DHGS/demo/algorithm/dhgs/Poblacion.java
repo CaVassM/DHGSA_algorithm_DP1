@@ -32,6 +32,12 @@ public class Poblacion {
     public Individuo getMejorHistorico() { return mejorHistorico; }
     public double getDiversidad() { return diversidad; }
     public int getTamanoTotal() { return factibles.size() + infactibles.size(); }
+    public List<Individuo> getTodos() {
+        List<Individuo> todos = new ArrayList<>(factibles.size() + infactibles.size());
+        todos.addAll(factibles);
+        todos.addAll(infactibles);
+        return todos;
+    }
 
     /**
      * Calcula el ratio de soluciones factibles sobre el total.

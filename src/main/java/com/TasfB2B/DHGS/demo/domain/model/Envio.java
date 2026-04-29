@@ -102,13 +102,20 @@ public class Envio {
         if (!(o instanceof Envio envio)) {
             return false;
         }
-        return Objects.equals(id, envio.id);
+        return Objects.equals(id, envio.id)
+                && Objects.equals(codigoIcao(aeropuertoOrigen), codigoIcao(envio.aeropuertoOrigen))
+                && Objects.equals(codigoIcao(aeropuertoDestino), codigoIcao(envio.aeropuertoDestino))
+                && Objects.equals(fechaHoraCreacion, envio.fechaHoraCreacion);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(id);
+        return Objects.hash(id, codigoIcao(aeropuertoOrigen), codigoIcao(aeropuertoDestino), fechaHoraCreacion);
 
+    }
+
+    private String codigoIcao(Aeropuerto aeropuerto) {
+        return aeropuerto != null ? aeropuerto.getCodigoICAO() : null;
     }
 
 

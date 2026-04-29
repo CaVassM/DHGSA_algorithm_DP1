@@ -1,15 +1,19 @@
 package com.TasfB2B.DHGS.demo.infraestructure.util;
 
 import com.TasfB2B.DHGS.demo.domain.model.Aeropuerto;
+import com.TasfB2B.DHGS.demo.domain.model.InstanciaVuelo;
 import com.TasfB2B.DHGS.demo.domain.model.Vuelo;
 import org.springframework.stereotype.Component;
 
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.util.*;
 
 /**
  * Grafo dirigido de vuelos.
  * Los nodos son aeropuertos (código ICAO) y los arcos son vuelos programados.
- * Provee algoritmos de camino más corto (Dijkstra) para asignación de rutas.
+ * Para el horizonte operativo, los vuelos recurrentes se materializan como instancias diarias.
  */
 @Component
 public class GrafoVuelos {
@@ -23,155 +27,195 @@ public class GrafoVuelos {
     /** Matriz de distancias precalculada (ICAO_origen → ICAO_destino → distancia km) */
     private Map<String, Map<String, Double>> matrizDistancias;
 
+    private LocalDate fechaInicioOperacion;
+    private long horizonteDias;
+
     public GrafoVuelos() {
         this.adyacencia = new HashMap<>();
         this.aeropuertos = new HashMap<>();
         this.matrizDistancias = new HashMap<>();
+        this.horizonteDias = 0;
     }
 
-    // --- Getters ---
     public Map<String, List<Vuelo>> getAdyacencia() { return adyacencia; }
     public Map<String, Aeropuerto> getAeropuertos() { return aeropuertos; }
     public Map<String, Map<String, Double>> getMatrizDistancias() { return matrizDistancias; }
+    public LocalDate getFechaInicioOperacion() { return fechaInicioOperacion; }
+    public long getHorizonteDias() { return horizonteDias; }
 
     /**
-     * Construye el grafo a partir de listas de aeropuertos y vuelos.
+     * Construcción simple del grafo, manteniendo compatibilidad con pruebas unitarias básicas.
      */
     public void construir(List<Aeropuerto> listaAeropuertos, List<Vuelo> listaVuelos) {
+        this.fechaInicioOperacion = null;
+        this.horizonteDias = 0;
+        construirInterno(listaAeropuertos, listaVuelos);
+    }
+
+    /**
+     * Construye el grafo materializando un horizonte de vuelos recurrentes diarios.
+     */
+    public void construir(List<Aeropuerto> listaAeropuertos, List<Vuelo> plantillasVuelo,
+                          LocalDate fechaInicioOperacion, long horizonteDias) {
+        this.fechaInicioOperacion = fechaInicioOperacion;
+        this.horizonteDias = Math.max(1, horizonteDias);
+        List<Vuelo> materializados = materializarVuelos(plantillasVuelo, fechaInicioOperacion, this.horizonteDias);
+        construirInterno(listaAeropuertos, materializados);
+    }
+
+    public List<Vuelo> materializarVuelos(List<Vuelo> plantillasVuelo, LocalDate fechaInicioOperacion, long horizonteDias) {
+        if (plantillasVuelo == null || plantillasVuelo.isEmpty()) {
+            return Collections.emptyList();
+        }
+        if (fechaInicioOperacion == null) {
+            return new ArrayList<>(plantillasVuelo);
+        }
+
+        List<Vuelo> materializados = new ArrayList<>();
+        long dias = Math.max(1, horizonteDias);
+        for (Vuelo vuelo : plantillasVuelo) {
+            if (vuelo instanceof InstanciaVuelo) {
+                materializados.add(vuelo);
+                continue;
+            }
+            for (int offset = 0; offset < dias; offset++) {
+                materializados.add(InstanciaVuelo.desdePlantilla(vuelo, fechaInicioOperacion.plusDays(offset)));
+            }
+        }
+        return materializados;
+    }
+
+    private void construirInterno(List<Aeropuerto> listaAeropuertos, List<Vuelo> listaVuelos) {
         this.adyacencia.clear();
         this.aeropuertos.clear();
         this.matrizDistancias.clear();
 
-        // Registrar aeropuertos
         for (Aeropuerto a : listaAeropuertos) {
             aeropuertos.put(a.getCodigoICAO(), a);
             adyacencia.put(a.getCodigoICAO(), new ArrayList<>());
         }
 
-        // Registrar vuelos como arcos
         for (Vuelo v : listaVuelos) {
             String origenICAO = v.getAeropuertoOrigen().getCodigoICAO();
-            // Si no existe un aeropuertoc on ese codigo ICAO, entonces se crea un array, caso contrario,
-            // se agrega el vuelo a la lista de vuelos salientes
             adyacencia.computeIfAbsent(origenICAO, k -> new ArrayList<>()).add(v);
         }
 
-        // Precalcular matriz de distancias
+        adyacencia.values().forEach(lista -> lista.sort(Comparator.comparing(this::obtenerSalidaOrdenable)));
         calcularMatrizDistancias(listaAeropuertos);
     }
 
-    /**
-     * Obtiene todos los vuelos que salen de un aeropuerto.
-     */
-    public List<Vuelo> obtenerVuelosSalientes(String codigoICAO) {
-        // getOrDefault indica dar lista de vuelos que salen de ese aeropuerto, caso contrario, devuelve un alista vacia
-        return adyacencia.getOrDefault(codigoICAO, Collections.emptyList());
+    public List<Vuelo> obtenerVuelosSalientes(String codigoICAO, int cargaRequerida) {
+        return adyacencia.getOrDefault(codigoICAO, Collections.emptyList()).stream()
+                .filter(v -> v.estaDisponiblePara(cargaRequerida))
+                .toList();
     }
 
-    /**
-     * Encuentra la ruta más corta (menor tiempo total) entre dos aeropuertos
-     * usando Dijkstra sobre el grafo de vuelos.
-     *
-     * @return lista ordenada de vuelos que componen la ruta, o lista vacía si no hay conexión
-     */
+    private List<Vuelo> obtenerVuelosSalientes(String codigoICAO, int cargaRequerida, LocalDateTime noAntesDe) {
+        return adyacencia.getOrDefault(codigoICAO, Collections.emptyList()).stream()
+                .filter(v -> v.estaDisponiblePara(cargaRequerida))
+                .filter(v -> {
+                    LocalDateTime salida = obtenerSalidaProgramada(v, noAntesDe);
+                    return salida != null && !salida.isBefore(noAntesDe);
+                })
+                .toList();
+    }
+
     public List<Vuelo> dijkstraMenorTiempo(Aeropuerto origen, Aeropuerto destino) {
-        if (origen == null || destino == null) return Collections.emptyList();
+        LocalDateTime referencia = fechaInicioOperacion != null
+                ? fechaInicioOperacion.atStartOfDay()
+                : LocalDateTime.of(2026, 1, 1, 0, 0);
+        return dijkstraMenorTiempo(origen, destino, 0, referencia);
+    }
+
+    public List<Vuelo> dijkstraMenorTiempo(Aeropuerto origen, Aeropuerto destino, int cargaRequerida) {
+        LocalDateTime referencia = fechaInicioOperacion != null
+                ? fechaInicioOperacion.atStartOfDay()
+                : LocalDateTime.of(2026, 1, 1, 0, 0);
+        return dijkstraMenorTiempo(origen, destino, cargaRequerida, referencia);
+    }
+
+    public List<Vuelo> dijkstraMenorTiempo(Aeropuerto origen, Aeropuerto destino, int cargaRequerida, LocalDateTime salidaMinima) {
+        if (origen == null || destino == null || salidaMinima == null) {
+            return Collections.emptyList();
+        }
 
         String origenICAO = origen.getCodigoICAO();
         String destinoICAO = destino.getCodigoICAO();
 
-        // Dijkstra: nodo = código ICAO, peso = duración en minutos
-        Map<String, Long> distancias = new HashMap<>();
-        Map<String, Vuelo> predecesores = new HashMap<>(); // Para reconstruir ruta
-        Set<String> visitados = new HashSet<>();
+        Map<String, LocalDateTime> llegadaMasTemprana = new HashMap<>();
+        Map<String, Vuelo> predecesores = new HashMap<>();
+        PriorityQueue<EstadoRuta> cola = new PriorityQueue<>(Comparator.comparing(EstadoRuta::momento));
 
-        // PriorityQueue: (tiempo acumulado, código ICAO)
-        PriorityQueue<long[]> cola = new PriorityQueue<>(Comparator.comparingLong(a -> a[0]));
-
-        // Inicializar distancias como infinito
         for (String icao : adyacencia.keySet()) {
-            distancias.put(icao, Long.MAX_VALUE);
+            llegadaMasTemprana.put(icao, LocalDateTime.MAX);
         }
-        distancias.put(origenICAO, 0L);
-
-        // Usar hash del ICAO como identificador en la cola
-        Map<String, Integer> icaoToIndex = new HashMap<>();
-        List<String> indexToIcao = new ArrayList<>(adyacencia.keySet());
-        for (int i = 0; i < indexToIcao.size(); i++) {
-            icaoToIndex.put(indexToIcao.get(i), i);
-        }
-
-        Integer origenIdx = icaoToIndex.get(origenICAO);
-        if (origenIdx == null) return Collections.emptyList();
-
-        cola.offer(new long[]{0L, origenIdx});
+        llegadaMasTemprana.put(origenICAO, salidaMinima);
+        cola.offer(new EstadoRuta(origenICAO, salidaMinima));
 
         while (!cola.isEmpty()) {
-            long[] actual = cola.poll();
-            long tiempoActual = actual[0];
-            int idx = (int) actual[1];
-            String icaoActual = indexToIcao.get(idx);
-
-            if (visitados.contains(icaoActual)) continue;
-            visitados.add(icaoActual);
-
-            // Si llegamos al destino, reconstruir ruta
-            if (icaoActual.equals(destinoICAO)) {
+            EstadoRuta actual = cola.poll();
+            LocalDateTime mejorConocida = llegadaMasTemprana.get(actual.icao());
+            if (mejorConocida != null && actual.momento().isAfter(mejorConocida)) {
+                continue;
+            }
+            if (actual.icao().equals(destinoICAO)) {
                 return reconstruirRuta(predecesores, origenICAO, destinoICAO);
             }
 
-            // Explorar vuelos salientes
-            for (Vuelo vuelo : obtenerVuelosSalientes(icaoActual)) {
+            for (Vuelo vuelo : obtenerVuelosSalientes(actual.icao(), cargaRequerida, actual.momento())) {
+                LocalDateTime salida = obtenerSalidaProgramada(vuelo, actual.momento());
+                LocalDateTime llegada = obtenerLlegadaProgramada(vuelo, actual.momento());
+                if (salida == null || llegada == null || llegada.isBefore(salida)) {
+                    continue;
+                }
+
                 String vecino = vuelo.getAeropuertoDestino().getCodigoICAO();
-                if (visitados.contains(vecino)) continue;
-
-                long tiempoVuelo = vuelo.getTiempoVuelo();
-                long nuevoTiempo = tiempoActual + tiempoVuelo;
-
-                if (nuevoTiempo < distancias.getOrDefault(vecino, Long.MAX_VALUE)) {
-                    distancias.put(vecino, nuevoTiempo);
+                LocalDateTime llegadaActual = llegadaMasTemprana.getOrDefault(vecino, LocalDateTime.MAX);
+                if (llegada.isBefore(llegadaActual)) {
+                    llegadaMasTemprana.put(vecino, llegada);
                     predecesores.put(vecino, vuelo);
-                    Integer vecinoIdx = icaoToIndex.get(vecino);
-                    if (vecinoIdx != null) {
-                        cola.offer(new long[]{nuevoTiempo, vecinoIdx});
-                    }
+                    cola.offer(new EstadoRuta(vecino, llegada));
                 }
             }
         }
 
-        return Collections.emptyList(); // No hay ruta
+        return Collections.emptyList();
     }
 
-    /**
-     * Encuentra las K rutas más cortas entre dos aeropuertos.
-     * Usa variante de Yen's K-shortest paths simplificada.
-     *
-     * @return lista de rutas (cada ruta es una lista de vuelos), ordenadas por tiempo
-     */
     public List<List<Vuelo>> encontrarKRutas(Aeropuerto origen, Aeropuerto destino, int k) {
-        List<List<Vuelo>> rutas = new ArrayList<>();
+        LocalDateTime referencia = fechaInicioOperacion != null
+                ? fechaInicioOperacion.atStartOfDay()
+                : LocalDateTime.of(2026, 1, 1, 0, 0);
+        return encontrarKRutas(origen, destino, k, 0, referencia);
+    }
 
-        // Primera ruta: Dijkstra normal
-        List<Vuelo> rutaMasCorta = dijkstraMenorTiempo(origen, destino);
+    public List<List<Vuelo>> encontrarKRutas(Aeropuerto origen, Aeropuerto destino, int k, int cargaRequerida) {
+        LocalDateTime referencia = fechaInicioOperacion != null
+                ? fechaInicioOperacion.atStartOfDay()
+                : LocalDateTime.of(2026, 1, 1, 0, 0);
+        return encontrarKRutas(origen, destino, k, cargaRequerida, referencia);
+    }
+
+    public List<List<Vuelo>> encontrarKRutas(Aeropuerto origen, Aeropuerto destino, int k,
+                                             int cargaRequerida, LocalDateTime salidaMinima) {
+        List<List<Vuelo>> rutas = new ArrayList<>();
+        List<Vuelo> rutaMasCorta = dijkstraMenorTiempo(origen, destino, cargaRequerida, salidaMinima);
         if (rutaMasCorta.isEmpty()) return rutas;
 
         rutas.add(rutaMasCorta);
-
-        // Para k > 1: generar rutas alternativas eliminando arcos
-        // TODO: Implementar Yen's K-shortest paths completo
-        // Por ahora retornamos solo la ruta principal
         if (k <= 1) return rutas;
 
-        // Buscar rutas alternativas explorando vecinos intermedios
         for (String icaoIntermedio : adyacencia.keySet()) {
-            if (icaoIntermedio.equals(origen.getCodigoICAO()) ||
-                icaoIntermedio.equals(destino.getCodigoICAO())) continue;
+            if (icaoIntermedio.equals(origen.getCodigoICAO()) || icaoIntermedio.equals(destino.getCodigoICAO())) {
+                continue;
+            }
 
             Aeropuerto intermedio = aeropuertos.get(icaoIntermedio);
             if (intermedio == null) continue;
 
-            List<Vuelo> tramo1 = dijkstraMenorTiempo(origen, intermedio);
-            List<Vuelo> tramo2 = dijkstraMenorTiempo(intermedio, destino);
+            List<Vuelo> tramo1 = dijkstraMenorTiempo(origen, intermedio, cargaRequerida, salidaMinima);
+            LocalDateTime llegadaIntermedia = obtenerLlegadaUltimoTramo(tramo1, salidaMinima);
+            List<Vuelo> tramo2 = dijkstraMenorTiempo(intermedio, destino, cargaRequerida, llegadaIntermedia);
 
             if (!tramo1.isEmpty() && !tramo2.isEmpty()) {
                 List<Vuelo> rutaAlternativa = new ArrayList<>(tramo1);
@@ -182,29 +226,16 @@ public class GrafoVuelos {
             if (rutas.size() >= k) break;
         }
 
-        // Ordenar por tiempo total
-        rutas.sort(Comparator.comparingLong(ruta ->
-                ruta.stream().mapToLong(Vuelo::getTiempoVuelo).sum()));
-
+        rutas.sort(Comparator.comparing(this::obtenerTiempoTotalRuta));
         return rutas.subList(0, Math.min(k, rutas.size()));
     }
 
-    /**
-     * Obtiene la distancia precalculada entre dos aeropuertos.
-     */
     public double getDistancia(String origenICAO, String destinoICAO) {
-        // Devuelve fila del aeropuerto origen
-        // Si no, se devuelve un mapa vacio
-        // El 2do es, dentro de la fila, dar la distancai al destino
-        // caso contrario, un valor enorme para indicar que no hay conexión directa
         return matrizDistancias
                 .getOrDefault(origenICAO, Collections.emptyMap())
                 .getOrDefault(destinoICAO, Double.MAX_VALUE);
     }
 
-    /**
-     * Verifica si existe al menos una ruta entre dos aeropuertos.
-     */
     public boolean existeConexion(String origenICAO, String destinoICAO) {
         Aeropuerto origen = aeropuertos.get(origenICAO);
         Aeropuerto destino = aeropuertos.get(destinoICAO);
@@ -212,11 +243,6 @@ public class GrafoVuelos {
         return !dijkstraMenorTiempo(origen, destino).isEmpty();
     }
 
-    // --- Métodos privados ---
-
-    /**
-     * Reconstruye la ruta de vuelos desde origen hasta destino usando el mapa de predecesores.
-     */
     private List<Vuelo> reconstruirRuta(Map<String, Vuelo> predecesores, String origenICAO, String destinoICAO) {
         List<Vuelo> ruta = new ArrayList<>();
         String actual = destinoICAO;
@@ -231,9 +257,69 @@ public class GrafoVuelos {
         return ruta;
     }
 
-    /**
-     * Precalcula la matriz de distancias Haversine entre todos los pares de aeropuertos.
-     */
+    private LocalDateTime obtenerSalidaProgramada(Vuelo vuelo, LocalDateTime referencia) {
+        if (vuelo instanceof InstanciaVuelo instancia) {
+            return instancia.getFechaHoraSalida();
+        }
+        if (vuelo.getHoraSalida() == null) {
+            return null;
+        }
+        LocalDateTime base = LocalDateTime.of(referencia.toLocalDate(), vuelo.getHoraSalida());
+        while (base.isBefore(referencia)) {
+            base = base.plusDays(1);
+        }
+        return base;
+    }
+
+    private LocalDateTime obtenerLlegadaProgramada(Vuelo vuelo, LocalDateTime referencia) {
+        if (vuelo instanceof InstanciaVuelo instancia) {
+            return instancia.getFechaHoraLlegada();
+        }
+        LocalDateTime salida = obtenerSalidaProgramada(vuelo, referencia);
+        if (salida == null) {
+            return null;
+        }
+        return salida.plus(vuelo.getDuracion() != null ? vuelo.getDuracion() : java.time.Duration.ofMinutes(vuelo.getTiempoVuelo()));
+    }
+
+    private LocalDateTime obtenerSalidaOrdenable(Vuelo vuelo) {
+        if (vuelo instanceof InstanciaVuelo instancia && instancia.getFechaHoraSalida() != null) {
+            return instancia.getFechaHoraSalida();
+        }
+        LocalTime horaSalida = vuelo.getHoraSalida() != null ? vuelo.getHoraSalida() : LocalTime.MIDNIGHT;
+        LocalDate fecha = fechaInicioOperacion != null ? fechaInicioOperacion : LocalDate.of(2026, 1, 1);
+        return LocalDateTime.of(fecha, horaSalida);
+    }
+
+    private LocalDateTime obtenerLlegadaUltimoTramo(List<Vuelo> ruta, LocalDateTime referencia) {
+        if (ruta == null || ruta.isEmpty()) {
+            return referencia;
+        }
+        Vuelo ultimo = ruta.get(ruta.size() - 1);
+        return obtenerLlegadaProgramada(ultimo, referencia);
+    }
+
+    private long obtenerTiempoTotalRuta(List<Vuelo> ruta) {
+        if (ruta == null || ruta.isEmpty()) {
+            return Long.MAX_VALUE;
+        }
+        Vuelo primero = ruta.get(0);
+        LocalDateTime salida = obtenerSalidaProgramada(primero, fechaInicioOperacion != null
+                ? fechaInicioOperacion.atStartOfDay()
+                : LocalDateTime.of(2026, 1, 1, 0, 0));
+        if (salida == null) {
+            return Long.MAX_VALUE;
+        }
+        LocalDateTime llegada = salida;
+        for (Vuelo vuelo : ruta) {
+            llegada = obtenerLlegadaProgramada(vuelo, llegada);
+            if (llegada == null) {
+                return Long.MAX_VALUE;
+            }
+        }
+        return java.time.Duration.between(salida, llegada).toMinutes();
+    }
+
     private void calcularMatrizDistancias(List<Aeropuerto> listaAeropuertos) {
         for (Aeropuerto a : listaAeropuertos) {
             Map<String, Double> fila = new HashMap<>();
@@ -242,14 +328,18 @@ public class GrafoVuelos {
             }
             matrizDistancias.put(a.getCodigoICAO(), fila);
         }
-        // SPIM → SCEL -> 2500 km
     }
 
     @Override
     public String toString() {
-        return String.format("GrafoVuelos[aeropuertos=%d, vuelosTotales=%d]",
+        return String.format("GrafoVuelos[aeropuertos=%d, vuelosTotales=%d, inicio=%s, dias=%d]",
                 aeropuertos.size(),
-                adyacencia.values().stream().mapToInt(List::size).sum());
+                adyacencia.values().stream().mapToInt(List::size).sum(),
+                fechaInicioOperacion,
+                horizonteDias);
+    }
+
+    private record EstadoRuta(String icao, LocalDateTime momento) {
     }
 }
 

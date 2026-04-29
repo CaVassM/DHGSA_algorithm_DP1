@@ -69,7 +69,9 @@ public class AlgoritmoSPLIT {
 
         List<Vuelo> vuelosMejorRuta = grafoVuelos.dijkstraMenorTiempo(
                 envio.getAeropuertoOrigen(),
-                envio.getAeropuertoDestino()
+                envio.getAeropuertoDestino(),
+                envio.getCantidadMaletas(),
+                envio.getFechaHoraCreacion()
         );
 
         if (vuelosMejorRuta.isEmpty()) {
@@ -105,7 +107,9 @@ public class AlgoritmoSPLIT {
             List<List<Vuelo>> alternativas = grafoVuelos.encontrarKRutas(
                     envio.getAeropuertoOrigen(),
                     envio.getAeropuertoDestino(),
-                    kAlternativas
+                    kAlternativas,
+                    envio.getCantidadMaletas(),
+                    envio.getFechaHoraCreacion()
             );
 
             if (alternativas.isEmpty()) continue;

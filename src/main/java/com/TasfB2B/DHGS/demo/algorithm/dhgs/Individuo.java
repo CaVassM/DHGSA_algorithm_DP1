@@ -24,6 +24,7 @@ public class Individuo {
     private double lateness; // Suma de urgencias
     private double violacionesCapacidad; // Penalizacion
     private double violacionesTiempo; // Penalizacion
+    private double violacionesAlmacen; // Penalización por exceder capacidad de almacenes
 
     // Resultado final
     private double fitness;
@@ -38,6 +39,7 @@ public class Individuo {
         this.lateness = 0.0;
         this.violacionesCapacidad = 0.0;
         this.violacionesTiempo = 0.0;
+        this.violacionesAlmacen = 0.0;
         this.fitness = 0.0;
         this.esFactible = false;
     }
@@ -110,7 +112,8 @@ public class Individuo {
 
         this.esFactible = todasFactibles
                 && this.violacionesCapacidad <= 0
-                && this.violacionesTiempo <= 0;
+                && this.violacionesTiempo <= 0
+                && this.violacionesAlmacen <= 0;
 
         return this.esFactible;
     }
@@ -123,6 +126,7 @@ public class Individuo {
 
         violaciones.put("violacionesCapacidad", this.violacionesCapacidad);
         violaciones.put("violacionesTiempo", this.violacionesTiempo);
+        violaciones.put("violacionesAlmacen", this.violacionesAlmacen);
         violaciones.put("lateness", this.lateness);
 
         // Contar must-go no asignados
@@ -174,6 +178,7 @@ public class Individuo {
         copia.setLateness(this.lateness);
         copia.setViolacionesCapacidad(this.violacionesCapacidad);
         copia.setViolacionesTiempo(this.violacionesTiempo);
+        copia.setViolacionesAlmacen(this.violacionesAlmacen);
         copia.setFitness(this.fitness);
         copia.setEsFactible(this.esFactible);
 

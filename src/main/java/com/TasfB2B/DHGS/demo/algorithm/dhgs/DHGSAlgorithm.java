@@ -17,39 +17,19 @@ import java.util.*;
 
 /**
  * Algoritmo principal DHGS (Dynamic Hybrid Genetic Search) adaptado a Tasf.B2B.
- *
- * ENTRADA POR ÉPOCA:
- * - epocaActual, totalEpocas
- * - envios (must-go + opcionales)
- * - límite de tiempo
- *
- * SALIDA:
- * - Mejor individuo (solución) con envíos a despachar y rutas óptimas
- *
- * FLUJO:
- * 1. Preparación de datos
- * 2. Inicialización de población
- * 3. Loop genético (selección → crossover → local search → evaluación → gestión)
- * 4. Retorno de mejor solución
- *
- * FITNESS = distanciaTotal + 1000 × Σmax(0, carga−cap)² + 5000 × Σmax(0, retraso)²
+ * En este primer scope opera en condiciones ideales, sin cancelaciones de vuelos.
  */
 public class DHGSAlgorithm {
 
     private static final Logger log = LoggerFactory.getLogger(DHGSAlgorithm.class);
     private static final int ITERACIONES_AJUSTE_PENALIZACION = 100;
 
-    // Componentes
     private final ConstructorSolucionesIniciales constructorSoluciones;
     private final AlgoritmoSPLIT split;
     private final CalculadorFitness calculadorFitness;
     private final Validador validador;
-
-    // Operadores genéticos
     private final CrossoverOperator crossover;
     private final List<LocalSearch> operadoresLocalSearch;
-
-    // Parámetros
     private final ParametrosPenalizacion parametros;
 
     public DHGSAlgorithm(ConstructorSolucionesIniciales constructorSoluciones,
@@ -61,16 +41,11 @@ public class DHGSAlgorithm {
         this.calculadorFitness = calculadorFitness;
         this.validador = validador;
         this.parametros = new ParametrosPenalizacion();
-
-        // Inicializar operadores
         this.crossover = new OXCrossover();
         this.operadoresLocalSearch = List.of(
                 new LocalSearchDelete(),
                 new LocalSearchAdd(),
-                new LocalSearchSwapOut(),
-                new LocalSearchRelocate(),
-                new LocalSearchSwap(),
-                new LocalSearch2Opt()
+                new LocalSearchSwapOut()
         );
     }
 
@@ -87,18 +62,17 @@ public class DHGSAlgorithm {
     public Individuo ejecutar(List<Envio> envios, int epocaActual, int totalEpocas,
                               int tamanoPoblacion, Duration limiteTiempo) {
 
+        if (envios == null || envios.isEmpty()) {
+            log.warn("DHGS invocado sin envíos para época {}", epocaActual);
+            return null;
+        }
+
         log.info("DHGS iniciando - Época {}/{}, {} envíos, límite: {}s",
                 epocaActual, totalEpocas, envios.size(), limiteTiempo.getSeconds());
 
         Instant inicio = Instant.now();
+        LocalSearchContext ctx = new LocalSearchContext(split, calculadorFitness, epocaActual, totalEpocas, envios);
 
-        // Crear contexto para operadores de búsqueda local
-        LocalSearchContext ctx = new LocalSearchContext(split, calculadorFitness, epocaActual, totalEpocas);
-
-        // === PASO 1: PREPARACIÓN ===
-        // (must-go ya actualizado por SimuladorEpocas)
-
-        // === PASO 2: INICIALIZACIÓN DE POBLACIÓN ===
         List<Individuo> poblacionInicial = constructorSoluciones.generarPoblacionInicial(
                 envios, epocaActual, totalEpocas, tamanoPoblacion);
 
@@ -109,38 +83,27 @@ public class DHGSAlgorithm {
 
         log.info("Población inicial: {}", poblacion);
 
-        // === PASO 3: LOOP GENÉTICO ===
         int iteracion = 0;
-        boolean tiempoAgotado = false;
-
-        while (!tiempoAgotado) {
+        while (true) {
             iteracion++;
 
-            // Verificar tiempo
             Duration transcurrido = Duration.between(inicio, Instant.now());
             if (transcurrido.compareTo(limiteTiempo) >= 0) {
-                tiempoAgotado = true;
                 break;
             }
 
-            // Verificar estancamiento
             if (poblacion.estaEstancada(0.001)) {
                 log.info("Población estancada en iteración {}", iteracion);
                 break;
             }
 
             try {
-                // --- 3.1 SELECCIÓN DE PADRES ---
                 Poblacion.Par<Individuo, Individuo> padres = poblacion.seleccionarPadres();
-
-                // --- 3.2 CROSSOVER ---
                 Individuo hijo = crossover.cruzar(padres.primero(), padres.segundo());
 
-                // Aplicar SPLIT para crear rutas desde el giant tour del hijo
                 Map<Envio, RutaEnvio> asignaciones = split.split(hijo.getRepresentacionGigante());
                 hijo.setEnviosAsignados(asignaciones);
 
-                // Determinar no asignados
                 List<Envio> noAsignados = new ArrayList<>();
                 for (Envio e : envios) {
                     if (!asignaciones.containsKey(e)) {
@@ -149,20 +112,15 @@ public class DHGSAlgorithm {
                 }
                 hijo.setEnviosNoAsignados(noAsignados);
 
-                // --- 3.3 LOCAL SEARCH (con contexto) ---
                 for (LocalSearch ls : operadoresLocalSearch) {
                     hijo = ls.aplicar(hijo, ctx);
                 }
 
-                // --- 3.4 EVALUACIÓN ---
                 calculadorFitness.calcularViolaciones(hijo);
                 calculadorFitness.calcular(hijo, epocaActual, totalEpocas);
                 hijo.validarFactibilidad();
-
-                // --- 3.5 GESTIÓN DE POBLACIÓN ---
                 poblacion.agregar(hijo);
 
-                // --- 3.6 AJUSTE DE PENALIZACIONES ---
                 if (iteracion % ITERACIONES_AJUSTE_PENALIZACION == 0) {
                     parametros.ajustar(poblacion.getRatioFactibles());
                     calculadorFitness.setParametros(parametros);
@@ -175,19 +133,24 @@ public class DHGSAlgorithm {
             }
         }
 
-        // === PASO 4: RETORNO DE MEJOR SOLUCIÓN ===
         Individuo mejor = poblacion.getMejorHistorico();
-
         if (mejor == null && !poblacion.getFactibles().isEmpty()) {
             mejor = poblacion.getFactibles().stream()
                     .min(Comparator.comparingDouble(Individuo::getFitness))
                     .orElse(null);
         }
-
         if (mejor == null && !poblacion.getInfactibles().isEmpty()) {
             mejor = poblacion.getInfactibles().stream()
                     .min(Comparator.comparingDouble(Individuo::getFitness))
                     .orElse(null);
+        }
+
+        if (mejor != null) {
+            mejor.validarFactibilidad();
+            List<String> violaciones = validador.validarIndividuo(mejor);
+            if (!violaciones.isEmpty()) {
+                log.debug("Mejor individuo con {} observaciones de validación", violaciones.size());
+            }
         }
 
         Duration tiempoTotal = Duration.between(inicio, Instant.now());

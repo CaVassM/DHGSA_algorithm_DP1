@@ -44,10 +44,14 @@ public class LocalSearchSwapOut implements LocalSearch {
                     Individuo prueba = mejor.clonar();
                     // Sacar el de dentro
                     prueba.getEnviosAsignados().remove(eDentro);
-                    prueba.getEnviosNoAsignados().add(eDentro);
+                    if (!prueba.getEnviosNoAsignados().contains(eDentro)) {
+                        prueba.getEnviosNoAsignados().add(eDentro);
+                    }
                     // Meter el de fuera
                     prueba.getEnviosAsignados().put(eFuera, rutaNueva);
                     prueba.getEnviosNoAsignados().remove(eFuera);
+                    prueba.setRepresentacionGigante(
+                            ctx.reemplazarEnTour(prueba.getRepresentacionGigante(), eDentro, eFuera));
 
                     double fitnessPrueba = ctx.evaluar(prueba);
 

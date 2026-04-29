@@ -28,6 +28,17 @@ public class AlmacenEstado {
         return (double) maletasActuales / aeropuerto.getCapacidadAlmacen();
 
     }
+    // Que paso con esto?
+    public boolean excedeCapacidad() {
+        return getExcesoCapacidad() > 0;
+    }
+
+    public int getExcesoCapacidad() {
+        if (aeropuerto == null) {
+            return 0;
+        }
+        return Math.max(0, maletasActuales - Math.max(0, aeropuerto.getCapacidadAlmacen()));
+    }
 
     public void agregarEnvio(Envio envio){
         if (envio == null) {

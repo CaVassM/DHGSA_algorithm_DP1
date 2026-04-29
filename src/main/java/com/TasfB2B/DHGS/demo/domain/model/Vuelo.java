@@ -24,6 +24,7 @@ public class Vuelo {
     private LocalTime horaSalida;
     private LocalTime horaLlegada;
     private int capacidad; // CRITICO para no sobrecargar vuelo
+    private int capacidadDisponible; // Capacidad residual considerando asignaciones previas
     private double distancia; // Kilometros calculado con Haversine
     private Duration duracion; // Tiempo de vuelo calculado
 
@@ -44,6 +45,38 @@ public class Vuelo {
             this.duracion = this.duracion.plusHours(24);
         }
         return this.duracion.toMinutes();
+    }
+
+    public void setCapacidad(int capacidad) {
+        this.capacidad = capacidad;
+        if (this.capacidadDisponible <= 0 || this.capacidadDisponible > capacidad) {
+            this.capacidadDisponible = Math.max(0, capacidad);
+        }
+    }
+
+    public boolean estaOperable() {
+        return true;
+    }
+
+    public boolean estaDisponiblePara(int cantidadMaletas) {
+        return cantidadMaletas >= 0
+                && capacidadDisponible >= cantidadMaletas;
+    }
+
+
+    public boolean registrarAsignacion(int cantidadMaletas) {
+        if (!estaDisponiblePara(cantidadMaletas)) {
+            return false;
+        }
+        this.capacidadDisponible -= cantidadMaletas;
+        return true;
+    }
+
+    public void liberarCapacidad(int cantidadMaletas) {
+        if (cantidadMaletas <= 0) {
+            return;
+        }
+        this.capacidadDisponible = Math.min(capacidad, capacidadDisponible + cantidadMaletas);
     }
 
     @Override

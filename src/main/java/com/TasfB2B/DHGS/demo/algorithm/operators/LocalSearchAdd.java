@@ -5,7 +5,6 @@ import com.TasfB2B.DHGS.demo.domain.model.Envio;
 import com.TasfB2B.DHGS.demo.domain.model.RutaEnvio;
 
 import java.util.*;
-import java.util.stream.Collectors;
 
 /**
  * Operador ADD: inserta envíos no asignados en la mejor posición posible.
@@ -45,6 +44,8 @@ public class LocalSearchAdd implements LocalSearch {
                 Individuo prueba = mejor.clonar();
                 prueba.getEnviosAsignados().put(candidato, ruta);
                 prueba.getEnviosNoAsignados().remove(candidato);
+                prueba.setRepresentacionGigante(
+                        ctx.agregarAlTour(prueba.getRepresentacionGigante(), candidato));
 
                 double fitnessPrueba = ctx.evaluar(prueba);
 

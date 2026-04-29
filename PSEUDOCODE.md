@@ -1,377 +1,376 @@
-# Pseudocódigo — Algoritmo DHGS para Asignación de Maletas a Vuelos
+# Pseudocódigo — DHGS con vuelos recurrentes materializados
 
-## Entrada
+## Entrada conceptual
 
-```
+```text
 ENTRADA:
-  envios[]         ← Lista de envíos (origen, destino, maletas, deadline, esMustGo)
-  vuelos[]         ← Lista de vuelos (origen, destino, horaSalida, horaLlegada, capacidad)
-  aeropuertos[]    ← Lista de aeropuertos (ICAO, coordenadas, capacidadAlmacén)
-  epocaActual      ← Número de época
-  totalEpocas      ← Total de épocas en simulación
-  limiteTiempo     ← Tiempo máximo de ejecución
+  aeropuertos[]            ← lista de aeropuertos
+  vuelosPlantilla[]        ← vuelos recurrentes base
+  enviosTotales[]          ← envíos con fechaHoraCreacion y deadline
+  fechaInicioSimulacion    ← explícita o derivada del primer envío
+  duracionSimulacionDias   ← configurable (3, 5 o 7 en la suite de referencia)
+  duracionEpocaHoras       ← parámetro configurable (4 en la suite de referencia)
+  tamanoPoblacion          ← parámetro DHGS configurable
+  limiteTiempoPorEpoca     ← parámetro DHGS configurable
 ```
 
-## Salida
+## Salida conceptual
 
-```
+```text
 SALIDA:
-  mejorSolucion    ← Individuo con:
-                       - envío → secuencia de vuelos
-                       - envíos no asignados
-                       - fitness
-                       - costoDistanciaTotal
-                       - violacionesCapacidad
-                       - violacionesTiempo
-                       - lateness
-                       - esFactible
+  historialEpocas[]
+  mejorSolucionPorEpoca
+  costoTotal
+  enviosDespachados
+  enviosPostpuestos
 ```
 
 ---
 
-## Fase 0: Construcción del Grafo
+## Fase 0 — Construcción del horizonte de simulación
 
+```text
+FUNCIÓN prepararHorizonte(enviosTotales, fechaInicioSimulacion, duracionSimulacionDias):
+    SI fechaInicioSimulacion es null:
+        fechaInicio ← inicio del día anterior al primer envío
+    SINO:
+        fechaInicio ← fechaInicioSimulacion
+
+    fechaFin ← fechaInicio + duracionSimulacionDias días
+
+    RETORNAR [fechaInicio, fechaFin)
 ```
-FUNCIÓN construirGrafo(aeropuertos, vuelos):
-    grafo ← nuevo GrafoDirigido
 
-    PARA CADA aeropuerto EN aeropuertos:
-        grafo.agregarNodo(aeropuerto.ICAO)
+---
 
-    PARA CADA vuelo EN vuelos:
-        grafo.agregarArco(
-            origen  = vuelo.aeropuertoOrigen.ICAO,
-            destino = vuelo.aeropuertoDestino.ICAO,
-            peso    = vuelo.duracionMinutos
-        )
+## Fase 1 — Generación de épocas
 
-    // Precalcular matriz de distancias (Haversine)
-    PARA CADA par (a, b) EN aeropuertos × aeropuertos:
-        matrizDistancias[a][b] = haversine(a.lat, a.lon, b.lat, b.lon)
+```text
+FUNCIÓN organizarEnEpocas(enviosTotales, fechaInicio, duracionEpocaHoras=4, dias):
+    historial ← []
+    finSimulacion ← fechaInicio + dias días
+    inicioEpoca ← fechaInicio
+    numeroEpoca ← 1
+
+    MIENTRAS inicioEpoca < finSimulacion:
+        finEpoca ← inicioEpoca + 4 horas
+
+        enviosNuevos ← filtrar enviosTotales tales que:
+            envio.fechaHoraCreacion ∈ [inicioEpoca, finEpoca)
+
+        epoca ← nueva EpocaData(numeroEpoca, inicioEpoca, finEpoca)
+        epoca.enviosNuevos ← enviosNuevos
+        historial.agregar(epoca)
+
+        inicioEpoca ← finEpoca
+        numeroEpoca++
+
+    RETORNAR historial    ← (dias × 24 / duracionEpocaHoras) épocas
+```
+
+---
+
+## Fase 2 — Materialización de vuelos diarios
+
+```text
+FUNCIÓN materializarVuelos(vuelosPlantilla, fechaInicio, dias):
+    instancias ← []
+
+    PARA CADA vuelo EN vuelosPlantilla:
+        PARA offset DESDE 0 HASTA dias - 1:
+            fechaOperacion ← fechaInicio + offset días
+
+            instancia ← nueva InstanciaVuelo
+            instancia.idPlantilla ← vuelo.id
+            instancia.id ← vuelo.id + "@" + fechaOperacion
+            instancia.fechaOperacion ← fechaOperacion
+            instancia.origen ← vuelo.origen
+            instancia.destino ← vuelo.destino
+            instancia.capacidad ← vuelo.capacidad
+            instancia.capacidadDisponible ← vuelo.capacidad
+            instancia.fechaHoraSalida ← combinar(fechaOperacion, vuelo.horaSalida)
+            instancia.fechaHoraLlegada ← instancia.fechaHoraSalida + vuelo.duracion
+
+            instancias.agregar(instancia)
+
+    RETORNAR instancias
+```
+
+---
+
+## Fase 3 — Construcción del grafo operativo
+
+```text
+FUNCIÓN construirGrafo(aeropuertos, vuelosPlantilla, fechaInicio, dias):
+    vuelosInstanciados ← materializarVuelos(vuelosPlantilla, fechaInicio, dias)
+
+    grafo.nodos ← aeropuertos
+    grafo.arcos ← vuelosInstanciados
+
+    PARA CADA aeropuerto:
+        registrar lista de salidas
+
+    PARA CADA instanciaVuelo:
+        agregar a adyacencia[instanciaVuelo.origen]
+
+    ordenar las salidas por fechaHoraSalida
 
     RETORNAR grafo
 ```
 
 ---
 
-## Fase 1: SPLIT (Asignación Envío → Ruta)
+## Fase 4 — Preparación de una época
 
-```
-FUNCIÓN split(giantTour, grafo):
-    asignaciones ← mapa vacío
+```text
+FUNCIÓN prepararEpoca(epoca, pendientes):
+    epoca.enviosPendientes ← pendientes
+    enviosDisponibles ← epoca.enviosNuevos + epoca.enviosPendientes
 
-    PARA CADA envio EN giantTour:
-        ruta ← dijkstra(grafo, envio.origen, envio.destino)
+    PARA CADA envio EN enviosDisponibles:
+        envio.actualizarMustGo(epoca.inicio, margenHoras=8)
+        envio.calcularPrioridad(epoca.inicio)
 
-        SI ruta NO está vacía:
-            rutaEnvio ← nueva RutaEnvio(envio, ruta)
-            rutaEnvio.calcularTiempos()
-            asignaciones[envio] = rutaEnvio
-
-    RETORNAR asignaciones
+    RETORNAR enviosDisponibles
 ```
 
 ---
 
-## Fase 2: Función de Fitness
+## Fase 5 — SPLIT con rutas temporales
 
+```text
+FUNCIÓN asignarMejorRuta(envio, grafo):
+    rutaVuelos ← dijkstraTemporal(
+        origen = envio.origen,
+        destino = envio.destino,
+        carga = envio.maletas,
+        salidaMinima = envio.fechaHoraCreacion
+    )
+
+    SI rutaVuelos está vacía:
+        RETORNAR null
+
+    ruta ← nueva RutaEnvio
+    ruta.envio ← envio
+    ruta.secuenciaVuelos ← rutaVuelos
+    ruta.calcularTiempos()
+
+    RETORNAR ruta
 ```
-FUNCIÓN calcularFitness(individuo):
 
-    SI individuo.enviosAsignados está vacío:
-        RETORNAR +∞
+### Nota importante sobre el `GiantTour` actual
 
-    // === Componente 1: Distancia total ===
-    distanciaTotal ← 0
-    PARA CADA (envio, ruta) EN individuo.enviosAsignados:
-        distanciaTotal += ruta.costo
+```text
+En la versión vigente:
+  split(giantTour) procesa cada envío del giantTour de forma independiente.
 
-    // === Componente 2: Violación de capacidad (cuadrática) ===
-    cargaPorVuelo ← mapa vacío
-    PARA CADA (envio, ruta) EN individuo.enviosAsignados:
-        PARA CADA vuelo EN ruta.secuenciaVuelos:
-            cargaPorVuelo[vuelo] += envio.cantidadMaletas
+Entonces:
+  - el conjunto de envíos sí importa
+  - el orden del giantTour todavía no cambia la ruta elegida para un envío
 
-    violCapacidad ← 0
-    PARA CADA (vuelo, carga) EN cargaPorVuelo:
-        exceso ← max(0, carga - vuelo.capacidad)
-        violCapacidad += exceso²                     ← CUADRÁTICA
+Conclusión:
+  hoy DHGS optimiza principalmente qué envíos entran o salen de la solución,
+  no la secuencia interna del tour como en un HGS de ruteo clásico.
+```
 
-    // === Componente 3: Violación de tiempo (cuadrática) ===
-    violTiempo ← 0
-    lateness ← 0
-    PARA CADA (envio, ruta) EN individuo.enviosAsignados:
-        retraso ← max(0, ruta.tiempoLlegada - envio.deadline) EN minutos
-        violTiempo += retraso²                       ← CUADRÁTICA
-        lateness += retraso                          ← SOLO MÉTRICA DIAGNÓSTICA
+### Dijkstra temporal simplificado
 
-    // === Componente 4: Penalización por envíos no asignados ===
-    penNoAsignados ← 0
-    PARA CADA envio EN individuo.enviosNoAsignados:
-        costoEstimado ← distancia(envio.origen, envio.destino) × envio.maletas
-        SI envio.esMustGo:
-            penNoAsignados += max(10000, costoEstimado × 10)
-        SINO:
-            penNoAsignados += max(10000, costoEstimado × 2)
+```text
+FUNCIÓN dijkstraTemporal(origen, destino, carga, salidaMinima):
+    llegadaMasTemprana[origen] ← salidaMinima
+    cola ← prioridad por fechaHora
 
-    // === Fitness final ===
-    fitness ← distanciaTotal
-            + penCapacidadActual × violCapacidad
-            + penTiempoActual × violTiempo
-            + penNoAsignados
+    insertar (origen, salidaMinima)
 
-    individuo.costoDistanciaTotal ← distanciaTotal
-    individuo.violacionesCapacidad ← violCapacidad
-    individuo.violacionesTiempo ← violTiempo
-    individuo.lateness ← lateness
+    MIENTRAS cola no esté vacía:
+        actual ← extraer menor fechaHora
 
-    RETORNAR fitness     ← (menor = mejor)
+        SI actual.aeropuerto = destino:
+            reconstruir ruta y RETORNAR
+
+        PARA CADA vueloInstancia saliendo de actual.aeropuerto:
+            SI vueloInstancia.capacidadDisponible < carga:
+                CONTINUAR
+
+            SI vueloInstancia.fechaHoraSalida < actual.fechaHora:
+                CONTINUAR
+
+            vecino ← vueloInstancia.destino
+            llegada ← vueloInstancia.fechaHoraLlegada
+
+            SI llegada < llegadaMasTemprana[vecino]:
+                actualizar predecesor
+                llegadaMasTemprana[vecino] ← llegada
+                insertar (vecino, llegada)
+
+    RETORNAR []
 ```
 
 ---
 
-## Fase 3: Población Inicial
+## Fase 6 — Población inicial DHGS
 
-```
-FUNCIÓN generarPoblacionInicial(envios, tamaño):
-    poblacion ← lista vacía
+```text
+FUNCIÓN generarPoblacionInicial(enviosDisponibles, tamanoPoblacion):
+    poblacion ← []
 
-    // Solución 1: Greedy (todos los envíos, ordenados por prioridad)
-    greedy ← ordenar envios por prioridad descendente
-    poblacion.agregar(split(greedy))
+    greedy ← ordenar enviosDisponibles por prioridad descendente
+    poblacion.agregar(solucionGreedy(greedy))
 
-    // Solución 2: Lazy (solo must-go)
-    mustGo ← filtrar envios donde esMustGo = true
-    poblacion.agregar(split(mustGo))
+    mustGo ← filtrar enviosDisponibles donde esMustGo = true
+    poblacion.agregar(solucionLazy(mustGo))
 
-    // Soluciones 3..N: Aleatorias con probabilidad variable
     probabilidades ← [0.0, 0.1, 0.3, 0.5, 0.7, 0.9, 1.0]
-    MIENTRAS poblacion.tamaño < tamaño:
-        p ← elegir aleatorio de probabilidades
-        subconjunto ← mustGo + (opcionales con probabilidad p)
-        permutar aleatoriamente subconjunto
-        poblacion.agregar(split(subconjunto))
+
+    MIENTRAS poblacion.tamaño < tamanoPoblacion:
+        generar subconjunto aleatorio preservando mustGo
+        permutar subconjunto
+        poblacion.agregar(solucionAleatoria)
 
     RETORNAR poblacion
 ```
 
 ---
 
-## Fase 4: Loop Genético Principal
+## Fase 7 — Loop principal DHGS
 
-```
-FUNCIÓN ejecutarDHGS(envios, epocaActual, totalEpocas, tamañoPob, limiteTiempo):
-
-    // grafo y SPLIT ya fueron construidos/inicializados en la preparación previa
-    poblacion ← generarPoblacionInicial(envios, tamañoPob)
-    penCap   ← 1000
-    penTime  ← 5000
+```text
+FUNCIÓN ejecutarDHGS(enviosDisponibles, epocaActual, totalEpocas, tamanoPoblacion, limiteTiempo):
+    poblacion ← generarPoblacionInicial(enviosDisponibles, tamanoPoblacion)
+    inicio ← relojActual()
     iteracion ← 0
 
-    MIENTRAS tiempo < limiteTiempo:
+    MIENTRAS relojActual() - inicio < limiteTiempo:
         iteracion++
 
-        SI estancada(poblacion, tolerancia=0.001):
+        SI poblacion.estaEstancada(0.001):
             SALIR
 
-        INTENTAR:
+        padres ← seleccionarPadres(poblacion)
+        hijo ← crossoverOX(padres)
 
-            // ─── 1. SELECCIÓN DE PADRES (torneo binario) ───
-            padre1 ← torneoBinario(poblacion)
-            padre2 ← torneoBinario(poblacion)
+        hijo.enviosAsignados ← split(hijo.representacionGigante)
+        hijo.enviosNoAsignados ← enviosDisponibles - hijo.enviosAsignados
 
-            // ─── 2. CROSSOVER (OX con must-go garantizado) ───
-            hijo ← cruzarOX(padre1, padre2)
-            // Garantizar que todos los must-go estén en el giant tour del hijo
+        hijo ← localSearchDelete(hijo)
+        hijo ← localSearchAdd(hijo)
+        hijo ← localSearchSwapOut(hijo)
 
-            // ─── 3. SPLIT ───
-            hijo.enviosAsignados ← split(hijo.giantTour, grafoYaConstruido)
-            hijo.enviosNoAsignados ← envios - hijo.enviosAsignados
+        calcularViolaciones(hijo)
+        calcularFitness(hijo)
+        hijo.validarFactibilidad()
 
-            // ─── 4. BÚSQUEDA LOCAL ───
-            hijo ← localSearchDelete(hijo)      // Remover opcionales problemáticos
-            hijo ← localSearchAdd(hijo)         // Insertar no-asignados
-            hijo ← localSearchSwapOut(hijo)     // Intercambiar dentro↔fuera
-            hijo ← localSearchRelocate(hijo)    // Reubicar en giant tour
-            hijo ← localSearchSwap(hijo)        // Intercambiar posiciones
-            hijo ← localSearch2Opt(hijo)        // Invertir segmento
+        poblacion.agregar(hijo)
 
-            // ─── 5. EVALUACIÓN ───
-            calcularViolaciones(hijo)
-            calcularFitness(hijo)
-            hijo.esFactible ← validarFactibilidad(hijo)
+        SI iteracion MOD 100 = 0:
+            ajustarPenalizaciones(poblacion.ratioFactibles)
 
-            // ─── 6. GESTIÓN DE POBLACIÓN ───
-            poblacion.agregar(hijo)
-
-            // ─── 7. AJUSTE DE PENALIZACIONES (cada 100 iteraciones) ───
-            SI iteracion MOD 100 = 0:
-                ratio ← factibles.tamaño / poblacion.tamañoTotal
-                SI ratio < 0.2:  // Muchas infactibles → aumentar penalizaciones
-                    penCap  ← penCap × 1.2
-                    penTime ← penTime × 1.2
-                SI ratio > 0.8:  // Muchas factibles → reducir para explorar
-                    penCap  ← penCap × 0.85
-                    penTime ← penTime × 0.85
-
-        CAPTURAR excepción:
-            registrar warning y continuar con la siguiente iteración
-
-    // ─── RETORNO ───
-    SI mejorHistorico ≠ null:
-        RETORNAR mejorHistorico              // Mejor histórico registrado por población
-    SINO SI factibles NO vacío:
-        RETORNAR min(factibles, por fitness)
-    SINO:
-        RETORNAR min(infactibles, por fitness)
-
+    RETORNAR mejorIndividuo(poblacion)
 ```
 
 ---
 
-## Operadores de Búsqueda Local (Detalle)
+## Fase 8 — Fitness operativo actual
 
-### DELETE — Remover envíos opcionales
+```text
+FUNCIÓN calcularFitness(individuo):
+    distanciaTotal ← Σ ruta.costo
+    violCapacidad ← Σ excesoCapacidad²
+    violTiempo ← Σ retraso²
+    violAlmacen ← Σ excesoAlmacen²
+    penNoAsignados ← penalización por envíos no asignados
 
-```
-FUNCIÓN localSearchDelete(individuo):
-    mejor ← clonar(individuo)
+    fitness ← distanciaTotal
+             + penCapacidad × violCapacidad
+             + penTiempo × violTiempo
+             + penCapacidad × violAlmacen
+             + penNoAsignados
 
-    REPETIR:
-        huboMejora ← false
-        PARA CADA envio EN mejor.enviosAsignados DONDE NOT envio.esMustGo:
-            prueba ← clonar(mejor)
-            prueba.enviosAsignados.remover(envio)
-            prueba.enviosNoAsignados.agregar(envio)
-
-            SI fitness(prueba) < fitness(mejor):
-                mejor ← prueba
-                huboMejora ← true
-                SALIR del FOR (first-improvement)
-
-    HASTA huboMejora = false
-    RETORNAR mejor
+    RETORNAR fitness
 ```
 
-### ADD — Insertar envíos no asignados
+### Cómo se forman `violCapacidad` y `violAlmacen`
 
-```
-FUNCIÓN localSearchAdd(individuo):
-    mejor ← clonar(individuo)
-    candidatos ← ordenar mejor.enviosNoAsignados por (mustGo DESC, prioridad DESC)
+```text
+violCapacidad:
+    PARA CADA vuelo usado por la solución:
+        cargaVuelo ← suma de maletas de todos los envíos que usan ese vuelo
+        exceso ← max(0, cargaVuelo - capacidadDisponibleVuelo)
+        acumular exceso²
 
-    REPETIR:
-        huboMejora ← false
-        PARA CADA envio EN candidatos:
-            ruta ← split.asignarMejorRuta(envio)
-            SI ruta = null: CONTINUAR
-
-            prueba ← clonar(mejor)
-            prueba.enviosAsignados[envio] = ruta
-            prueba.enviosNoAsignados.remover(envio)
-
-            SI fitness(prueba) < fitness(mejor) O envio.esMustGo:
-                mejor ← prueba
-                huboMejora ← true
-                SALIR del FOR
-
-    HASTA huboMejora = false
-    RETORNAR mejor
-```
-
-### SWAP-OUT — Intercambiar dentro ↔ fuera
-
-```
-FUNCIÓN localSearchSwapOut(individuo):
-    mejor ← clonar(individuo)
-
-    PARA CADA eDentro EN mejor.enviosAsignados DONDE NOT eDentro.esMustGo:
-        PARA CADA eFuera EN mejor.enviosNoAsignados:
-            ruta ← split.asignarMejorRuta(eFuera)
-            SI ruta = null: CONTINUAR
-
-            prueba ← clonar(mejor)
-            prueba.enviosAsignados.remover(eDentro)
-            prueba.enviosAsignados[eFuera] = ruta
-            prueba.enviosNoAsignados.agregar(eDentro)
-            prueba.enviosNoAsignados.remover(eFuera)
-
-            SI fitness(prueba) < fitness(mejor):
-                RETORNAR prueba     ← first-improvement
-
-    RETORNAR mejor
-```
-
-### SWAP, RELOCATE, 2-OPT — Operan sobre Giant Tour
-
-```
-FUNCIÓN localSearchSwap(individuo):
-    tour ← individuo.giantTour
-    PARA CADA par (i, j) EN tour:
-        intercambiar tour[i] ↔ tour[j]
-        re-ejecutar SPLIT
-        SI fitness mejora: RETORNAR    ← first-improvement
-        revertir intercambio
-
-FUNCIÓN localSearchRelocate(individuo):
-    tour ← individuo.giantTour
-    PARA CADA i, j EN tour:
-        mover tour[i] → posición j
-        re-ejecutar SPLIT
-        SI fitness mejora: RETORNAR
-
-FUNCIÓN localSearch2Opt(individuo):
-    tour ← individuo.giantTour
-    PARA CADA segmento [i..j] EN tour:
-        invertir tour[i..j]
-        re-ejecutar SPLIT
-        SI fitness mejora: RETORNAR
+violAlmacen:
+    PARA CADA aeropuerto origen con envíos no asignados:
+        cargaAlmacen ← suma de maletas de los envíos no asignados en ese aeropuerto
+        exceso ← max(0, cargaAlmacen - capacidadAlmacenAeropuerto)
+        acumular exceso²
 ```
 
 ---
 
-## Flujo por Épocas
+## Fase 9 — Flujo completo de simulación
 
-```
-FUNCIÓN simularPorEpocas(enviosTotales, duracionEpocaHoras):
-    epocas ← organizarEnEpocas(enviosTotales, duracionEpocaHoras)
-    pendientes ← lista vacía
-    costoAcumulado ← 0
+```text
+FUNCIÓN ejecutarSimulacionCompleta(aeropuertos, vuelosPlantilla, enviosTotales,
+                                  fechaInicioSimulacion,
+                                  duracionSimulacionDias,
+                                  duracionEpocaHoras,
+                                  tamanoPoblacion,
+                                  limiteTiempo):
+    [fechaInicio, fechaFin] ← prepararHorizonte(enviosTotales, fechaInicioSimulacion, duracionSimulacionDias)
+    epocas ← organizarEnEpocas(enviosTotales, fechaInicio, duracionEpocaHoras, duracionSimulacionDias)
+    grafo ← construirGrafo(aeropuertos, vuelosPlantilla, fechaInicio, duracionSimulacionDias)
+    pendientes ← []
 
     PARA CADA epoca EN epocas:
-        // Preparar: nuevos + pendientes de épocas anteriores
-        enviosEpoca ← epoca.enviosNuevos + pendientes
-        actualizarMustGo(enviosEpoca, epoca.inicio, margenHoras=8)
-        recalcularPrioridad(enviosEpoca, epoca.inicio)
+        enviosDisponibles ← prepararEpoca(epoca, pendientes)
 
-        // Ejecutar DHGS
-        solucion ← ejecutarDHGS(enviosEpoca, epoca.numero, epocas.total, 25, 10s)
+        SI enviosDisponibles está vacío:
+            CONTINUAR
 
-        // Procesar resultado
-        despachados ← solucion.enviosAsignados
-        pendientes  ← solucion.enviosNoAsignados
-        costoAcumulado += solucion.costoDistanciaTotal
-        actualizarEstadoAlmacenes(despachados)
+        mejor ← ejecutarDHGS(enviosDisponibles,
+                             epoca.numero,
+                             epocas.tamaño,
+                             tamanoPoblacion,
+                             limiteTiempo)
 
-    RETORNAR costoAcumulado, historial de épocas
+        despachados ← mejor.enviosAsignados
+        pendientes ← mejor.enviosNoAsignados
+        registrar resultado en epoca
+        actualizar almacenes
+
+    RETORNAR historial completo
 ```
 
 ---
 
-## Notas de alineación con la implementación actual
+## Restricciones activas y fuera de alcance
 
-- `lateness` **no se suma directamente al fitness**; se imprime para interpretar cuánto retraso total hubo.
-- `esFactible = true` significa:
-  - no hay violaciones de capacidad,
-  - no hay violaciones de tiempo,
-  - no quedaron envíos `mustGo` sin asignar,
-  - y todas las rutas asignadas son factibles.
-- El algoritmo puede devolver una solución **factible pero no completa**: puede haber envíos opcionales no asignados. En ese caso el fitness sube por la penalización de no asignados.
-- Por eso, en una solución factible se espera que:
+### Activas
+- capacidad de vuelo
+- deadline del envío
+- continuidad temporal de conexiones
+- ocupación de almacenes
+- penalización por no asignados
 
-```
-fitness = costoDistanciaTotal + penalizacionNoAsignados
-```
+### Precisión importante
 
-siempre que `violacionesCapacidad = 0` y `violacionesTiempo = 0`.
+- la capacidad de vuelo agregada se penaliza a nivel del individuo completo
+- la ocupación de almacén se mide por maletas que quedan sin asignar en el aeropuerto origen
+- el reordenamiento puro del giant tour no está activo como fuente de mejora mientras `SPLIT` siga siendo independiente del orden
 
+### Fuera de alcance en esta versión
+- cancelaciones de vuelos
+- replanificación por disrupciones
+- estados operativos dinámicos durante la época
+
+---
+
+## Escenarios de prueba actuales
+
+`DHGSExperimentacionNumericaTest` quedó como la suite de referencia para experimentación numérica y modela:
+
+1. **DHGS con ventana real de 3 días**
+2. **DHGS con ventana real de 5 días**
+3. **DHGS con ventana real de 7 días**
+
+La fecha de inicio, la duración, el tamaño de población, el límite por época y los conteos esperados se leen desde `src/test/resources/test-experiment.properties`.

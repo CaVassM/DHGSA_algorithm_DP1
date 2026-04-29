@@ -70,6 +70,12 @@ public class SimuladorEpocas {
      */
     public List<EpocaData> organizarEnEpocas(List<Envio> envios, List<Aeropuerto> aeropuertos,
                                              LocalDateTime fechaInicio, long duracionEpocaHoras) {
+        return organizarEnEpocas(envios, aeropuertos, fechaInicio, duracionEpocaHoras, 5);
+    }
+
+    public List<EpocaData> organizarEnEpocas(List<Envio> envios, List<Aeropuerto> aeropuertos,
+                                             LocalDateTime fechaInicio, long duracionEpocaHoras,
+                                             long duracionSimulacionDias) {
         this.historial.clear();
         this.costoAcumulado = 0.0;
 
@@ -88,13 +94,16 @@ public class SimuladorEpocas {
 
         // Determinar rango temporal. El primer y ultimo envio proviene de todo el listado mandado.
         LocalDateTime primerEnvio = ordenados.get(0).getFechaHoraCreacion();
-        LocalDateTime ultimoEnvio = ordenados.get(ordenados.size() - 1).getFechaHoraCreacion();
 
-        // Ohh entiendo, el inicioEpoca va a depender del primer envio no?
-        // Pero tambien puede ser como parametro
-        LocalDateTime inicioEpoca = fechaInicio != null ? fechaInicio : primerEnvio;
+        // La simulación debe recorrer una línea de tiempo explícita.
+        // Si no se especifica fecha de inicio, comienza al inicio del día anterior
+        // al primer envío cargado.
+        LocalDateTime inicioEpoca = resolverFechaInicio(fechaInicio, primerEnvio);
         // 4 horas segun el paper.
         Duration duracion = Duration.ofHours(duracionEpocaHoras); // El otro estatico al parecer no se usa, bueno va bien al parecer.
+        LocalDateTime finSimulacion = inicioEpoca.plusDays(Math.max(1, duracionSimulacionDias));
+
+        boolean mantenerEpocasVacias = true;
 
         int numeroEpoca = 1;
         LocalDateTime finEpoca = inicioEpoca.plus(duracion); // Va ta bien.
@@ -102,7 +111,7 @@ public class SimuladorEpocas {
         // Mientras el inicio
         // InicioEpoca y el FinEpoca son ambos LocalDateTime
         // Creo que es una manera de recorrer todos los envios, no es asi?
-        while (inicioEpoca.isBefore(ultimoEnvio.plus(duracion))) {
+        while (inicioEpoca.isBefore(finSimulacion)) {
             final LocalDateTime inicioFinal = inicioEpoca;
             final LocalDateTime finFinal = finEpoca;
 
@@ -112,7 +121,7 @@ public class SimuladorEpocas {
                               && e.getFechaHoraCreacion().isBefore(finFinal))
                     .collect(Collectors.toList());
 
-            if (!enviosEpoca.isEmpty() || numeroEpoca == 1) {
+            if (mantenerEpocasVacias || !enviosEpoca.isEmpty() || numeroEpoca == 1) {
                 EpocaData epoca = new EpocaData(numeroEpoca, inicioEpoca, finEpoca);
                 epoca.setEnviosNuevos(enviosEpoca);
                 historial.add(epoca);
@@ -123,10 +132,30 @@ public class SimuladorEpocas {
             finEpoca = inicioEpoca.plus(duracion); // +4h
         }
 
-        log.info("Organizados {} envíos en {} épocas (duración: {}h)",
-                envios.size(), historial.size(), duracionEpocaHoras);
+        long enviosFueraDeVentana = ordenados.stream()
+                .filter(e -> e.getFechaHoraCreacion().isBefore(historial.get(0).getInicio())
+                        || !e.getFechaHoraCreacion().isBefore(finSimulacion))
+                .count();
+
+        log.info("Organizados {} envíos en {} épocas (duración: {}h, inicio simulación: {}, fin simulación: {}, fuera de ventana: {})",
+                envios.size(), historial.size(), duracionEpocaHoras,
+                historial.isEmpty() ? inicioEpoca : historial.get(0).getInicio(),
+                finSimulacion, enviosFueraDeVentana);
 
         return historial;
+    }
+
+    private LocalDateTime resolverFechaInicio(LocalDateTime fechaInicioSolicitada, LocalDateTime primerEnvio) {
+        LocalDateTime inicioPorDefecto = primerEnvio.toLocalDate().minusDays(1).atStartOfDay();
+
+        if (fechaInicioSolicitada == null) {
+            return inicioPorDefecto;
+        }
+
+        // Nunca arrancar después del primer envío, para no dejar envíos fuera de la línea de tiempo.
+        return fechaInicioSolicitada.isAfter(primerEnvio)
+                ? primerEnvio.toLocalDate().atStartOfDay()
+                : fechaInicioSolicitada;
     }
 
     // Supongo se itera el historial para utilizarlo, o algo que recorra las epocas generadas por todos los envios.
@@ -142,6 +171,8 @@ public class SimuladorEpocas {
         if (pendientes != null && !pendientes.isEmpty()) {
             epocaActual.setEnviosPendientes(new ArrayList<>(pendientes));
         }
+
+        registrarLlegadasEnAlmacenes(epocaActual.getEnviosNuevos(), epocaActual.getInicio());
 
         // Actualizar must-go de todos los envíos según el momento actual
         // Y ese margenHoras? ahh es el margen que tiene que verificar con el deadline para asi determinar si debe de ir a la epoca actual.
@@ -206,6 +237,9 @@ public class SimuladorEpocas {
             estado.setAeropuerto(entry.getValue().getAeropuerto());
             estado.setMaletasActuales(entry.getValue().getMaletasActuales());
             estado.setMomentoTiempo(epocaActual.getFin());
+            estado.setEnviosPendientes(entry.getValue().getEnviosPendientes() == null
+                    ? new ArrayList<>()
+                    : new ArrayList<>(entry.getValue().getEnviosPendientes()));
             snapshot.put(entry.getKey(), estado);
         }
         epocaActual.setEstadoAlmacenes(snapshot);
@@ -262,6 +296,43 @@ public class SimuladorEpocas {
             AlmacenEstado almacenOrigen = estadoGlobalAlmacenes.get(origenICAO);
             if (almacenOrigen != null) {
                 almacenOrigen.removerEnvio(envio);
+            }
+
+            if (entry.getValue() != null && entry.getValue().getSecuenciaVuelos() != null) {
+                entry.getValue().getSecuenciaVuelos().forEach(vuelo -> {
+                    boolean reservado = vuelo.registrarAsignacion(envio.getCantidadMaletas());
+                    if (!reservado) {
+                        log.warn("No se pudo reservar capacidad residual en vuelo {} para envío {}",
+                                vuelo.getId(), envio.getId());
+                    }
+                });
+            }
+        }
+    }
+
+    private void registrarLlegadasEnAlmacenes(List<Envio> enviosNuevos, LocalDateTime momento) {
+        if (enviosNuevos == null || enviosNuevos.isEmpty()) {
+            return;
+        }
+
+        for (Envio envio : enviosNuevos) {
+            if (envio == null || envio.getAeropuertoOrigen() == null) {
+                continue;
+            }
+
+            String icao = envio.getAeropuertoOrigen().getCodigoICAO();
+            AlmacenEstado almacen = estadoGlobalAlmacenes.get(icao);
+            if (almacen == null) {
+                almacen = new AlmacenEstado();
+                almacen.setAeropuerto(envio.getAeropuertoOrigen());
+                estadoGlobalAlmacenes.put(icao, almacen);
+            }
+
+            almacen.setMomentoTiempo(momento);
+            boolean yaRegistrado = almacen.getEnviosPendientes() != null
+                    && almacen.getEnviosPendientes().contains(envio);
+            if (!yaRegistrado) {
+                almacen.agregarEnvio(envio);
             }
         }
     }

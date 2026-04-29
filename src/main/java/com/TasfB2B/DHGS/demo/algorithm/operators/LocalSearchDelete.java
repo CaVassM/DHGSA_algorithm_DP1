@@ -40,7 +40,11 @@ public class LocalSearchDelete implements LocalSearch {
                 Individuo prueba = mejor.clonar();
                 RutaEnvio rutaRemovida = prueba.getEnviosAsignados().remove(candidato);
                 if (rutaRemovida != null) {
-                    prueba.getEnviosNoAsignados().add(candidato);
+                    if (!prueba.getEnviosNoAsignados().contains(candidato)) {
+                        prueba.getEnviosNoAsignados().add(candidato);
+                    }
+                    prueba.setRepresentacionGigante(
+                            ctx.removerDelTour(prueba.getRepresentacionGigante(), candidato));
                 }
 
                 double fitnessPrueba = ctx.evaluar(prueba);

@@ -3,6 +3,7 @@ package com.TasfB2B.DHGS.demo.domain.model;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.List;
@@ -98,6 +99,34 @@ class DomainModelTests {
 
         almacen.removerEnvio(envio);
         assertEquals(0, almacen.getMaletasActuales());
+    }
+
+    @Test
+    void instanciaVueloMaterializaFechaCapacidadYDuracion() {
+        Aeropuerto bogota = aeropuerto("SKBO", "America", 4.7014, -74.1469, 100);
+        Aeropuerto lima = aeropuerto("SPIM", "America", -12.0219, -77.1143, 120);
+
+        Vuelo plantilla = new Vuelo();
+        plantilla.setId("VL-SKBO-SPIM-0001");
+        plantilla.setAeropuertoOrigen(bogota);
+        plantilla.setAeropuertoDestino(lima);
+        plantilla.setHoraSalida(LocalTime.of(23, 0));
+        plantilla.setHoraLlegada(LocalTime.of(1, 0));
+        plantilla.setCapacidad(30);
+        plantilla.setDistancia(1880);
+        plantilla.setDuracion(Duration.ofHours(2));
+
+        InstanciaVuelo instancia = InstanciaVuelo.desdePlantilla(plantilla, LocalDate.of(2026, 1, 3));
+
+        assertEquals("VL-SKBO-SPIM-0001@2026-01-03", instancia.getId());
+        assertEquals("VL-SKBO-SPIM-0001", instancia.getIdPlantilla());
+        assertEquals(LocalDateTime.of(2026, 1, 3, 23, 0), instancia.getFechaHoraSalida());
+        assertEquals(LocalDateTime.of(2026, 1, 4, 1, 0), instancia.getFechaHoraLlegada());
+        assertTrue(instancia.estaDisponiblePara(10));
+        assertTrue(instancia.registrarAsignacion(10));
+        assertEquals(20, instancia.getCapacidadDisponible());
+        instancia.liberarCapacidad(5);
+        assertEquals(25, instancia.getCapacidadDisponible());
     }
 
     private Aeropuerto aeropuerto(String codigo, String continente, double lat, double lon, int capacidad) {

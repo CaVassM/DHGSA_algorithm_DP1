@@ -1,6 +1,7 @@
 package com.TasfB2B.DHGS.demo.infraestructure.util;
 
 import com.TasfB2B.DHGS.demo.algorithm.dhgs.Individuo;
+import com.TasfB2B.DHGS.demo.domain.model.Aeropuerto;
 import com.TasfB2B.DHGS.demo.domain.model.Envio;
 import com.TasfB2B.DHGS.demo.domain.model.RutaEnvio;
 import com.TasfB2B.DHGS.demo.domain.model.Vuelo;
@@ -62,6 +63,7 @@ public class CalculadorFitness {
         // Componentes de penalización (ya calculadas en calcularViolaciones)
         double penCap  = individuo.getViolacionesCapacidad();
         double penTime = individuo.getViolacionesTiempo();
+        double penAlmacen = individuo.getViolacionesAlmacen();
 
         // Penalización por envíos no asignados: castigo proporcional a distancia × maletas
         // para que siempre sea peor NO asignar que asignar (incluso rutas lejanas)
@@ -82,6 +84,7 @@ public class CalculadorFitness {
         double fitness = distanciaTotal
                 + (parametros.getPenCapacidad() * penCap)
                 + (parametros.getPenTiempo() * penTime)
+                + (parametros.getPenCapacidad() * penAlmacen)
                 + penNoAsignados;
 
         individuo.setFitness(fitness);
@@ -123,14 +126,34 @@ public class CalculadorFitness {
             }
         }
         for (Map.Entry<Vuelo, Integer> entry : cargaPorVuelo.entrySet()) {
-            int exceso = entry.getValue() - entry.getKey().getCapacidad();
+            int exceso = entry.getValue() - entry.getKey().getCapacidadDisponible();
             if (exceso > 0) {
                 violCapacidad += (double) exceso * exceso; // cuadrática
             }
         }
 
+        // --- Violaciones de ALMACÉN ---
+        // Se aproxima la carga remanente del aeropuerto con los envíos no asignados que quedan esperando.
+        double violAlmacen = 0.0;
+        Map<Aeropuerto, Integer> cargaPorAeropuerto = new HashMap<>();
+        if (individuo.getEnviosNoAsignados() != null) {
+            for (Envio envio : individuo.getEnviosNoAsignados()) {
+                if (envio.getAeropuertoOrigen() != null) {
+                    cargaPorAeropuerto.merge(envio.getAeropuertoOrigen(), envio.getCantidadMaletas(), Integer::sum);
+                }
+            }
+        }
+        for (Map.Entry<Aeropuerto, Integer> entry : cargaPorAeropuerto.entrySet()) {
+            int capacidadAlmacen = Math.max(0, entry.getKey().getCapacidadAlmacen());
+            int exceso = entry.getValue() - capacidadAlmacen;
+            if (exceso > 0) {
+                violAlmacen += (double) exceso * exceso;
+            }
+        }
+
         individuo.setViolacionesCapacidad(violCapacidad);
         individuo.setViolacionesTiempo(violTiempo);
+        individuo.setViolacionesAlmacen(violAlmacen);
         individuo.setLateness(lateness);
     }
 }

@@ -3,6 +3,7 @@ package com.TasfB2B.DHGS.demo.application.dto;
 import lombok.Getter;
 import lombok.Setter;
 
+import java.time.LocalDateTime;
 import java.util.List;
 
 /**
@@ -23,6 +24,16 @@ public class OptimizationRequest {
 
     /** Duración de cada época en horas (default: 4) */
     private long duracionEpocaHoras = 4;
+
+    /** Duración total de la simulación en días (default: 5) */
+    private long duracionSimulacionDias = 5;
+
+    /**
+     * Fecha/hora de inicio de la simulación.
+     * Si no se especifica, el sistema inicia al comienzo del día anterior
+     * al primer envío cargado.
+     */
+    private LocalDateTime fechaInicioSimulacion;
 
     /** Tamaño de la población genética (default: 25) */
     private int tamanoPoblacion = 25;

@@ -24,7 +24,7 @@ public class Validador {
      */
     public boolean validarCapacidadVuelo(Vuelo vuelo, int maletasAsignadas) {
         if (vuelo == null) return false;
-        return maletasAsignadas <= vuelo.getCapacidad();
+        return maletasAsignadas <= vuelo.getCapacidadDisponible();
     }
 
     /**
@@ -78,6 +78,30 @@ public class Validador {
                     violaciones.add(String.format("Must-go no asignado: envío %s → %s",
                             e.getId(), e.getAeropuertoDestino().getCodigoICAO()));
                 }
+                if (asignados.containsKey(e)) {
+                    violaciones.add(String.format("Envío %s aparece asignado y no asignado al mismo tiempo",
+                            e.getId()));
+                }
+            }
+        }
+
+        List<Envio> giantTour = individuo.getRepresentacionGigante();
+        if (giantTour == null) {
+            violaciones.add("Representación gigante es null");
+        } else {
+            Set<Envio> vistos = new HashSet<>();
+            for (Envio envio : giantTour) {
+                if (envio != null && !vistos.add(envio)) {
+                    violaciones.add(String.format("Representación gigante contiene duplicado: envío %s",
+                            envio.getId()));
+                }
+            }
+
+            Set<Envio> enTour = new HashSet<>(giantTour);
+            for (Envio envio : asignados.keySet()) {
+                if (!enTour.contains(envio)) {
+                    violaciones.add(String.format("Envío asignado fuera del giant tour: %s", envio.getId()));
+                }
             }
         }
 
@@ -114,10 +138,43 @@ public class Validador {
             Vuelo vuelo = entry.getKey();
             int carga = entry.getValue();
             if (!validarCapacidadVuelo(vuelo, carga)) {
-                violaciones.add(String.format("Capacidad excedida en vuelo %s→%s: %d/%d maletas",
+                violaciones.add(String.format("Capacidad excedida en %s→%s: %d/%d maletas disponibles",
                         vuelo.getAeropuertoOrigen().getCodigoICAO(),
                         vuelo.getAeropuertoDestino().getCodigoICAO(),
-                        carga, vuelo.getCapacidad()));
+                        carga, vuelo.getCapacidadDisponible()));
+            }
+        }
+
+        Map<String, Integer> cargaPorAeropuerto = new HashMap<>();
+        if (individuo.getEnviosNoAsignados() != null) {
+            for (Envio envio : individuo.getEnviosNoAsignados()) {
+                if (envio.getAeropuertoOrigen() == null) {
+                    continue;
+                }
+                cargaPorAeropuerto.merge(envio.getAeropuertoOrigen().getCodigoICAO(),
+                        envio.getCantidadMaletas(), Integer::sum);
+            }
+        }
+
+        for (Map.Entry<String, Integer> entry : cargaPorAeropuerto.entrySet()) {
+            String icao = entry.getKey();
+            int carga = entry.getValue();
+            int capacidad = asignados.keySet().stream()
+                    .map(Envio::getAeropuertoOrigen)
+                    .filter(Objects::nonNull)
+                    .filter(a -> icao.equals(a.getCodigoICAO()))
+                    .mapToInt(a -> a.getCapacidadAlmacen())
+                    .findFirst()
+                    .orElseGet(() -> individuo.getEnviosNoAsignados().stream()
+                            .map(Envio::getAeropuertoOrigen)
+                            .filter(Objects::nonNull)
+                            .filter(a -> icao.equals(a.getCodigoICAO()))
+                            .mapToInt(a -> a.getCapacidadAlmacen())
+                            .findFirst()
+                            .orElse(0));
+            if (capacidad > 0 && carga > capacidad) {
+                violaciones.add(String.format("Almacén excedido en %s: %d/%d maletas pendientes",
+                        icao, carga, capacidad));
             }
         }
 

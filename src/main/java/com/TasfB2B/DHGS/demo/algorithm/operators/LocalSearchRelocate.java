@@ -42,11 +42,7 @@ public class LocalSearchRelocate implements LocalSearch {
                 Map<Envio, RutaEnvio> asignaciones = ctx.getSplit().split(nuevoTour);
                 prueba.setEnviosAsignados(asignaciones);
 
-                List<Envio> noAsignados = new ArrayList<>();
-                for (Envio e : nuevoTour) {
-                    if (!asignaciones.containsKey(e)) noAsignados.add(e);
-                }
-                prueba.setEnviosNoAsignados(noAsignados);
+                prueba.setEnviosNoAsignados(ctx.construirNoAsignados(asignaciones));
 
                 double fitnessPrueba = ctx.evaluar(prueba);
 

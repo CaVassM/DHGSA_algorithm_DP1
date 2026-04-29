@@ -4,6 +4,7 @@ import com.TasfB2B.DHGS.demo.algorithm.dhgs.DHGSAlgorithm;
 import com.TasfB2B.DHGS.demo.algorithm.dhgs.Individuo;
 import com.TasfB2B.DHGS.demo.domain.model.Aeropuerto;
 import com.TasfB2B.DHGS.demo.domain.model.Envio;
+import com.TasfB2B.DHGS.demo.domain.model.InstanciaVuelo;
 import com.TasfB2B.DHGS.demo.domain.model.RutaEnvio;
 import com.TasfB2B.DHGS.demo.domain.model.Vuelo;
 import com.TasfB2B.DHGS.demo.infraestructure.ingestion.AeropuertoParser;
@@ -20,6 +21,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Duration;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -40,6 +43,7 @@ class DHGSIntegrationTest {
     private static List<Vuelo> vuelos;
     private static List<Envio> envios;
     private static GrafoVuelos grafoVuelos;
+    private static LocalDate inicioHorizonte;
 
     // Parsers
     private static final AeropuertoParser aeropuertoParser = new AeropuertoParser();
@@ -76,9 +80,16 @@ class DHGSIntegrationTest {
                     .forEach(archivo -> envios.addAll(envioParser.parsear(archivo, aeropuertosMap)));
         }
 
+        inicioHorizonte = envios.stream()
+                .map(Envio::getFechaHoraCreacion)
+                .min(LocalDateTime::compareTo)
+                .orElseThrow()
+                .toLocalDate()
+                .minusDays(1);
+
         // Construir grafo
         grafoVuelos = new GrafoVuelos();
-        grafoVuelos.construir(aeropuertos, vuelos);
+        grafoVuelos.construir(aeropuertos, vuelos, inicioHorizonte, 5);
 
         System.out.println("=================================================");
         System.out.println("   DATOS CARGADOS PARA INTEGRACION              ");
@@ -165,6 +176,12 @@ class DHGSIntegrationTest {
         assertNotNull(resultado.getEnviosAsignados(), "La solución debe tener envíos asignados");
         assertFalse(resultado.getEnviosAsignados().isEmpty(), "Debe haber al menos un envío asignado");
         assertTrue(resultado.getFitness() < Double.MAX_VALUE, "Fitness debe ser finito");
+        assertNotNull(resultado.getRepresentacionGigante(), "La solución debe conservar un giant tour");
+        assertEquals(resultado.getRepresentacionGigante().size(),
+                new HashSet<>(resultado.getRepresentacionGigante()).size(),
+                "El giant tour no debe contener envíos duplicados");
+        assertTrue(resultado.getRepresentacionGigante().containsAll(resultado.getEnviosAsignados().keySet()),
+                "Todo envío asignado debe existir en el giant tour");
 
         // --- Reporte ---
         System.out.println("\n╔══════════════════════════════════════════════════╗");
@@ -222,6 +239,25 @@ class DHGSIntegrationTest {
         } else {
             violaciones.forEach(v -> System.out.println("  [!] " + v));
         }
+    }
+
+    @Test
+    @DisplayName("4. El grafo materializa 5 días de vuelos recurrentes")
+    void grafoMaterializaCincoDiasDeInstancias() {
+        int vuelosMaterializados = grafoVuelos.getAdyacencia().values().stream()
+                .mapToInt(List::size)
+                .sum();
+
+        assertEquals(vuelos.size() * 5, vuelosMaterializados,
+                "Cada vuelo plantilla debe materializarse una vez por día del horizonte");
+
+        long instancias = grafoVuelos.getAdyacencia().values().stream()
+                .flatMap(Collection::stream)
+                .filter(InstanciaVuelo.class::isInstance)
+                .count();
+
+        assertEquals(vuelosMaterializados, instancias,
+                "El grafo del horizonte debe componerse solo de instancias diarias");
     }
 
     private static Path getResourcePath(String relativePath) throws Exception {
