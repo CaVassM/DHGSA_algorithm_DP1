@@ -11,7 +11,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Controlador REST para la API de optimización DHGS.
+ * Controlador REST para la API de optimización del modelo operativo actual.
  */
 @RestController
 @RequestMapping("/api/v1/optimization")
@@ -24,7 +24,7 @@ public class OptimizationController {
     }
 
     /**
-     * Ejecuta la optimización DHGS completa.
+     * Ejecuta la optimización completa con el algoritmo solicitado.
      * POST /api/v1/optimization/run
      */
     @PostMapping("/run")

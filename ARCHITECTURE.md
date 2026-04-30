@@ -8,9 +8,10 @@ El sistema se encuentra en un primer alcance estable con las siguientes decision
 - partición temporal en épocas de **4 horas**
 - `Vuelo` como **plantilla recurrente**
 - `InstanciaVuelo` como **ocurrencia diaria materializada**
-- optimización por época mediante **DHGS**
+- optimización por época mediante **DHGS** o **IALNS**
 - operación en **condiciones ideales**, sin cancelaciones ni disrupciones
 - la suite numérica de referencia usa escenarios de **3, 5 y 7 días** configurados desde `test-experiment.properties`
+- ambas metaheurísticas comparten **el mismo dominio, simulación temporal, restricciones y datos de entrada**, pero permanecen **separadas internamente**
 
 ---
 
@@ -44,6 +45,10 @@ El sistema se encuentra en un primer alcance estable con las siguientes decision
 │   dhgs/                DHGSAlgorithm                                │
 │                        Individuo                                    │
 │                        Poblacion                                    │
+│                                                                     │
+│   ialns/               IALNSAlgorithm                               │
+│                        IALNSState                                   │
+│                        destroy/repair operators                     │
 │                                                                     │
 │   operators/           OXCrossover                                  │
 │                        LocalSearchDelete                            │
@@ -103,6 +108,17 @@ DHGS POR ÉPOCA
    ├─ loop genético
    ├─ SPLIT + búsqueda local
    └─ mejor individuo
+   │
+   ├─────────────────────────────────────────────────────────────────┐
+   │                                                                 │
+   │ IALNS POR ÉPOCA                                                 │
+   │                                                                 │
+   │ ├─ solución inicial sobre el mismo dominio                      │
+   │ ├─ destroy / repair adaptativo                                  │
+   │ ├─ simulated annealing                                           │
+   │ └─ mejor individuo                                              │
+   │                                                                 │
+   └─────────────────────────────────────────────────────────────────┘
    │
    ▼
 RESULTADO DE ÉPOCA

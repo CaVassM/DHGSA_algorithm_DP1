@@ -7,12 +7,13 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * DTO de respuesta con los resultados de la optimización DHGS.
+ * DTO de respuesta con los resultados de la optimización ejecutada.
  */
 @Getter
 @Setter
 public class OptimizationResponse {
 
+    private OptimizationAlgorithm algoritmoEjecutado;
     private int totalEpocas;
     private int epocasProcesadas;
     private double costoTotal;

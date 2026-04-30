@@ -2,6 +2,7 @@ package com.TasfB2B.DHGS.demo.application.service;
 
 import com.TasfB2B.DHGS.demo.algorithm.dhgs.DHGSAlgorithm;
 import com.TasfB2B.DHGS.demo.algorithm.dhgs.Individuo;
+import com.TasfB2B.DHGS.demo.algorithm.ialns.IALNSAlgorithm;
 import com.TasfB2B.DHGS.demo.application.dto.*;
 import com.TasfB2B.DHGS.demo.domain.model.*;
 import com.TasfB2B.DHGS.demo.domain.service.EpocaData;
@@ -27,13 +28,13 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
- * Servicio de aplicación que orquesta todo el flujo de optimización DHGS.
+ * Servicio de aplicación que orquesta el flujo completo de optimización.
  *
  * Flujo:
  * 1. Parsear datos de entrada (aeropuertos, vuelos, envíos)
- * 2. Construir grafo de vuelos
+ * 2. Construir grafo de vuelos del horizonte operativo
  * 3. Organizar envíos en épocas
- * 4. Para cada época: generar población inicial → (futuro: ejecutar DHGS) → seleccionar mejor
+ * 4. Para cada época: ejecutar la metaheurística seleccionada sobre el mismo dominio
  * 5. Retornar resumen de resultados
  */
 @Service
@@ -77,6 +78,10 @@ public class OptimizationService {
     public OptimizationResponse ejecutar(OptimizationRequest request) {
         long inicio = System.currentTimeMillis();
         OptimizationResponse response = new OptimizationResponse();
+        OptimizationAlgorithm algoritmoSeleccionado = request.getAlgoritmo() != null
+            ? request.getAlgoritmo()
+            : OptimizationAlgorithm.DHGS;
+        response.setAlgoritmoEjecutado(algoritmoSeleccionado);
 
         try {
             // --- PASO 1: Parsear datos ---
@@ -131,7 +136,12 @@ public class OptimizationService {
                     Math.max(1, request.getDuracionSimulacionDias()));
             log.info("Grafo construido: {}", grafoVuelos);
 
-            DHGSAlgorithm dhgs = new DHGSAlgorithm(constructorSoluciones, split, calculadorFitness, validador);
+                DHGSAlgorithm dhgs = algoritmoSeleccionado == OptimizationAlgorithm.DHGS
+                    ? new DHGSAlgorithm(constructorSoluciones, split, calculadorFitness, validador)
+                    : null;
+                IALNSAlgorithm ialns = algoritmoSeleccionado == OptimizationAlgorithm.IALNS
+                    ? new IALNSAlgorithm(constructorSoluciones, split, calculadorFitness, validador)
+                    : null;
 
             // --- PASO 4: Procesar cada época ---
             log.info("=== PASO 4: Procesando {} épocas ===", epocas.size());
@@ -152,7 +162,14 @@ public class OptimizationService {
                     continue;
                 }
 
-                Individuo mejorSolucion = dhgs.ejecutar(
+                Individuo mejorSolucion = algoritmoSeleccionado == OptimizationAlgorithm.IALNS
+                    ? ialns.ejecutar(
+                        enviosEpoca,
+                        epoca.getNumeroEpoca(),
+                        epocas.size(),
+                        request.getTamanoPoblacion(),
+                        Duration.ofSeconds(Math.max(1, request.getLimiteTiempoSegundos())))
+                    : dhgs.ejecutar(
                         enviosEpoca,
                         epoca.getNumeroEpoca(),
                         epocas.size(),
@@ -180,7 +197,7 @@ public class OptimizationService {
             response.setTotalEnviosNoAsignados(pendientes.size());
             response.setTotalMaletasDespachadas(totalMaletas);
             response.setSimulacionCompleta(pendientes.isEmpty());
-            response.setMensaje("Simulación completada exitosamente");
+            response.setMensaje("Simulación completada exitosamente con " + algoritmoSeleccionado);
 
         } catch (Exception e) {
             log.error("Error durante la optimización", e);

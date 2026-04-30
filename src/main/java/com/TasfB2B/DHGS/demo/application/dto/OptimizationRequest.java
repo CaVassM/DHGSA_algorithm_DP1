@@ -7,11 +7,14 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 /**
- * DTO de entrada para ejecutar la optimización DHGS.
+ * DTO de entrada para ejecutar la optimización sobre el modelo operativo actual.
  */
 @Getter
 @Setter
 public class OptimizationRequest {
+
+    /** Algoritmo a ejecutar sobre el mismo modelo operacional (default: DHGS) */
+    private OptimizationAlgorithm algoritmo = OptimizationAlgorithm.DHGS;
 
     /** Ruta al archivo de aeropuertos (estudiantes.txt) */
     private String archivoAeropuertos;
