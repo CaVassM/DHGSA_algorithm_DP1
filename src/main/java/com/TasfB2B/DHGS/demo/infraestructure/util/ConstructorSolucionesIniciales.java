@@ -5,7 +5,6 @@ import com.TasfB2B.DHGS.demo.domain.model.Envio;
 import com.TasfB2B.DHGS.demo.domain.model.RutaEnvio;
 import org.springframework.stereotype.Component;
 
-import java.time.LocalDateTime;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -72,13 +71,17 @@ public class ConstructorSolucionesIniciales {
      * Ordena por prioridad (más urgentes primero).
      */
     public Individuo generarGreedy(List<Envio> envios, int epoca, int totalEpocas) {
-        LocalDateTime ahora = LocalDateTime.now();
+        // Usar la prioridad ya calculada para la época actual en prepararEpoca().
+        // Recalcular con LocalDateTime.now() distorsiona el orden cuando el escenario
+        // simula años distintos al reloj real de ejecución (por ejemplo 2029).
+        Comparator<Envio> comparadorPrioridad = Comparator
+                .comparingInt(Envio::getPrioridad)
+                .reversed()
+                .thenComparing(Envio::getFechaHoraCreacion, Comparator.nullsLast(Comparator.naturalOrder()))
+                .thenComparing(Envio::getId, Comparator.nullsLast(Comparator.naturalOrder()));
 
-        // Ordenar por prioridad descendente
         List<Envio> ordenados = envios.stream()
-                .sorted((a, b) -> Integer.compare(
-                        b.calcularPrioridad(ahora),
-                        a.calcularPrioridad(ahora)))
+                .sorted(comparadorPrioridad)
                 .collect(Collectors.toList());
 
         Individuo individuo = new Individuo();

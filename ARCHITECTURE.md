@@ -1,8 +1,8 @@
-# Arquitectura — Tasf.B2B DHGS
+# Arquitectura — Tasf.B2B DHGS / IALNS
 
 ## Resumen arquitectónico actual
 
-El sistema se encuentra en un primer alcance estable con las siguientes decisiones:
+El sistema se encuentra en un alcance funcional estable con estas decisiones vigentes:
 
 - horizonte de simulación **configurable por escenario**
 - partición temporal en épocas de **4 horas**
@@ -10,8 +10,10 @@ El sistema se encuentra en un primer alcance estable con las siguientes decision
 - `InstanciaVuelo` como **ocurrencia diaria materializada**
 - optimización por época mediante **DHGS** o **IALNS**
 - operación en **condiciones ideales**, sin cancelaciones ni disrupciones
-- la suite numérica de referencia usa escenarios de **3, 5 y 7 días** configurados desde `test-experiment.properties`
-- ambas metaheurísticas comparten **el mismo dominio, simulación temporal, restricciones y datos de entrada**, pero permanecen **separadas internamente**
+- configuración de experimentación leída desde `src/test/resources/test-experiment.properties`
+- ventana actualmente chequeada: `2026-07-14T00:00:00`
+- suites pesadas separadas del `mvn test` normal mediante `@Tag("slow-experiment")`
+- ambas metaheurísticas comparten **dominio, simulación temporal, restricciones y datos de entrada**, pero permanecen **separadas internamente**
 
 ---
 
@@ -131,6 +133,36 @@ RESULTADO DE ÉPOCA
 
 ---
 
+## Configuración de referencia y ventanas conocidas
+
+### Ventana actualmente versionada
+
+El repositorio hoy está alineado a esta configuración de referencia ligera/media:
+
+| Escenario | Días | Envíos | Maletas |
+|---|---:|---:|---:|
+| Escenario 3 | 3 | 8578 | 14927 |
+| Escenario 5 | 5 | 14162 | 25013 |
+| Escenario 7 | 7 | 19547 | 35183 |
+
+Estas cifras fueron verificadas directamente sobre el dataset real y coinciden con `test-experiment.properties`.
+
+### Ventana de estrés preservada como referencia analítica
+
+El análisis offline conservado en `target/top_5day_windows.txt` identificó como ventana más pesada de 5 días:
+
+- inicio `2029-01-01`
+- fin exclusivo `2029-01-06`
+- `91210` envíos
+- `174007` maletas
+
+Arquitectónicamente, esto implica que el sistema puede evaluarse en dos regímenes distintos:
+
+1. **ventana versionada actual** para validación reproducible y corridas manejables
+2. **ventana de estrés 2029** para pruebas manuales no rutinarias
+
+---
+
 ## Modelo temporal
 
 ### Épocas
@@ -146,7 +178,7 @@ Las épocas sirven para:
 1. liberar envíos según su `fechaHoraCreacion`
 2. mezclar nuevos + pendientes
 3. recalcular `must-go` y prioridad
-4. ejecutar DHGS en una foto temporal del sistema
+4. ejecutar DHGS o IALNS en una foto temporal del sistema
 
 ### Vuelos
 
@@ -229,6 +261,58 @@ La decisión arquitectónica vigente es mantener el `GiantTour` por coherencia g
 
 ---
 
+## Factibilidad interna vs validación estricta
+
+La arquitectura actual distingue dos capas de chequeo:
+
+### Factibilidad interna del individuo
+
+Se concentra en `Individuo.validarFactibilidad()` y en la partición de `Poblacion` entre factibles e infactibles. Revisa principalmente:
+
+- giant tour no nulo ni duplicado
+- consistencia entre `representacionGigante`, `enviosAsignados` y `enviosNoAsignados`
+- must-go no asignados
+- rutas `ruta.esFactible()`
+- violaciones agregadas de capacidad, tiempo y almacén iguales a cero
+
+### Validación estricta de la solución
+
+Se concentra en `Validador.validarIndividuo(...)`, que además reporta explícitamente:
+
+- rutas desconectadas
+- deadlines violados
+- capacidad excedida por vuelo
+- almacenes excedidos
+- envíos asignados fuera del giant tour
+- envíos simultáneamente asignados y no asignados
+
+### Implicación para los algoritmos
+
+- `DHGSAlgorithm` intenta reparar soluciones no estrictamente factibles con `repararHaciaFactibilidad(...)` y al retorno prioriza la factibilidad estricta con `seleccionarMejorRetorno(...)`.
+- `IALNSAlgorithm` evalúa cada candidato mediante `IALNSContext`, que a su vez usa `CalculadorFitness` y `Validador` sobre el mismo dominio compartido.
+
+---
+
+## Comportamiento algorítmico por metaheurística
+
+### DHGS
+
+- población inicial con soluciones greedy, must-go y aleatorias
+- crossover `OXCrossover`
+- búsqueda local enfocada en cambiar membresía del giant tour
+- intento de reparación hacia factibilidad estricta
+- selección final priorizando factibilidad estricta y luego fitness
+
+### IALNS
+
+- solución inicial generada con `ConstructorSolucionesIniciales`
+- normalización de cobertura completa del giant tour
+- destroy/repair adaptativo con pesos
+- aceptación con criterio estilo simulated annealing
+- ajuste dinámico de `factorQ` según mejora observada
+
+---
+
 ## Restricciones activas en este alcance
 
 El sistema actualmente evalúa:
@@ -269,7 +353,7 @@ En este estado del sistema **no** se procesan:
 
 ---
 
-## Pruebas alineadas al estado actual
+## Estrategia de pruebas alineada al estado actual
 
 ### Unitarias / integración ligera
 - `DomainModelTests`
@@ -277,13 +361,18 @@ En este estado del sistema **no** se procesan:
 - `LocalSearchConsistencyTest`
 - `DHGSInstanciasDiariasTest`
 - `DHGSIntegrationTest`
+- `IALNSIntegrationTest`
 
-### Datos reales
+### Datos reales opt-in
 - `DHGSExperimentacionNumericaTest`
-  - escenario DHGS con **3 días**
-  - escenario DHGS con **5 días**
-  - escenario DHGS con **7 días**
-  - fecha de inicio y parámetros leídos desde `test-experiment.properties`
-  - total de épocas derivado automáticamente del escenario activo
+  - escenarios de **3, 5 y 7 días**
+  - configuración leída desde `test-experiment.properties`
+  - marcado con `slow-experiment`
+- `IALNSExperimentacionNumericaTest`
+  - escenarios de **3, 5 y 7 días**
+  - configuración leída desde `test-experiment.properties`
+  - marcado con `slow-experiment`
 
-Estas pruebas reflejan el estado funcional vigente del proyecto.
+El `pom.xml` excluye por defecto `slow-experiment` en `maven-surefire-plugin`. Para incluir estas pruebas manualmente se usa el perfil `with-experiments`.
+
+Estas pruebas reflejan el estado funcional vigente del proyecto y separan explícitamente validación cotidiana de experimentación pesada.

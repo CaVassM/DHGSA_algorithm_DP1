@@ -102,7 +102,9 @@ public class LocalSearchContext {
     /** Evalúa violaciones + fitness de un individuo de una sola vez. */
     public double evaluar(com.TasfB2B.DHGS.demo.algorithm.dhgs.Individuo ind) {
         fitness.calcularViolaciones(ind);
-        return fitness.calcular(ind, epocaActual, totalEpocas);
+        double valor = fitness.calcular(ind, epocaActual, totalEpocas);
+        ind.validarFactibilidad();
+        return valor;
     }
 }
 

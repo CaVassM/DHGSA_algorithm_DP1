@@ -143,7 +143,9 @@ public class Poblacion {
      * Verifica si la población está estancada (diversidad muy baja).
      */
     public boolean estaEstancada(double umbralDiversidad) {
-        return diversidad < umbralDiversidad && getTamanoTotal() > 5;
+        return Double.isFinite(diversidad)
+                && diversidad < umbralDiversidad
+                && getTamanoTotal() > 5;
     }
 
     // --- Métodos privados ---

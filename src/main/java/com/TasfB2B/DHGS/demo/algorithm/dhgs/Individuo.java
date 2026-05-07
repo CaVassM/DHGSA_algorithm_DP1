@@ -91,9 +91,29 @@ public class Individuo {
      * - No hay violaciones de capacidad
      */
     public boolean validarFactibilidad() {
-        if (enviosAsignados == null) {
+        if (enviosAsignados == null || enviosAsignados.isEmpty()) {
             this.esFactible = false;
             return false;
+        }
+
+        if (representacionGigante == null || representacionGigante.isEmpty()) {
+            this.esFactible = false;
+            return false;
+        }
+
+        Set<Envio> vistosEnTour = new LinkedHashSet<>();
+        for (Envio envio : representacionGigante) {
+            if (envio == null || !vistosEnTour.add(envio)) {
+                this.esFactible = false;
+                return false;
+            }
+        }
+
+        for (Envio envioAsignado : enviosAsignados.keySet()) {
+            if (envioAsignado == null || !vistosEnTour.contains(envioAsignado)) {
+                this.esFactible = false;
+                return false;
+            }
         }
 
         // Verificar que todos los must-go estén asignados
@@ -104,11 +124,18 @@ public class Individuo {
                 this.esFactible = false;
                 return false;
             }
+
+            boolean envioDuplicadoEntreAsignadosYNoAsignados = enviosNoAsignados.stream()
+                    .anyMatch(enviosAsignados::containsKey);
+            if (envioDuplicadoEntreAsignadosYNoAsignados) {
+                this.esFactible = false;
+                return false;
+            }
         }
 
         // Verificar que todas las rutas asignadas sean factibles
         boolean todasFactibles = enviosAsignados.values().stream()
-                .allMatch(RutaEnvio::esFactible);
+                .allMatch(ruta -> ruta != null && ruta.esFactible());
 
         this.esFactible = todasFactibles
                 && this.violacionesCapacidad <= 0

@@ -17,6 +17,7 @@ import com.TasfB2B.DHGS.demo.infraestructure.util.GrafoVuelos;
 import com.TasfB2B.DHGS.demo.infraestructure.util.Validador;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.InputStream;
@@ -45,6 +46,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @DisplayName("Experimentación numérica IALNS - escenarios de 3, 5 y 7 días")
+@Tag("slow-experiment")
 class IALNSExperimentacionNumericaTest {
 
     private static final AeropuertoParser aeropuertoParser = new AeropuertoParser();
@@ -180,8 +182,9 @@ class IALNSExperimentacionNumericaTest {
                     limitePorEpoca);
 
                 if (mejor != null) {
-                assertTrue(validador.validarIndividuo(mejor).isEmpty(),
-                    "La solución por época debe ser válida en el escenario ideal");
+                List<String> violaciones = validador.validarIndividuo(mejor);
+                assertTrue(violaciones.isEmpty(),
+                    "La solución por época debe ser válida en el escenario ideal. Violaciones: " + violaciones);
                 assertNotNull(mejor.getRepresentacionGigante(), "Cada solución debe mantener un giant tour");
                 assertTrue(mejor.getRepresentacionGigante().containsAll(mejor.getEnviosAsignados().keySet()),
                     "Todo envío asignado debe pertenecer a la representación gigante de la época");

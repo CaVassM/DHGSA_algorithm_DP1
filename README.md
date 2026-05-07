@@ -1,50 +1,122 @@
-# Tasf.B2B — DHGS para asignación de envíos a vuelos
+# Tasf.B2B — asignación de envíos a vuelos con DHGS e IALNS
 
-Sistema de planificación logística que asigna envíos de maletas a rutas aéreas usando **DHGS (Dynamic Hybrid Genetic Search)** sobre un horizonte configurable. La experimentación numérica de referencia quedó automatizada en escenarios de **3, 5 y 7 días**.
+Sistema de planificación logística que asigna envíos de maletas a rutas aéreas sobre un horizonte configurable. El proyecto mantiene **dos metaheurísticas** sobre el mismo dominio operativo:
+
+- **DHGS** (`Dynamic Hybrid Genetic Search`)
+- **IALNS** (`Iterated Adaptive Large Neighborhood Search`)
+
+Ambas comparten la misma simulación por épocas, el mismo `GrafoVuelos`, el mismo `AlgoritmoSPLIT`, el mismo `CalculadorFitness` y el mismo `Validador`.
 
 ## Estado actual del sistema
 
-El proyecto quedó alineado al siguiente alcance:
+El alcance vigente del repositorio es el siguiente:
 
-- simulación configurable por duración; la experimentación numérica de referencia usa **3, 5 y 7 días**
+- simulación configurable por ventana temporal
 - épocas de **4 horas**
-- vuelos recurrentes diarios materializados como **`InstanciaVuelo`**
-- ruteo temporal sobre fechas absolutas de salida y llegada
-- operación en **condiciones ideales**, sin cancelaciones ni disrupciones
-- pruebas de datos reales enfocadas en **experimentación numérica con ventanas reales de 3, 5 y 7 días**
+- vuelos recurrentes materializados como `InstanciaVuelo`
+- ruteo temporal con fechas absolutas de salida y llegada
+- operación ideal: **sin cancelaciones ni disrupciones**
+- penalizaciones por capacidad, deadline, almacén y no asignados
+- suites pesadas de experimentación real separadas del `mvn test` normal mediante la etiqueta `slow-experiment`
 
-## Qué optimiza realmente el algoritmo hoy
+## Configuración de experimentación vigente en el repositorio
 
-En el estado actual, DHGS **sí optimiza**, pero conviene ser preciso sobre **qué** está optimizando:
+La configuración actual leída desde `src/test/resources/test-experiment.properties` es:
 
-1. **selección de qué envíos despachar en la época**
-2. **elección de la mejor ruta temporal por envío** usando `AlgoritmoSPLIT` + `GrafoVuelos`
-3. **reducción del costo total** medido como `distancia × maletas`
-4. **reducción de penalizaciones** por:
-   - exceso de capacidad en vuelos
-   - retrasos respecto al deadline
-   - exceso de almacén por aeropuerto
+- `experiment.start=2026-07-14T00:00:00`
+- `experiment.epoch.hours=4`
+- `experiment.population=6`
+- `experiment.time.limit.seconds=1`
+
+### Ventanas verificadas nuevamente a partir del dataset
+
+Reconteo directo sobre `src/test/resources/datos/envios_preliminar`:
+
+| Escenario | Días | Envíos | Maletas |
+|---|---:|---:|---:|
+| Escenario 3 | 3 | 8578 | 14927 |
+| Escenario 5 | 5 | 14162 | 25013 |
+| Escenario 7 | 7 | 19547 | 35183 |
+
+Distribución diaria observada para la ventana vigente:
+
+| Fecha | Envíos | Maletas |
+|---|---:|---:|
+| 2026-07-14 | 3171 | 4925 |
+| 2026-07-15 | 2741 | 5001 |
+| 2026-07-16 | 2666 | 5001 |
+| 2026-07-17 | 2332 | 5001 |
+| 2026-07-18 | 3252 | 5085 |
+| 2026-07-19 | 2523 | 5085 |
+| 2026-07-20 | 2862 | 5085 |
+
+### Ventana de estrés identificada en el dataset completo
+
+El artefacto `target/top_5day_windows.txt` conserva el análisis de la ventana de 5 días más pesada hallada durante la exploración del dataset completo:
+
+- inicio `2029-01-01`
+- fin exclusivo `2029-01-06`
+- **91210 envíos**
+- **174007 maletas**
+
+Esa ventana sirve como referencia de estrés, pero **no es la configuración actualmente chequeada** en `test-experiment.properties`.
+
+## Qué optimizan hoy DHGS e IALNS
+
+Con la implementación actual, ambas metaheurísticas optimizan principalmente:
+
+1. **qué envíos despachar** en la época activa
+2. **qué ruta temporal asignar** a cada envío con `AlgoritmoSPLIT` + `GrafoVuelos`
+3. **costo operativo** medido como `distancia × maletas`
+4. **penalizaciones** por:
+   - exceso agregado de capacidad en vuelos
+   - violación de deadlines
+   - exceso de almacén en aeropuerto origen
    - envíos no asignados
 
-### Importante sobre `GiantTour`
+### Importante sobre `representacionGigante`
 
-`representacionGigante` **sí tiene coherencia estructural**, pero su papel actual es principalmente:
+`representacionGigante` sigue siendo importante, pero hoy actúa sobre todo como:
 
-- representación genética para `OXCrossover`
-- soporte de consistencia entre `enviosAsignados` y `enviosNoAsignados`
-- rastro explícito de qué envíos pertenecen a la solución
+- representación genética del individuo
+- soporte para `OXCrossover`
+- estructura de consistencia entre asignados, no asignados y giant tour
 
-Con el `SPLIT` vigente, la ruta de un envío se calcula **de forma independiente** del orden del tour. Por eso, hoy el orden del `GiantTour` **no cambia** la ruta elegida para un mismo conjunto de envíos; lo que sí cambia la solución es **agregar, quitar o sustituir envíos**.
+Con el `SPLIT` vigente, la mejor ruta de un envío se calcula de manera **independiente** del orden del tour. Por eso, actualmente:
 
-Por esa razón, en el algoritmo principal quedaron activos solo los operadores locales que sí alteran el conjunto de envíos:
+- el orden del `GiantTour` no altera por sí solo la ruta del envío
+- sí cambia la solución cuando se agregan, quitan o sustituyen envíos
+- los operadores de mejora útiles hoy son `LocalSearchDelete`, `LocalSearchAdd` y `LocalSearchSwapOut`
 
-- `LocalSearchDelete`
-- `LocalSearchAdd`
-- `LocalSearchSwapOut`
+`LocalSearchConsistencyTest` valida precisamente esa interpretación del modelo actual.
 
-Los operadores de reordenamiento (`Relocate`, `Swap`, `2-Opt`) se conservan en el código para una etapa futura en la que `SPLIT` sea sensible al orden.
+## Factibilidad interna vs validación estricta
 
-Esta conclusión ya no se apoya solo en inspección visual del código: `LocalSearchConsistencyTest` verifica explícitamente que con el `SPLIT` actual los operadores de reordenamiento no mejoran ni fitness ni asignaciones sobre un caso controlado.
+Hay dos niveles de chequeo que conviene distinguir:
+
+### 1. Factibilidad interna del individuo
+
+`Individuo.validarFactibilidad()` revisa principalmente:
+
+- must-go no asignados
+- rutas factibles (`ruta.esFactible()`)
+- ausencia de duplicados y consistencia básica del giant tour
+- ausencia de violaciones agregadas de capacidad, tiempo y almacén
+
+### 2. Validación estricta del solucionador
+
+`Validador.validarIndividuo(...)` agrega observaciones explícitas como:
+
+- must-go no asignados
+- envíos presentes a la vez en asignados y no asignados
+- duplicados en `representacionGigante`
+- envíos asignados fuera del giant tour
+- rutas desconectadas
+- deadline violado
+- capacidad excedida por vuelo
+- almacén excedido por aeropuerto
+
+Además, `DHGSAlgorithm` intenta priorizar individuos **estrictamente factibles** con `esEstrictamenteFactible(...)` y, si hace falta, aplica una reparación eliminando envíos opcionales antes de seleccionar el mejor retorno.
 
 ## Requisitos
 
@@ -55,7 +127,7 @@ Esta conclusión ya no se apoya solo en inspección visual del código: `LocalSe
 
 ## Ejecución rápida
 
-### Compilar el proyecto
+### Compilar
 
 ```bash
 ./mvnw clean compile
@@ -65,7 +137,9 @@ Esta conclusión ya no se apoya solo en inspección visual del código: `LocalSe
 .\mvnw.cmd clean compile
 ```
 
-### Ejecutar toda la suite
+### Ejecutar la suite normal
+
+La suite normal **excluye** los tests etiquetados como `slow-experiment`.
 
 ```bash
 ./mvnw clean test
@@ -75,27 +149,39 @@ Esta conclusión ya no se apoya solo en inspección visual del código: `LocalSe
 .\mvnw.cmd clean test
 ```
 
-### Ejecutar solo las pruebas principales de algoritmo
+### Ejecutar solo pruebas ligeras de algoritmo
 
 ```bash
-./mvnw -Dtest=DHGSIntegrationTest,DHGSInstanciasDiariasTest,DHGSExperimentacionNumericaTest test
+./mvnw -Dtest=DHGSIntegrationTest,IALNSIntegrationTest,DHGSInstanciasDiariasTest,LocalSearchConsistencyTest test
 ```
 
 ```powershell
-.\mvnw.cmd -Dtest=DHGSIntegrationTest,DHGSInstanciasDiariasTest,DHGSExperimentacionNumericaTest test
+.\mvnw.cmd "-Dtest=DHGSIntegrationTest,IALNSIntegrationTest,DHGSInstanciasDiariasTest,LocalSearchConsistencyTest" test
 ```
 
-### Ejecutar solo la experimentación numérica del algoritmo DHGS
+### Ejecutar manualmente los experimentos pesados
+
+Para incluir los tests marcados como `slow-experiment`, activa el perfil `with-experiments`.
 
 ```bash
-./mvnw -Dtest=DHGSExperimentacionNumericaTest test
+./mvnw -Pwith-experiments -Dtest=DHGSExperimentacionNumericaTest,IALNSExperimentacionNumericaTest test
 ```
 
 ```powershell
-.\mvnw.cmd -Dtest=DHGSExperimentacionNumericaTest test
+.\mvnw.cmd -Pwith-experiments "-Dtest=DHGSExperimentacionNumericaTest,IALNSExperimentacionNumericaTest" test
 ```
 
-> `DHGSExperimentacionNumericaTest` es la suite de referencia para experimentación numérica: ejecuta tres escenarios reproducibles (**3**, **5** y **7** días) y toma su configuración desde `src/test/resources/test-experiment.properties`.
+### Ejecutar solo una metaheurística pesada
+
+```bash
+./mvnw -Pwith-experiments -Dtest=DHGSExperimentacionNumericaTest test
+./mvnw -Pwith-experiments -Dtest=IALNSExperimentacionNumericaTest test
+```
+
+```powershell
+.\mvnw.cmd -Pwith-experiments "-Dtest=DHGSExperimentacionNumericaTest" test
+.\mvnw.cmd -Pwith-experiments "-Dtest=IALNSExperimentacionNumericaTest" test
+```
 
 ## Estructura relevante
 
@@ -106,6 +192,10 @@ src/main/java/com/TasfB2B/DHGS/demo/
 │   │   ├── DHGSAlgorithm
 │   │   ├── Individuo
 │   │   └── Poblacion
+│   ├── ialns/
+│   │   ├── IALNSAlgorithm
+│   │   ├── IALNSState
+│   │   └── operators/
 │   └── operators/
 ├── application/
 │   ├── dto/
@@ -113,8 +203,8 @@ src/main/java/com/TasfB2B/DHGS/demo/
 ├── domain/
 │   ├── model/
 │   │   ├── Aeropuerto
-│   │   ├── Vuelo                (plantilla recurrente)
-│   │   ├── InstanciaVuelo       (ocurrencia diaria materializada)
+│   │   ├── Vuelo
+│   │   ├── InstanciaVuelo
 │   │   ├── Envio
 │   │   ├── RutaEnvio
 │   │   └── AlmacenEstado
@@ -133,110 +223,81 @@ src/main/java/com/TasfB2B/DHGS/demo/
 
 ## Modelo temporal actual
 
-### 1. Horizonte de simulación
+### Horizonte de simulación
 
-- inicio: fecha indicada por el usuario o día anterior al primer envío
-- duración: configurable según el escenario
-- granularidad: **4 horas por época**
-- total: `duraciónEnDías × 6` épocas
+- inicio configurable por `experiment.start`
+- duración configurable por escenario
+- granularidad fija de **4 horas por época**
+- total de épocas: `duraciónEnDías × 6`
 
-### 2. Vuelos recurrentes
+### Vuelos recurrentes
 
-`Vuelo` representa la plantilla recurrente.
+`Vuelo` representa la plantilla recurrente. `GrafoVuelos` la materializa como múltiples `InstanciaVuelo` fechadas, una por día del horizonte activo.
 
-Antes de optimizar, `GrafoVuelos` materializa cada plantilla en tantas ocurrencias diarias de tipo `InstanciaVuelo` como días tenga el escenario configurado.
+### Envíos
 
-Ejemplo:
-
-- plantilla: `SKBO -> SPIM`, salida `06:00`, llegada `08:15`
-- instancias generadas:
-  - `VL-...@2026-01-01`
-  - `VL-...@2026-01-02`
-  - `VL-...@2026-01-03`
-  - `VL-...@2026-01-04`
-  - `VL-...@2026-01-05`
-
-### 3. Envíos
-
-Cada envío:
+Cada `Envio`:
 
 - tiene `fechaHoraCreacion`
-- entra a la época correspondiente
-- calcula deadline
-- actualiza `must-go` y prioridad en cada época
-- aporta `cantidadMaletas`, que afecta costo, factibilidad de vuelo y ocupación de almacén
+- entra en la época correspondiente
+- recalcula deadline, prioridad y `must-go`
+- contribuye con `cantidadMaletas` al costo, la capacidad de vuelos y la ocupación de almacén
 
-## Flujo actual
+## Flujo operativo resumido
 
-1. Se parsean aeropuertos, vuelos plantilla y envíos.
-2. `SimuladorEpocas` genera las épocas del horizonte configurado.
-3. `GrafoVuelos` materializa vuelos diarios para los días del escenario activo.
-4. En cada época:
-   - se mezclan envíos nuevos y pendientes
-   - se recalculan prioridad y `must-go`
-   - DHGS genera y mejora soluciones
-   - se despachan envíos asignados y se postergan no asignados
-5. Se consolida el resultado final por época y total.
+1. Se parsean aeropuertos, vuelos y envíos.
+2. `SimuladorEpocas` construye las épocas del horizonte.
+3. `GrafoVuelos` materializa los vuelos del escenario.
+4. En cada época se mezclan envíos nuevos y pendientes.
+5. Se recalculan prioridad y `must-go`.
+6. Se ejecuta DHGS o IALNS sobre la foto temporal.
+7. Se despachan asignados y se arrastran pendientes.
+8. Se acumulan costo y estado de almacenes.
 
 ## Cómo entran maletas, vuelos y almacenes en la lógica
 
 ### Maletas
 
-- cada `Envio` tiene `cantidadMaletas`
-- el costo de una `RutaEnvio` es `distanciaTotal × cantidadMaletas`
-- la carga de cada vuelo se calcula sumando las maletas de todos los envíos que usan ese vuelo
-- la carga de almacén se calcula sumando las maletas de los envíos no asignados que permanecen en el aeropuerto origen
+- el costo de `RutaEnvio` se expresa como `distancia × maletas`
+- la carga de vuelo se calcula sumando las maletas de todos los envíos que usan ese vuelo
+- la carga de almacén se calcula con las maletas de los envíos no asignados que permanecen en el origen
 
 ### Capacidad de vuelos
 
-Durante la optimización de una época:
+- `GrafoVuelos` filtra vuelos insuficientes para **un envío aislado**
+- `CalculadorFitness` y `Validador` controlan la **sobrecarga agregada** del individuo completo
 
-- `GrafoVuelos` filtra vuelos cuya `capacidadDisponible` individual sea insuficiente para **ese envío**
-- luego `CalculadorFitness` y `Validador` revisan la **sobrecarga agregada** por vuelo sumando maletas de todos los envíos asignados
+### Almacenes
 
-Esto significa que la capacidad de vuelo hoy se trata de forma **ex post** a nivel agregado: la solución puede construirse y luego recibir penalización si varias asignaciones usan el mismo vuelo por encima de su capacidad total.
-
-### Almacén por aeropuerto
-
-El proyecto **sí** toma en cuenta almacenes:
-
-- `SimuladorEpocas` mantiene `AlmacenEstado` por aeropuerto a lo largo de las épocas
-- al llegar envíos nuevos, sus maletas se agregan al almacén origen
-- al despachar un envío, sus maletas salen del almacén origen
-- durante la optimización, `CalculadorFitness` penaliza el exceso de almacén usando las maletas de los envíos no asignados
-- `Validador` también reporta explícitamente si un aeropuerto supera su capacidad de almacén
-
-En otras palabras, el criterio de almacén vigente es: **las maletas que no salen en la época siguen ocupando espacio en el aeropuerto de origen**.
+- `SimuladorEpocas` mantiene `AlmacenEstado` por aeropuerto
+- si un envío no sale, sus maletas siguen ocupando espacio en su aeropuerto de origen
+- el exceso de almacén se penaliza y también se reporta explícitamente en validación
 
 ## Pruebas actuales
 
 ### Unitarias / integración ligera
 
-- `SimuladorEpocasTest`
 - `DomainModelTests`
+- `SimuladorEpocasTest`
 - `LocalSearchConsistencyTest`
 - `DHGSInstanciasDiariasTest`
 - `DHGSIntegrationTest`
+- `IALNSIntegrationTest`
 
-### Datos reales
+### Experimentación real opt-in
 
 - `DHGSExperimentacionNumericaTest`
-  - escenario 1: **3 días**
-  - escenario 2: **5 días**
-  - escenario 3: **7 días**
-  - configuración cargada desde `test-experiment.properties`
-  - parámetros activos: fecha de inicio, duración por escenario, tamaño de población, límite por época y conteos esperados
-  - imprime tiempos de carga/filtrado, simulación y tiempo total por escenario
+- `IALNSExperimentacionNumericaTest`
 
-## Qué no incluye este alcance
+Ambas suites leen fecha de inicio, duración, población, límite por época y conteos esperados desde `test-experiment.properties`, pero no se ejecutan con `mvn test` normal porque están marcadas como `slow-experiment`.
 
-Actualmente el sistema **no** modela:
+## Fuera de alcance por ahora
+
+Actualmente el sistema no modela:
 
 - cancelaciones de vuelos
-- disrupciones durante la simulación
-- replanificación por eventos operativos
-
-La base quedó preparada para eso en una siguiente iteración gracias al uso de `InstanciaVuelo`.
+- disrupciones operativas durante la simulación
+- replanificación reactiva por incidentes
 
 ## Documentación complementaria
 

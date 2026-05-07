@@ -23,6 +23,12 @@ public class DHGSAlgorithm {
 
     private static final Logger log = LoggerFactory.getLogger(DHGSAlgorithm.class);
     private static final int ITERACIONES_AJUSTE_PENALIZACION = 100;
+    static final int MIN_ITERACIONES_ANTES_DIVERSIFICAR = 25;
+    static final int VENTANA_ITERACIONES_DIVERSIFICACION = 12;
+    static final double UMBRAL_DIVERSIDAD_ESTANCAMIENTO = 0.001;
+    static final double UMBRAL_MEJORA_RELATIVA_MINIMA = 0.001;
+    private static final double EPSILON_MEJORA_FITNESS = 1e-6;
+    private static final double[] PROBABILIDADES_DIVERSIFICACION = {0.15, 0.35, 0.55, 0.85, 1.0};
 
     private final ConstructorSolucionesIniciales constructorSoluciones;
     private final AlgoritmoSPLIT split;
@@ -84,17 +90,30 @@ public class DHGSAlgorithm {
         log.info("Población inicial: {}", poblacion);
 
         int iteracion = 0;
+        double mejorFitness = obtenerMejorFitness(poblacion);
+        double fitnessReferenciaVentana = mejorFitness;
+        int iteracionesEnVentana = 0;
         while (true) {
             iteracion++;
+            iteracionesEnVentana++;
 
             Duration transcurrido = Duration.between(inicio, Instant.now());
             if (transcurrido.compareTo(limiteTiempo) >= 0) {
                 break;
             }
 
-            if (poblacion.estaEstancada(0.001)) {
-                log.info("Población estancada en iteración {}", iteracion);
-                break;
+            double mejoraRelativaVentana = calcularMejoraRelativa(fitnessReferenciaVentana, mejorFitness);
+            if (debeDiversificarPorEstancamiento(iteracion, iteracionesEnVentana, mejoraRelativaVentana, poblacion,
+                    UMBRAL_DIVERSIDAD_ESTANCAMIENTO, UMBRAL_MEJORA_RELATIVA_MINIMA)) {
+                log.info("Población estancada en iteración {} (mejora relativa ventana: {}, diversidad: {}). Se inyectará diversidad.",
+                        iteracion,
+                        String.format(Locale.US, "%.6f", mejoraRelativaVentana),
+                        poblacion.getDiversidad());
+                diversificarPoblacion(envios, epocaActual, totalEpocas, tamanoPoblacion, poblacion);
+                mejorFitness = obtenerMejorFitness(poblacion);
+                fitnessReferenciaVentana = mejorFitness;
+                iteracionesEnVentana = 0;
+                continue;
             }
 
             try {
@@ -121,6 +140,18 @@ public class DHGSAlgorithm {
                 hijo.validarFactibilidad();
                 poblacion.agregar(hijo);
 
+                if (!esEstrictamenteFactible(hijo, validador)) {
+                    Individuo reparado = repararHaciaFactibilidad(hijo, ctx);
+                    if (difiereDe(hijo, reparado)) {
+                        poblacion.agregar(reparado);
+                    }
+                }
+
+                double mejorFitnessActual = obtenerMejorFitness(poblacion);
+                if (mejorFitnessActual + EPSILON_MEJORA_FITNESS < mejorFitness) {
+                    mejorFitness = mejorFitnessActual;
+                }
+
                 if (iteracion % ITERACIONES_AJUSTE_PENALIZACION == 0) {
                     parametros.ajustar(poblacion.getRatioFactibles());
                     calculadorFitness.setParametros(parametros);
@@ -133,17 +164,11 @@ public class DHGSAlgorithm {
             }
         }
 
-        Individuo mejor = poblacion.getMejorHistorico();
-        if (mejor == null && !poblacion.getFactibles().isEmpty()) {
-            mejor = poblacion.getFactibles().stream()
-                    .min(Comparator.comparingDouble(Individuo::getFitness))
-                    .orElse(null);
+        List<Individuo> candidatosRetorno = new ArrayList<>(poblacion.getTodos());
+        if (poblacion.getMejorHistorico() != null) {
+            candidatosRetorno.add(poblacion.getMejorHistorico());
         }
-        if (mejor == null && !poblacion.getInfactibles().isEmpty()) {
-            mejor = poblacion.getInfactibles().stream()
-                    .min(Comparator.comparingDouble(Individuo::getFitness))
-                    .orElse(null);
-        }
+        Individuo mejor = seleccionarMejorRetorno(candidatosRetorno, validador);
 
         if (mejor != null) {
             mejor.validarFactibilidad();
@@ -158,5 +183,180 @@ public class DHGSAlgorithm {
                 iteracion, tiempoTotal.toMillis(), mejor);
 
         return mejor;
+    }
+
+    static Individuo seleccionarMejorRetorno(Collection<Individuo> candidatos, Validador validador) {
+        if (candidatos == null || candidatos.isEmpty()) {
+            return null;
+        }
+
+        return candidatos.stream()
+                .filter(Objects::nonNull)
+                .min(Comparator
+                        .comparing((Individuo individuo) -> !esEstrictamenteFactible(individuo, validador))
+                        .thenComparingDouble(Individuo::getFitness))
+                .orElse(null);
+    }
+
+    static boolean esEstrictamenteFactible(Individuo individuo, Validador validador) {
+        return individuo != null
+                && individuo.validarFactibilidad()
+                && (validador == null || validador.validarIndividuo(individuo).isEmpty());
+    }
+
+    Individuo repararHaciaFactibilidad(Individuo individuo, LocalSearchContext ctx) {
+        if (individuo == null || ctx == null) {
+            return individuo;
+        }
+
+        Individuo reparado = individuo.clonar();
+        ctx.evaluar(reparado);
+        List<String> violaciones = validador.validarIndividuo(reparado);
+
+        while (!violaciones.isEmpty()) {
+            Envio candidato = seleccionarOpcionalParaEliminar(reparado);
+            if (candidato == null) {
+                break;
+            }
+
+            reparado.getEnviosAsignados().remove(candidato);
+            if (!reparado.getEnviosNoAsignados().contains(candidato)) {
+                reparado.getEnviosNoAsignados().add(candidato);
+            }
+            reparado.setRepresentacionGigante(
+                    ctx.removerDelTour(reparado.getRepresentacionGigante(), candidato));
+            ctx.evaluar(reparado);
+            violaciones = validador.validarIndividuo(reparado);
+        }
+
+        return reparado;
+    }
+
+    static boolean debeDiversificarPorEstancamiento(int iteracion,
+                                                    int iteracionesEnVentana,
+                                                    double mejoraRelativaVentana,
+                                                    Poblacion poblacion,
+                                                    double umbralDiversidad,
+                                                    double umbralMejoraRelativa) {
+        return iteracion >= MIN_ITERACIONES_ANTES_DIVERSIFICAR
+                && iteracionesEnVentana >= VENTANA_ITERACIONES_DIVERSIFICACION
+                && mejoraRelativaVentana <= umbralMejoraRelativa
+                && poblacion != null
+                && poblacion.estaEstancada(umbralDiversidad);
+    }
+
+    private void diversificarPoblacion(List<Envio> envios,
+                                       int epocaActual,
+                                       int totalEpocas,
+                                       int tamanoPoblacion,
+                                       Poblacion poblacion) {
+        if (envios == null || envios.isEmpty() || poblacion == null) {
+            return;
+        }
+
+        int cantidadNuevos = Math.max(2, Math.min(5, Math.max(1, tamanoPoblacion / 2)));
+        Random random = new Random();
+
+        for (int indice = 0; indice < cantidadNuevos; indice++) {
+            double probabilidad = PROBABILIDADES_DIVERSIFICACION[indice % PROBABILIDADES_DIVERSIFICACION.length];
+            Individuo nuevo = constructorSoluciones.generarAleatorio(
+                    envios,
+                    probabilidad,
+                    epocaActual,
+                    totalEpocas,
+                    random);
+            poblacion.agregar(nuevo);
+        }
+    }
+
+    private static double obtenerMejorFitness(Poblacion poblacion) {
+        if (poblacion == null) {
+            return Double.POSITIVE_INFINITY;
+        }
+        if (poblacion.getMejorHistorico() != null) {
+            return poblacion.getMejorHistorico().getFitness();
+        }
+        return poblacion.getTodos().stream()
+                .mapToDouble(Individuo::getFitness)
+                .min()
+                .orElse(Double.POSITIVE_INFINITY);
+    }
+
+    static double calcularMejoraRelativa(double fitnessReferencia, double fitnessActual) {
+        if (!Double.isFinite(fitnessReferencia) || fitnessReferencia <= 0.0 || !Double.isFinite(fitnessActual)) {
+            return 0.0;
+        }
+        double mejora = fitnessReferencia - fitnessActual;
+        if (mejora <= EPSILON_MEJORA_FITNESS) {
+            return 0.0;
+        }
+        return mejora / fitnessReferencia;
+    }
+
+    private Envio seleccionarOpcionalParaEliminar(Individuo individuo) {
+        if (individuo == null || individuo.getEnviosAsignados() == null || individuo.getEnviosAsignados().isEmpty()) {
+            return null;
+        }
+
+        Set<RutaEnvio> rutasEnConflicto = new HashSet<>();
+        Set<com.TasfB2B.DHGS.demo.domain.model.Vuelo> vuelosSobrecargados = obtenerVuelosSobrecargados(individuo);
+
+        for (RutaEnvio ruta : individuo.getEnviosAsignados().values()) {
+            if (ruta != null && !ruta.esFactible()) {
+                rutasEnConflicto.add(ruta);
+            }
+        }
+
+        return individuo.getEnviosAsignados().entrySet().stream()
+                .filter(entry -> entry.getKey() != null && !entry.getKey().isEsMustGo())
+                .sorted(Comparator
+                        .comparingInt((Map.Entry<Envio, RutaEnvio> entry) -> rutasEnConflicto.contains(entry.getValue()) ? 0 : 1)
+                        .thenComparingInt(entry -> usaVueloSobrecargado(entry.getValue(), vuelosSobrecargados) ? 0 : 1)
+                        .thenComparing(Comparator.comparingInt((Map.Entry<Envio, RutaEnvio> entry) ->
+                                Math.max(0, entry.getKey().getCantidadMaletas())).reversed())
+                        .thenComparing(Comparator.comparingDouble((Map.Entry<Envio, RutaEnvio> entry) ->
+                                entry.getValue() != null ? entry.getValue().getCosto() : 0.0).reversed())
+                        .thenComparingInt(entry -> entry.getKey().getPrioridad()))
+                .map(Map.Entry::getKey)
+                .findFirst()
+                .orElse(null);
+    }
+
+    private Set<com.TasfB2B.DHGS.demo.domain.model.Vuelo> obtenerVuelosSobrecargados(Individuo individuo) {
+        Map<com.TasfB2B.DHGS.demo.domain.model.Vuelo, Integer> cargaPorVuelo = new HashMap<>();
+        for (Map.Entry<Envio, RutaEnvio> entry : individuo.getEnviosAsignados().entrySet()) {
+            Envio envio = entry.getKey();
+            RutaEnvio ruta = entry.getValue();
+            if (envio == null || ruta == null || ruta.getSecuenciaVuelos() == null) {
+                continue;
+            }
+            for (com.TasfB2B.DHGS.demo.domain.model.Vuelo vuelo : ruta.getSecuenciaVuelos()) {
+                cargaPorVuelo.merge(vuelo, Math.max(0, envio.getCantidadMaletas()), Integer::sum);
+            }
+        }
+
+        Set<com.TasfB2B.DHGS.demo.domain.model.Vuelo> vuelosSobrecargados = new HashSet<>();
+        for (Map.Entry<com.TasfB2B.DHGS.demo.domain.model.Vuelo, Integer> entry : cargaPorVuelo.entrySet()) {
+            if (entry.getKey() != null && entry.getValue() > entry.getKey().getCapacidadDisponible()) {
+                vuelosSobrecargados.add(entry.getKey());
+            }
+        }
+        return vuelosSobrecargados;
+    }
+
+    private boolean usaVueloSobrecargado(RutaEnvio ruta, Set<com.TasfB2B.DHGS.demo.domain.model.Vuelo> vuelosSobrecargados) {
+        return ruta != null
+                && ruta.getSecuenciaVuelos() != null
+                && ruta.getSecuenciaVuelos().stream().anyMatch(vuelosSobrecargados::contains);
+    }
+
+    private boolean difiereDe(Individuo original, Individuo candidato) {
+        if (original == null || candidato == null) {
+            return false;
+        }
+        return !Objects.equals(original.getRepresentacionGigante(), candidato.getRepresentacionGigante())
+                || !Objects.equals(original.getEnviosAsignados().keySet(), candidato.getEnviosAsignados().keySet())
+                || !Objects.equals(original.getEnviosNoAsignados(), candidato.getEnviosNoAsignados())
+                || Math.abs(original.getFitness() - candidato.getFitness()) > EPSILON_MEJORA_FITNESS;
     }
 }

@@ -1,4 +1,4 @@
-# Pseudocódigo — DHGS con vuelos recurrentes materializados
+# Pseudocódigo — DHGS e IALNS con vuelos recurrentes materializados
 
 ## Entrada conceptual
 
@@ -12,6 +12,20 @@ ENTRADA:
   duracionEpocaHoras       ← parámetro configurable (4 en la suite de referencia)
   tamanoPoblacion          ← parámetro DHGS configurable
   limiteTiempoPorEpoca     ← parámetro DHGS configurable
+```
+
+## Configuración de referencia vigente
+
+```text
+test-experiment.properties actual:
+  start = 2026-07-14T00:00:00
+  3 días → 8578 envíos / 14927 maletas
+  5 días → 14162 envíos / 25013 maletas
+  7 días → 19547 envíos / 35183 maletas
+
+Ventana de estrés conocida en análisis offline:
+  start = 2029-01-01T00:00:00
+  5 días → 91210 envíos / 174007 maletas
 ```
 
 ## Salida conceptual
@@ -239,12 +253,23 @@ FUNCIÓN ejecutarDHGS(enviosDisponibles, epocaActual, totalEpocas, tamanoPoblaci
     poblacion ← generarPoblacionInicial(enviosDisponibles, tamanoPoblacion)
     inicio ← relojActual()
     iteracion ← 0
+    mejorFitness ← obtenerMejorFitness(poblacion)
+    fitnessReferenciaVentana ← mejorFitness
+    iteracionesEnVentana ← 0
 
     MIENTRAS relojActual() - inicio < limiteTiempo:
         iteracion++
+        iteracionesEnVentana++
 
-        SI poblacion.estaEstancada(0.001):
-            SALIR
+        SI debeDiversificarPorEstancamiento(iteracion,
+                                            iteracionesEnVentana,
+                                            mejoraRelativa(fitnessReferenciaVentana, mejorFitness),
+                                            poblacion):
+            diversificarPoblacion(enviosDisponibles, epocaActual, totalEpocas, tamanoPoblacion)
+            mejorFitness ← obtenerMejorFitness(poblacion)
+            fitnessReferenciaVentana ← mejorFitness
+            iteracionesEnVentana ← 0
+            CONTINUAR
 
         padres ← seleccionarPadres(poblacion)
         hijo ← crossoverOX(padres)
@@ -262,10 +287,51 @@ FUNCIÓN ejecutarDHGS(enviosDisponibles, epocaActual, totalEpocas, tamanoPoblaci
 
         poblacion.agregar(hijo)
 
+        SI no esEstrictamenteFactible(hijo, validador):
+            reparado ← repararHaciaFactibilidad(hijo)
+            SI reparado difiere de hijo:
+                poblacion.agregar(reparado)
+
+        mejorFitnessActual ← obtenerMejorFitness(poblacion)
+        SI mejorFitnessActual mejora a mejorFitness:
+            mejorFitness ← mejorFitnessActual
+
         SI iteracion MOD 100 = 0:
             ajustarPenalizaciones(poblacion.ratioFactibles)
 
-    RETORNAR mejorIndividuo(poblacion)
+    candidatos ← todos los individuos de la población + mejorHistorico si existe
+    RETORNAR seleccionarMejorRetorno(candidatos)
+```
+
+### Reparación hacia factibilidad estricta en DHGS
+
+```text
+FUNCIÓN repararHaciaFactibilidad(individuo):
+    reparado ← clonar(individuo)
+    evaluar(reparado)
+    violaciones ← validarIndividuo(reparado)
+
+    MIENTRAS violaciones no estén vacías:
+        candidato ← seleccionar envío opcional asignado que más contribuya al conflicto
+        SI candidato no existe:
+            ROMPER
+
+        remover candidato de enviosAsignados
+        agregar candidato a enviosNoAsignados
+        remover candidato de representacionGigante
+        evaluar(reparado)
+        violaciones ← validarIndividuo(reparado)
+
+    RETORNAR reparado
+```
+
+### Selección final de retorno en DHGS
+
+```text
+FUNCIÓN seleccionarMejorRetorno(candidatos):
+    priorizar primero individuos estrictamente factibles
+    desempatar por fitness ascendente
+    RETORNAR el mejor
 ```
 
 ---
@@ -343,6 +409,90 @@ FUNCIÓN ejecutarSimulacionCompleta(aeropuertos, vuelosPlantilla, enviosTotales,
 
 ---
 
+## Fase 10 — IALNS sobre el mismo dominio operativo
+
+```text
+FUNCIÓN ejecutarIALNS(enviosDisponibles, epocaActual, totalEpocas, tamanoPoblacion, limiteTiempo):
+    SI enviosDisponibles está vacío:
+        RETORNAR individuo vacío factible
+
+    ctx ← nuevo IALNSContext(split, fitness, validador, epocaActual, totalEpocas)
+    solucionInicial ← construirSolucionInicial(enviosDisponibles, epocaActual, totalEpocas, tamanoPoblacion, ctx)
+
+    estado ← nuevo IALNSState(cantidadOperadoresDestroy, cantidadOperadoresRepair)
+    estado.reset(solucionInicial)
+    randomDestroy.factorQ ← estado.factorQ
+
+    iteracionesSinMejora ← 0
+    mejorasConsecutivas ← 0
+    inicio ← relojActual()
+
+    MIENTRAS estado.temperaturaActiva() Y relojActual() - inicio < limiteTiempo:
+        estado.iteracion++
+
+        indiceDestroy ← estado.seleccionarDestruccion()
+        indiceRepair ← estado.seleccionarReparacion()
+
+        destruccion ← operadorDestroy[indiceDestroy].destruir(estado.actual)
+        nueva ← operadorRepair[indiceRepair].reparar(destruccion.solucionDestruida,
+                                                     destruccion.enviosRemovidos,
+                                                     ctx)
+        evaluar(nueva)
+
+        actualizarScoreDestruccion(indiceDestroy, nueva)
+        actualizarScoreReparacion(indiceRepair, nueva)
+
+        SI nueva mejora a mejorGlobal:
+            mejorGlobal ← clonar(nueva)
+            mejorasConsecutivas++
+            iteracionesSinMejora ← 0
+        SINO:
+            iteracionesSinMejora++
+            mejorasConsecutivas ← 0
+
+        SI criterioAceptacion(estado.actual, nueva, temperatura):
+            estado.actual ← clonar(nueva)
+
+        SI iteracion MOD UPDATE_INTERVAL = 0:
+            actualizarPesos(ALPHA)
+            ajustarFactorQ(según mejora reciente)
+
+        enfriarTemperatura()
+
+    RETORNAR clonar(mejorGlobal)
+```
+
+### Construcción de solución inicial en IALNS
+
+```text
+FUNCIÓN construirSolucionInicial(envios, epocaActual, totalEpocas, tamanoPoblacion, ctx):
+    candidatos ← generarPoblacionInicial(envios, max(3, tamanoPoblacion))
+
+    SI candidatos está vacío:
+        candidatos ← [solucionGreedy(envios)]
+
+    PARA CADA candidato EN candidatos:
+        normalizarCoberturaCompleta(candidato, envios)
+        evaluar(candidato)
+
+    RETORNAR candidato con prioridad:
+        1) factible
+        2) menor fitness
+```
+
+### Observación importante sobre IALNS
+
+```text
+IALNS no usa población separada en factibles / infactibles como DHGS,
+pero sí comparte el mismo CalculadorFitness y el mismo Validador.
+
+La normalización de cobertura completa fuerza que el giant tour mantenga todos
+los envíos conocidos de la época, y luego la reparación decide cuáles quedan
+realmente asignados o no asignados.
+```
+
+---
+
 ## Restricciones activas y fuera de alcance
 
 ### Activas
@@ -367,10 +517,13 @@ FUNCIÓN ejecutarSimulacionCompleta(aeropuertos, vuelosPlantilla, enviosTotales,
 
 ## Escenarios de prueba actuales
 
-`DHGSExperimentacionNumericaTest` quedó como la suite de referencia para experimentación numérica y modela:
+Las suites pesadas de experimento quedaron separadas del `mvn test` normal mediante `slow-experiment` y modelan:
 
 1. **DHGS con ventana real de 3 días**
 2. **DHGS con ventana real de 5 días**
 3. **DHGS con ventana real de 7 días**
+4. **IALNS con ventana real de 3 días**
+5. **IALNS con ventana real de 5 días**
+6. **IALNS con ventana real de 7 días**
 
 La fecha de inicio, la duración, el tamaño de población, el límite por época y los conteos esperados se leen desde `src/test/resources/test-experiment.properties`.
