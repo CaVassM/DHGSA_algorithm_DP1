@@ -74,22 +74,6 @@ En esta fase se deja únicamente la estructura necesaria para trabajo paralelo d
 └── docker-compose.yml
 ```
 
-## Instrucciones de ejecución con Docker
-
-1. Copiar variables de entorno base desde `.env.example`.
-2. Levantar la infraestructura compartida.
-3. Ejecutar el backend y el frontend por módulo a medida que se implemente cada parte.
-
-```powershell
-Copy-Item .env.example .env
-docker compose up -d postgres redis mongo
-```
-
-Para validar el módulo backend desde Maven:
-
-```powershell
-.\mvnw.cmd clean test
-```
 
 ## Escenarios operativos
 
