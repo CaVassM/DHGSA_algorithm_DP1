@@ -1,5 +1,6 @@
 package com.tasfb2b.backend.dto.request;
 
+import com.tasfb2b.backend.domain.enums.DataSetReference;
 import com.tasfb2b.backend.domain.enums.OperationalScenario;
 import com.tasfb2b.backend.domain.enums.PlannerAlgorithm;
 import jakarta.validation.constraints.Min;
@@ -34,6 +35,6 @@ public class PlanningRequest {
     @Min(1)
     private Integer timeLimitSeconds;
 
-    private String dataSetReference;
+    private DataSetReference dataSetReference;
 }
 

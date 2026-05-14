@@ -37,3 +37,7 @@ build/
 
 ### VS Code ###
 .vscode/
+
+### Contexto y Documentación ###
+*.pdf
+Roadmap/ROADMAP_GUIDELINES.md

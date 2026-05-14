@@ -16,14 +16,14 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
-import java.time.LocalDateTime;
+import java.time.LocalTime;
 
 @Entity
 @Table(
-        name = "envios",
+        name = "vuelos",
         indexes = {
-                @Index(name = "idx_envios_business_id", columnList = "business_id", unique = true),
-                @Index(name = "idx_envios_fecha_creacion", columnList = "fecha_hora_creacion")
+                @Index(name = "idx_vuelos_business_id", columnList = "business_id", unique = true),
+                @Index(name = "idx_vuelos_origen_destino", columnList = "origen_id,destino_id")
         }
 )
 @Getter
@@ -31,7 +31,7 @@ import java.time.LocalDateTime;
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
-public class ShipmentEntity {
+public class FlightEntity {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -48,21 +48,21 @@ public class ShipmentEntity {
     @JoinColumn(name = "destino_id", nullable = false)
     private AirportEntity aeropuertoDestino;
 
-    @Column(name = "fecha_hora_creacion", nullable = false)
-    private LocalDateTime fechaHoraCreacion;
+    @Column(name = "hora_salida", nullable = false)
+    private LocalTime horaSalida;
 
-    @Column(name = "cantidad_maletas", nullable = false)
-    private Integer cantidadMaletas;
-
-    @Column(name = "id_cliente", nullable = false, length = 32)
-    private String idCliente;
-
-    @Column
-    private LocalDateTime deadline;
-
-    @Column(name = "es_must_go", nullable = false)
-    private boolean esMustGo;
+    @Column(name = "hora_llegada", nullable = false)
+    private LocalTime horaLlegada;
 
     @Column(nullable = false)
-    private Integer prioridad;
+    private Integer capacidad;
+
+    @Column(name = "capacidad_disponible", nullable = false)
+    private Integer capacidadDisponible;
+
+    @Column(nullable = false)
+    private Double distancia;
+
+    @Column(name = "duracion_minutos", nullable = false)
+    private Long duracionMinutos;
 }

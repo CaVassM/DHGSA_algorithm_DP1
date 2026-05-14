@@ -1,16 +1,19 @@
 package com.tasfb2b.backend.repository;
 
 import com.tasfb2b.backend.domain.model.ShipmentEntity;
+import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
+import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Optional;
-import java.util.UUID;
 
 @Repository
-public interface ShipmentRepository {
+public interface ShipmentRepository extends JpaRepository<ShipmentEntity, Long> {
 
-    Optional<ShipmentEntity> findById(UUID shipmentId);
+    Optional<ShipmentEntity> findByBusinessId(String businessId);
 
-    ShipmentEntity save(ShipmentEntity shipment);
+    List<ShipmentEntity> findByFechaHoraCreacionBetween(LocalDateTime start, LocalDateTime end);
+
+    boolean existsByBusinessId(String businessId);
 }
-
