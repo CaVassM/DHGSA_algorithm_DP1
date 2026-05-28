@@ -33,6 +33,42 @@ services:
     networks:
       - tasf-network
 
+  backend:
+    build:
+      context: ./modules/backend
+      dockerfile: Dockerfile
+    container_name: tasf-b2b-backend
+    ports:
+      - "${BACKEND_PORT:-8080}:8080"
+    volumes:
+      - ./modules/backend/src/test/resources/datos:/app/src/test/resources/datos
+    environment:
+      PLANNER_DATASETS_DEMO_AEROPUERTOS: ${PLANNER_DATASETS_DEMO_AEROPUERTOS:-/app/src/test/resources/datos/estudiantes.txt}
+      PLANNER_DATASETS_DEMO_VUELOS: ${PLANNER_DATASETS_DEMO_VUELOS:-/app/src/test/resources/datos/planes_vuelo.txt}
+      PLANNER_DATASETS_DEMO_ENVIOS_DIR: ${PLANNER_DATASETS_DEMO_ENVIOS_DIR:-/app/src/test/resources/datos/envios_preliminar_test}
+
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-tasf_b2b}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-tasf}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-tasf123}
+    depends_on:
+      - postgres
+      - redis
+      - mongo
+    networks:
+      - tasf-network
+
+  frontend:
+    build:
+      context: ./modules/frontend
+      dockerfile: Dockerfile
+    container_name: tasf-b2b-frontend
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      - backend
+    networks:
+      - tasf-network
+
 networks:
   tasf-network:
     driver: bridge
@@ -40,4 +76,3 @@ networks:
 volumes:
   postgres_data:
   mongo_data:
-
