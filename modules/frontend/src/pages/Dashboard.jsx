@@ -1,15 +1,53 @@
+import { useState, useEffect, useRef } from 'react'
+import { useLocation } from 'react-router-dom'
 import NavBar from '../components/NavBar'
 import PanelLateral from '../components/PanelLateral'
 import MapaMundi from '../components/MapaMundi'
+import { getPlanningRun } from '../services/api'
+
+const TERMINAL_STATUSES = new Set(['COMPLETED', 'COMPLETED_WITH_PENDING_SHIPMENTS', 'FAILED'])
+
+const LS_KEY = 'tasf_runId'
 
 export default function Dashboard() {
+  const location = useLocation()
+  const stored   = localStorage.getItem(LS_KEY)
+  const runId    = location.state?.runId ?? (stored ? Number(stored) : null)
+  const [run, setRun] = useState(null)
+  const intervalRef = useRef(null)
+
+  // Persistir el runId para que sobreviva recargas y navegación entre páginas
+  useEffect(() => {
+    if (runId != null) localStorage.setItem(LS_KEY, String(runId))
+  }, [runId])
+
+  useEffect(() => {
+    if (!runId) return
+
+    async function poll() {
+      try {
+        const data = await getPlanningRun(runId)
+        setRun(data)
+        if (TERMINAL_STATUSES.has(data.status)) {
+          clearInterval(intervalRef.current)
+        }
+      } catch {
+        // mantener el polling ante errores de red transitorios
+      }
+    }
+
+    poll()
+    intervalRef.current = setInterval(poll, 3000)
+    return () => clearInterval(intervalRef.current)
+  }, [runId])
+
   return (
     <div className="h-screen flex flex-col bg-[#0f172a] overflow-hidden">
       <NavBar />
       <div className="flex flex-1 overflow-hidden">
         {/* Mapa */}
         <main className="flex-1 relative overflow-hidden p-4">
-          <MapaMundi />
+          <MapaMundi runId={runId} runCompleted={!!(run && TERMINAL_STATUSES.has(run.status))} />
           {/* Leyenda */}
           <div className="absolute bottom-4 left-4 flex gap-3 bg-slate-900/80 backdrop-blur rounded-lg px-4 py-2 border border-slate-700">
             <LeyendaItem color="bg-green-500" label="Óptimo (<60%)" />
@@ -18,7 +56,7 @@ export default function Dashboard() {
             <LeyendaItem color="bg-blue-500" label="Vuelo en tránsito" />
           </div>
         </main>
-        <PanelLateral />
+        <PanelLateral run={run} />
       </div>
     </div>
   )

@@ -1,10 +1,11 @@
-import { useState, useRef } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { feature } from 'topojson-client'
 import worldData from 'world-atlas/countries-110m.json'
 import { AEROPUERTOS, RUTAS, getOcupacionPct, getSemaforoPorOcupacion, SEMAFORO_COLORES } from '../data/aeropuertos'
 import { VUELOS_EN_AIRE } from '../data/vuelos'
 import BarraProgreso from './BarraProgreso'
+import { getAirports, getPlanningRunRoutes } from '../services/api'
 
 // ---------------------------------------------------------------------------
 // Equirectangular projection → SVG 1000×500
@@ -48,139 +49,359 @@ function pctToXY(xPct, yPct) {
   return { x: parseFloat(xPct) * 10, y: parseFloat(yPct) * 5 }
 }
 
-export default function MapaMundi() {
-  const navigate = useNavigate()
+// ---------------------------------------------------------------------------
+// Adaptar AirportResponse del backend al formato interno del mapa.
+// Sin dato de ocupación real: actual=0 → semáforo verde por defecto.
+// ---------------------------------------------------------------------------
+function adaptAirport(ap) {
+  return {
+    codigo:              ap.codigoIcao,
+    nombre:              `${ap.ciudad} (${ap.codigoIcao})`,
+    ciudad:              ap.ciudad,
+    continente:          ap.continente ?? ap.pais,
+    mapX:                `${((ap.longitud + 180) / 360 * 100).toFixed(2)}%`,
+    mapY:                `${((90 - ap.latitud)  / 180 * 100).toFixed(2)}%`,
+    almacen:             { actual: 0, capacidad: ap.capacidadAlmacen },
+    maletasEnRiesgo:     0,
+    vuelosProximos:      0,
+    ultimaActualizacion: '—',
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Zoom/pan constants
+// ---------------------------------------------------------------------------
+const SCALE_MIN      = 0.5
+const SCALE_MAX      = 8
+const ZOOM_FACTOR    = 1.3
+const DRAG_THRESHOLD = 4   // px before a mousedown is considered a drag
+
+const INITIAL_TRANSFORM = { scale: 1, tx: 0, ty: 0 }
+
+export default function MapaMundi({ runId, runCompleted = false }) {
+  const navigate     = useNavigate()
+  const svgRef       = useRef(null)
+  const containerRef = useRef(null)
+
+  // ── Tooltip state ─────────────────────────────────────────────────────────
   const [tooltipAeropuerto, setTooltipAeropuerto] = useState(null)
-  const [tooltipVuelo, setTooltipVuelo] = useState(null)
-  const [mousePos, setMousePos] = useState({ x: 0, y: 0 })
-  const svgRef = useRef(null)
+  const [tooltipVuelo, setTooltipVuelo]           = useState(null)
+  const [mousePos, setMousePos]                   = useState({ x: 0, y: 0 })
+
+  // ── Data state ────────────────────────────────────────────────────────────
+  const [airports, setAirports] = useState(null)
+  const [routes,   setRoutes]   = useState(null)
+
+  // ── Zoom/pan state ────────────────────────────────────────────────────────
+  const [transform, setTransform] = useState(INITIAL_TRANSFORM)
+  const [isPanning, setIsPanning] = useState(false)
+
+  // Refs to avoid stale closures in event handlers
+  const transformRef = useRef(INITIAL_TRANSFORM)
+  const dragState    = useRef(null)   // { startX, startY, startTx, startTy } | null
+  const isDragging   = useRef(false)  // true once mouse moves past threshold
+
+  // ── Data effects ──────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    getAirports()
+      .then(page => {
+        const map = {}
+        ;(page.content ?? []).forEach(ap => {
+          const adapted = adaptAirport(ap)
+          map[adapted.codigo] = adapted
+        })
+        if (Object.keys(map).length > 0) setAirports(map)
+      })
+      .catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    if (!runId) return
+    getPlanningRunRoutes(runId)
+      .then(list => {
+        console.log('[MapaMundi] raw response:', list)
+        const rutas = Array.from(
+          new Map(
+            list
+              .filter(r => r.origenIcao && r.destinoIcao)
+              .map(r => [`${r.origenIcao}-${r.destinoIcao}`, { desde: r.origenIcao, hasta: r.destinoIcao }])
+          ).values()
+        )
+        console.log('[MapaMundi] rutas antes de setRoutes:', rutas)
+        setRoutes(rutas)
+      })
+      .catch(err => console.error('[MapaMundi] fetch rutas fallido:', err))
+  // runCompleted como dependencia: re-fetch cuando el run termina y las rutas ya existen
+  }, [runId, runCompleted])
+
+  // ── Zoom/pan helpers ──────────────────────────────────────────────────────
+
+  function applyTransform(t) {
+    const next = {
+      scale: Math.min(Math.max(t.scale, SCALE_MIN), SCALE_MAX),
+      tx:    t.tx,
+      ty:    t.ty,
+    }
+    transformRef.current = next
+    setTransform(next)
+  }
+
+  // Non-passive wheel listener — React cannot set { passive: false } via JSX
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+
+    function onWheel(e) {
+      e.preventDefault()
+      const { scale, tx, ty } = transformRef.current
+      const rect = svgRef.current?.getBoundingClientRect()
+      if (!rect) return
+
+      // Cursor position in SVG viewBox coordinates
+      const cx = (e.clientX - rect.left) / rect.width  * 1000
+      const cy = (e.clientY - rect.top)  / rect.height * 500
+
+      const factor   = e.deltaY < 0 ? ZOOM_FACTOR : 1 / ZOOM_FACTOR
+      const newScale = Math.min(Math.max(scale * factor, SCALE_MIN), SCALE_MAX)
+      const ratio    = newScale / scale
+
+      // Keep the point under the cursor fixed after scaling
+      applyTransform({ scale: newScale, tx: cx - (cx - tx) * ratio, ty: cy - (cy - ty) * ratio })
+    }
+
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, []) // eslint-disable-line — applyTransform only uses refs and stable setTransform
+
+  function handleMouseDown(e) {
+    if (e.button !== 0) return
+    isDragging.current = false
+    dragState.current  = {
+      startX:  e.clientX,
+      startY:  e.clientY,
+      startTx: transformRef.current.tx,
+      startTy: transformRef.current.ty,
+    }
+  }
 
   function handleMouseMove(e) {
     setMousePos({ x: e.clientX, y: e.clientY })
+
+    if (!dragState.current) return
+
+    const dx = e.clientX - dragState.current.startX
+    const dy = e.clientY - dragState.current.startY
+
+    if (!isDragging.current && Math.hypot(dx, dy) > DRAG_THRESHOLD) {
+      isDragging.current = true
+      setIsPanning(true)
+    }
+
+    if (!isDragging.current) return
+
+    const rect = svgRef.current?.getBoundingClientRect()
+    if (!rect) return
+
+    // Convert screen-pixel delta to SVG viewBox units
+    applyTransform({
+      scale: transformRef.current.scale,
+      tx:    dragState.current.startTx + dx * 1000 / rect.width,
+      ty:    dragState.current.startTy + dy * 500  / rect.height,
+    })
   }
 
+  function endDrag() {
+    dragState.current = null
+    setIsPanning(false)
+    // isDragging must remain true until the click event fires (click fires
+    // synchronously after mouseup in the same event flush), then reset.
+    setTimeout(() => { isDragging.current = false }, 0)
+  }
+
+  function zoomBy(factor) {
+    const { scale, tx, ty } = transformRef.current
+    const cx = 500, cy = 250 // SVG centre
+    const newScale = Math.min(Math.max(scale * factor, SCALE_MIN), SCALE_MAX)
+    const ratio    = newScale / scale
+    applyTransform({ scale: newScale, tx: cx - (cx - tx) * ratio, ty: cy - (cy - ty) * ratio })
+  }
+
+  function resetView() {
+    applyTransform(INITIAL_TRANSFORM)
+  }
+
+  // ── Derived data ──────────────────────────────────────────────────────────
+
+  const aeropuertosActivos = airports ?? AEROPUERTOS
+  const rutasActivas       = routes ?? (airports ? [] : RUTAS)
+
+  console.log('[MapaMundi] render — airports:', Object.keys(aeropuertosActivos).length, '| routes state:', routes?.length ?? 'null', '| rutasActivas:', rutasActivas.length, '| runId:', runId, '| runCompleted:', runCompleted)
+
+  // Tamaños inversamente proporcionales al zoom → tamaño visual constante en pantalla
+  const s       = transform.scale
+  const nodeR   = 8   / s   // radio del círculo de aeropuerto
+  const nodeSW  = 1.5 / s   // grosor de borde del círculo
+  const labelSz = 8   / s   // tamaño de fuente de la etiqueta ICAO
+  const labelDy = 13  / s   // separación vertical etiqueta↑nodo (en unidades SVG)
+  const dotR    = 5   / s   // radio del punto de vuelo en tránsito
+
   const coords = {}
-  Object.values(AEROPUERTOS).forEach((ap) => {
+  Object.values(aeropuertosActivos).forEach((ap) => {
     coords[ap.codigo] = pctToXY(ap.mapX, ap.mapY)
   })
 
+  const svgTransform = `translate(${transform.tx},${transform.ty}) scale(${transform.scale})`
+
   return (
     <div
-      className="relative w-full h-full overflow-hidden bg-[#0c1a2e]"
+      ref={containerRef}
+      className={`relative w-full h-full overflow-hidden bg-[#0c1a2e] select-none ${isPanning ? 'cursor-grabbing' : 'cursor-grab'}`}
+      onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
+      onMouseUp={endDrag}
+      onMouseLeave={endDrag}
     >
       <svg
         ref={svgRef}
         viewBox="0 0 1000 500"
-        className="relative w-full h-full"
+        className="w-full h-full"
       >
-        {/* Océano */}
+        {/* Océano — fixed, outside the transform group */}
         <rect width="1000" height="500" fill="#0c1a2e" />
 
-        {/* Países del mundo — topojson countries-110m */}
-        <g fill="#1e3a5f" stroke="#0f2744" strokeWidth="0.5">
-          {COUNTRY_PATHS.map((d, i) => <path key={i} d={d} />)}
-        </g>
+        {/* All map content inside the zoom/pan transform */}
+        <g transform={svgTransform}>
 
-        {/* Rutas de vuelo */}
-        {RUTAS.map((ruta, i) => {
-          const a = coords[ruta.desde]
-          const b = coords[ruta.hasta]
-          if (!a || !b) return null
-          const mx = (a.x + b.x) / 2
-          const my = Math.min(a.y, b.y) - 40
-          return (
-            <path
-              key={i}
-              d={`M ${a.x} ${a.y} Q ${mx} ${my} ${b.x} ${b.y}`}
-              fill="none"
-              stroke="#3b82f6"
-              strokeWidth="0.8"
-              strokeDasharray="4 3"
-              opacity="0.4"
-            />
-          )
-        })}
+          {/* Países del mundo — topojson countries-110m */}
+          <g fill="#1e3a5f" stroke="#0f2744" strokeWidth="0.5">
+            {COUNTRY_PATHS.map((d, i) => <path key={i} d={d} />)}
+          </g>
 
-        {/* Puntos de vuelo animados */}
-        {VUELOS_EN_AIRE.filter(v => v.progreso > 0).map((vuelo, i) => {
-          const a = coords[vuelo.desde]
-          const b = coords[vuelo.hasta]
-          if (!a || !b) return null
-          const mx = (a.x + b.x) / 2
-          const my = Math.min(a.y, b.y) - 40
-          const t = vuelo.progreso
-          const bx = (1 - t) * (1 - t) * a.x + 2 * (1 - t) * t * mx + t * t * b.x
-          const by = (1 - t) * (1 - t) * a.y + 2 * (1 - t) * t * my + t * t * b.y
-          const animDelay = `${i * -1.5}s`
-          return (
-            <g key={vuelo.codigo}>
-              <circle
-                cx={bx}
-                cy={by}
-                r="5"
-                fill="#3b82f6"
-                stroke="#93c5fd"
-                strokeWidth="1"
-                style={{ cursor: 'pointer' }}
-                onMouseEnter={() => setTooltipVuelo(vuelo)}
-                onMouseLeave={() => setTooltipVuelo(null)}
+          {/* Rutas de vuelo */}
+          {rutasActivas.map((ruta, i) => {
+            const a = coords[ruta.desde]
+            const b = coords[ruta.hasta]
+            if (!a || !b) return null
+            const mx = (a.x + b.x) / 2
+            const my = Math.min(a.y, b.y) - 40
+            return (
+              <path
+                key={i}
+                d={`M ${a.x} ${a.y} Q ${mx} ${my} ${b.x} ${b.y}`}
+                fill="none"
+                stroke="#3b82f6"
+                strokeWidth="0.8"
+                strokeDasharray="4 3"
+                opacity="0.4"
               />
-              <circle cx={bx} cy={by} r="5" fill="none" stroke="#93c5fd" strokeWidth="1" opacity="0.5">
-                <animate attributeName="r" from="5" to="10" dur="2s" repeatCount="indefinite" begin={animDelay} />
-                <animate attributeName="opacity" from="0.6" to="0" dur="2s" repeatCount="indefinite" begin={animDelay} />
-              </circle>
-            </g>
-          )
-        })}
+            )
+          })}
 
-        {/* Nodos de aeropuertos */}
-        {Object.values(AEROPUERTOS).map((ap) => {
-          const pos = coords[ap.codigo]
-          const pct = getOcupacionPct(ap)
-          const color = getSemaforoPorOcupacion(pct)
-          const hex = SEMAFORO_COLORES[color]
-          return (
-            <g
-              key={ap.codigo}
-              style={{ cursor: 'pointer' }}
-              onMouseEnter={() => setTooltipAeropuerto(ap)}
-              onMouseLeave={() => setTooltipAeropuerto(null)}
-              onClick={() => navigate(`/aeropuerto/${ap.codigo}`)}
-            >
-              <circle cx={pos.x} cy={pos.y} r="12" fill={hex} opacity="0.15">
-                <animate attributeName="r" values="10;16;10" dur="3s" repeatCount="indefinite" />
-                <animate attributeName="opacity" values="0.15;0.05;0.15" dur="3s" repeatCount="indefinite" />
-              </circle>
-              <circle cx={pos.x} cy={pos.y} r="8" fill={hex} stroke="white" strokeWidth="1.5" />
-              <text
-                x={pos.x}
-                y={pos.y - 13}
-                textAnchor="middle"
-                fill="white"
-                fontSize="8"
-                fontWeight="600"
-                fontFamily="Inter, sans-serif"
-                style={{ userSelect: 'none' }}
+          {/* Puntos de vuelo animados */}
+          {VUELOS_EN_AIRE.filter(v => v.progreso > 0).map((vuelo, i) => {
+            const a = coords[vuelo.desde]
+            const b = coords[vuelo.hasta]
+            if (!a || !b) return null
+            const mx = (a.x + b.x) / 2
+            const my = Math.min(a.y, b.y) - 40
+            const t  = vuelo.progreso
+            const bx = (1 - t) * (1 - t) * a.x + 2 * (1 - t) * t * mx + t * t * b.x
+            const by = (1 - t) * (1 - t) * a.y + 2 * (1 - t) * t * my + t * t * b.y
+            const animDelay = `${i * -1.5}s`
+            return (
+              <g key={vuelo.codigo}>
+                <circle
+                  cx={bx} cy={by} r={dotR}
+                  fill="#3b82f6" stroke="#93c5fd" strokeWidth={nodeSW}
+                  style={{ cursor: 'pointer' }}
+                  onMouseEnter={() => setTooltipVuelo(vuelo)}
+                  onMouseLeave={() => setTooltipVuelo(null)}
+                />
+                <circle cx={bx} cy={by} r={dotR} fill="none" stroke="#93c5fd" strokeWidth={nodeSW} opacity="0.5">
+                  <animate attributeName="r" from={dotR} to={dotR * 2} dur="2s" repeatCount="indefinite" begin={animDelay} />
+                  <animate attributeName="opacity" from="0.6" to="0" dur="2s" repeatCount="indefinite" begin={animDelay} />
+                </circle>
+              </g>
+            )
+          })}
+
+          {/* Nodos de aeropuertos */}
+          {Object.values(aeropuertosActivos).map((ap) => {
+            const pos = coords[ap.codigo]
+            if (!pos) return null
+            const pct   = getOcupacionPct(ap)
+            const color = getSemaforoPorOcupacion(pct)
+            const hex   = SEMAFORO_COLORES[color]
+            return (
+              <g
+                key={ap.codigo}
+                style={{ cursor: 'pointer' }}
+                onMouseEnter={() => setTooltipAeropuerto(ap)}
+                onMouseLeave={() => setTooltipAeropuerto(null)}
+                onClick={() => {
+                  if (isDragging.current) return
+                  navigate(`/aeropuerto/${ap.codigo}`)
+                }}
               >
-                {ap.codigo}
-              </text>
-            </g>
-          )
-        })}
+                <circle cx={pos.x} cy={pos.y} r={nodeR * 1.5} fill={hex} opacity="0.15">
+                  <animate attributeName="r" values={`${nodeR * 1.25};${nodeR * 2};${nodeR * 1.25}`} dur="3s" repeatCount="indefinite" />
+                  <animate attributeName="opacity" values="0.15;0.05;0.15" dur="3s" repeatCount="indefinite" />
+                </circle>
+                <circle cx={pos.x} cy={pos.y} r={nodeR} fill={hex} stroke="white" strokeWidth={nodeSW} />
+                <text
+                  x={pos.x} y={pos.y - labelDy}
+                  textAnchor="middle"
+                  fill="white" fontSize={labelSz} fontWeight="600"
+                  fontFamily="Inter, sans-serif"
+                  style={{ userSelect: 'none' }}
+                >
+                  {ap.codigo}
+                </text>
+              </g>
+            )
+          })}
+
+        </g>
       </svg>
 
-      {tooltipAeropuerto && (
+      {/* ── Controles de zoom ─────────────────────────────────────────────── */}
+      <div
+        className="absolute top-3 right-3 flex flex-col gap-1 z-10"
+        onMouseDown={e => e.stopPropagation()}  // no inicia pan al usar los botones
+      >
+        <ZoomButton label="+" title="Acercar"        onClick={() => zoomBy(ZOOM_FACTOR)} />
+        <ZoomButton label="−" title="Alejar"         onClick={() => zoomBy(1 / ZOOM_FACTOR)} />
+        <div className="h-px bg-slate-600 my-0.5" />
+        <ZoomButton label="↺" title="Restablecer vista" onClick={resetView} />
+      </div>
+
+      {/* ── Tooltips (ocultos mientras se arrastra) ───────────────────────── */}
+      {tooltipAeropuerto && !isPanning && (
         <TooltipAeropuerto
           ap={tooltipAeropuerto}
           pos={mousePos}
           onNavegar={() => navigate(`/aeropuerto/${tooltipAeropuerto.codigo}`)}
         />
       )}
-      {tooltipVuelo && !tooltipAeropuerto && (
+      {tooltipVuelo && !tooltipAeropuerto && !isPanning && (
         <TooltipVuelo vuelo={tooltipVuelo} pos={mousePos} />
       )}
     </div>
+  )
+}
+
+// ── Sub-components ─────────────────────────────────────────────────────────
+
+function ZoomButton({ label, title, onClick }) {
+  return (
+    <button
+      title={title}
+      onClick={onClick}
+      className="w-8 h-8 flex items-center justify-center rounded bg-slate-800/90 hover:bg-slate-700 active:bg-slate-600 border border-slate-600 text-white text-base font-bold transition-colors shadow-lg"
+    >
+      {label}
+    </button>
   )
 }
 
