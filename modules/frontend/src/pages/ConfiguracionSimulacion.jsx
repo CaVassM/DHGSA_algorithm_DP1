@@ -1,4 +1,6 @@
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { startPlanningRun } from '../services/api'
 
 const UMBRALES = [
   { indicador: 'Almacenes',    verde: '< 60%',       ambar: '60% - 85%',       rojo: '> 85%' },
@@ -6,8 +8,33 @@ const UMBRALES = [
   { indicador: 'Cumplimiento', verde: '> 95%',        ambar: '85% - 95%',       rojo: '< 85%' },
 ]
 
+const PLANNING_REQUEST = {
+  algorithm: 'IALNS_SA',
+  scenario: 'PERIOD_SIMULATION',
+  planningStart: '2026-07-14T00:00:00',
+  horizonDays: 5,
+  epochHours: 4,
+  populationSize: 6,
+  timeLimitSeconds: 2,
+  dataSetReference: 'DEMO',
+}
+
 export default function ConfiguracionSimulacion() {
   const navigate = useNavigate()
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
+
+  async function handleIniciar() {
+    setLoading(true)
+    setError(null)
+    try {
+      const response = await startPlanningRun(PLANNING_REQUEST)
+      navigate('/dashboard', { state: { runId: response.runId } })
+    } catch (err) {
+      setError(err.response?.data?.message ?? 'No se pudo conectar con el servidor. Verifica que el backend esté corriendo.')
+      setLoading(false)
+    }
+  }
 
   return (
     <div className="min-h-screen bg-[#0f172a] flex items-center justify-center p-6">
@@ -79,13 +106,30 @@ export default function ConfiguracionSimulacion() {
           </div>
         </div>
 
+        {/* Mensaje de error */}
+        {error && (
+          <div className="mb-4 px-4 py-3 rounded-xl bg-red-500/10 border border-red-500/30 text-red-400 text-sm">
+            {error}
+          </div>
+        )}
+
         {/* Botón iniciar */}
         <button
-          onClick={() => navigate('/dashboard')}
-          className="w-full py-4 bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white font-semibold text-base rounded-xl transition-colors duration-200 flex items-center justify-center gap-3 shadow-lg shadow-blue-900/40"
+          onClick={handleIniciar}
+          disabled={loading}
+          className="w-full py-4 bg-blue-600 hover:bg-blue-500 active:bg-blue-700 disabled:bg-blue-800 disabled:cursor-not-allowed text-white font-semibold text-base rounded-xl transition-colors duration-200 flex items-center justify-center gap-3 shadow-lg shadow-blue-900/40"
         >
-          <span className="text-lg">▶</span>
-          Iniciar Simulación de 5 Días
+          {loading ? (
+            <>
+              <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+              Iniciando simulación...
+            </>
+          ) : (
+            <>
+              <span className="text-lg">▶</span>
+              Iniciar Simulación de 5 Días
+            </>
+          )}
         </button>
 
         <p className="text-center text-slate-500 text-xs mt-4">
