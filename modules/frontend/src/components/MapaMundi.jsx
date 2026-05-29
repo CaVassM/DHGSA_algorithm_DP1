@@ -3,9 +3,8 @@ import { useNavigate } from 'react-router-dom'
 import { feature } from 'topojson-client'
 import worldData from 'world-atlas/countries-110m.json'
 import { AEROPUERTOS, RUTAS, getOcupacionPct, getSemaforoPorOcupacion, SEMAFORO_COLORES } from '../data/aeropuertos'
-import { VUELOS_EN_AIRE } from '../data/vuelos'
 import BarraProgreso from './BarraProgreso'
-import { getAirports, getPlanningRunRoutes } from '../services/api'
+import { getAirports, getFlights, getPlanningRunRoutes } from '../services/api'
 
 // ---------------------------------------------------------------------------
 // Equirectangular projection → SVG 1000×500
@@ -50,6 +49,31 @@ function pctToXY(xPct, yPct) {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers para calcular el progreso de vuelos en tiempo real
+// ---------------------------------------------------------------------------
+function timeToMinutes(timeStr) {
+  const [h, m] = timeStr.split(':').map(Number)
+  return h * 60 + m
+}
+
+// Retorna un valor [0,1] si el vuelo está en tránsito ahora, -1 si no.
+function calcProgreso(horaSalida, horaLlegada, nowMin) {
+  const salidaMin = timeToMinutes(horaSalida)
+  let llegadaMin  = timeToMinutes(horaLlegada)
+  if (llegadaMin <= salidaMin) llegadaMin += 1440   // cruza medianoche
+  let nowAdj = nowMin
+  if (llegadaMin > 1440 && nowAdj < salidaMin) nowAdj += 1440
+  if (nowAdj < salidaMin || nowAdj > llegadaMin) return -1
+  return (nowAdj - salidaMin) / (llegadaMin - salidaMin)
+}
+
+function formatDuracion(minutos) {
+  const h = Math.floor(minutos / 60)
+  const m = minutos % 60
+  return h > 0 ? `${h}h ${m}m` : `${m}m`
+}
+
+// ---------------------------------------------------------------------------
 // Adaptar AirportResponse del backend al formato interno del mapa.
 // Sin dato de ocupación real: actual=0 → semáforo verde por defecto.
 // ---------------------------------------------------------------------------
@@ -91,6 +115,8 @@ export default function MapaMundi({ runId, runCompleted = false }) {
   // ── Data state ────────────────────────────────────────────────────────────
   const [airports, setAirports] = useState(null)
   const [routes,   setRoutes]   = useState(null)
+  const [flights,  setFlights]  = useState([])
+  const [now,      setNow]      = useState(() => new Date())
 
   // ── Zoom/pan state ────────────────────────────────────────────────────────
   const [transform, setTransform] = useState(INITIAL_TRANSFORM)
@@ -134,6 +160,18 @@ export default function MapaMundi({ runId, runCompleted = false }) {
       .catch(err => console.error('[MapaMundi] fetch rutas fallido:', err))
   // runCompleted como dependencia: re-fetch cuando el run termina y las rutas ya existen
   }, [runId, runCompleted])
+
+  useEffect(() => {
+    getFlights(0, 500)
+      .then(page => setFlights(page.content ?? []))
+      .catch(() => {})
+  }, [])
+
+  // Tick cada segundo para redibujar los aviones en su posición actual
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 1000)
+    return () => clearInterval(id)
+  }, [])
 
   // ── Zoom/pan helpers ──────────────────────────────────────────────────────
 
@@ -236,6 +274,25 @@ export default function MapaMundi({ runId, runCompleted = false }) {
   const aeropuertosActivos = airports ?? AEROPUERTOS
   const rutasActivas       = routes ?? (airports ? [] : RUTAS)
 
+  // Vuelos actualmente en tránsito según la hora local
+  const nowMin = now.getHours() * 60 + now.getMinutes() + now.getSeconds() / 60
+  const vuelosEnAire = flights.flatMap(f => {
+    const progreso = calcProgreso(f.horaSalida, f.horaLlegada, nowMin)
+    if (progreso < 0) return []
+    return [{
+      codigo:           f.businessId,
+      desde:            f.origenIcao,
+      hasta:            f.destinoIcao,
+      progreso,
+      maletasActual:    f.capacidad - f.capacidadDisponible,
+      maletasCapacidad: f.capacidad,
+      tiempoVuelo:      formatDuracion(f.duracionMinutos),
+      horaDespegue:     f.horaSalida,
+      horaLlegada:      f.horaLlegada,
+      estado:           'En tránsito',
+    }]
+  })
+
   console.log('[MapaMundi] render — airports:', Object.keys(aeropuertosActivos).length, '| routes state:', routes?.length ?? 'null', '| rutasActivas:', rutasActivas.length, '| runId:', runId, '| runCompleted:', runCompleted)
 
   // Tamaños inversamente proporcionales al zoom → tamaño visual constante en pantalla
@@ -299,7 +356,7 @@ export default function MapaMundi({ runId, runCompleted = false }) {
           })}
 
           {/* Puntos de vuelo animados */}
-          {VUELOS_EN_AIRE.filter(v => v.progreso > 0).map((vuelo, i) => {
+          {vuelosEnAire.map((vuelo, i) => {
             const a = coords[vuelo.desde]
             const b = coords[vuelo.hasta]
             if (!a || !b) return null
