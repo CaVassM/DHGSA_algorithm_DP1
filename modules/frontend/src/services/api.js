@@ -41,3 +41,17 @@ export async function getShipments(page = 0, size = 100) {
   const { data } = await api.get('/shipments', { params: { page, size } })
   return data
 }
+
+// --- Admin imports ---
+
+export async function getImportStatus() {
+  const { data } = await api.get('/admin/imports/status')
+  return data
+}
+
+export async function importShipments(files) {
+  const formData = new FormData()
+  files.forEach(f => formData.append('files', f))
+  const { data } = await api.post('/admin/imports/shipments', formData, { timeout: 30000 })
+  return data
+}
