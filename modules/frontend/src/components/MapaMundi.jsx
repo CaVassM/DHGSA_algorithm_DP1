@@ -72,8 +72,31 @@ function buildRouteLegs(route, flightMap) {
       hasta:           flight.destinoIcao,
       salida,
       llegada,
+      capacidadVuelo:  flight.capacidad ?? 0,
     }]
   })
+}
+
+// ---------------------------------------------------------------------------
+// Tangent angle of a quadratic Bézier at parameter t (for airplane rotation)
+// ---------------------------------------------------------------------------
+function bezierAngle(ax, ay, mx, my, bx2, by2, t) {
+  const dx = 2 * (1 - t) * (mx - ax) + 2 * t * (bx2 - mx)
+  const dy = 2 * (1 - t) * (my - ay) + 2 * t * (by2 - my)
+  return Math.atan2(dy, dx) * (180 / Math.PI)
+}
+
+// Top-down airplane silhouette pointing right (+x), centered at (0,0).
+// Wingspan ±5, body length 12 (nose at x=7, tail at x=-5).
+const PLANE_PATH =
+  'M 7,0 L 2,-1.5 L 0,-5 L -2,-2.5 L -3.5,-3.5 L -4.5,-2 L -5,-1 ' +
+  'L -5,1 L -4.5,2 L -3.5,3.5 L -2,2.5 L 0,5 L 2,1.5 Z'
+
+// Plane color palette keyed by warehouse/flight occupancy percentage.
+function getPlaneColors(pct) {
+  if (pct > 85) return { fill: '#f87171', stroke: '#fecaca', shadow: '#7f1d1d', halo: '#ef4444' }
+  if (pct >= 60) return { fill: '#fbbf24', stroke: '#fde68a', shadow: '#78350f', halo: '#f59e0b' }
+  return           { fill: '#4ade80', stroke: '#bbf7d0', shadow: '#14532d', halo: '#22c55e' }
 }
 
 // ---------------------------------------------------------------------------
@@ -186,13 +209,92 @@ export default function MapaMundi({ runId, runCompleted = false }) {
 
   const aeropuertosActivos = airports ?? AEROPUERTOS
 
-  // Deduplicated origin-destination pairs → static route lines on the map
+  // Pre-computed legs for every route with exact Date timestamps
+  // Declared first — rutasLineas, almacenOcupacion, and activeLegs all depend on it.
+  const allLegs = useMemo(() => {
+    if (!routes || routes.length === 0 || flights.length === 0) return []
+    const flightMap = new Map(flights.map(f => [f.businessId, f]))
+    return routes.flatMap(r => buildRouteLegs(r, flightMap))
+  }, [routes, flights])
+
+  // Warehouse occupancy per airport at simTime.
+  // A shipment occupies the warehouse of airport X when it has arrived there
+  // (previous leg landed) and not yet departed on the next leg.
+  const almacenOcupacion = useMemo(() => {
+    if (!simTime || allLegs.length === 0) return {}
+
+    // Group legs by shipment, preserving insertion order from buildRouteLegs.
+    const byShipment = {}
+    allLegs.forEach(leg => {
+      ;(byShipment[leg.shipmentId] ??= []).push(leg)
+    })
+
+    const ocupacion = {}
+    Object.values(byShipment).forEach(legs => {
+      const maletas = legs[0].cantidadMaletas
+      let location = null
+
+      if (simTime < legs[0].salida) {
+        // Waiting at origin before first departure
+        location = legs[0].desde
+      } else {
+        for (let i = 0; i < legs.length; i++) {
+          const leg = legs[i]
+          if (simTime >= leg.salida && simTime <= leg.llegada) {
+            // Currently in-flight — not at any warehouse
+            location = null
+            break
+          }
+          if (simTime > leg.llegada) {
+            const next = legs[i + 1]
+            if (!next) { location = leg.hasta; break }           // arrived at destination
+            if (simTime < next.salida) { location = leg.hasta; break } // waiting at connection
+            // else: already past next departure, continue to next leg
+          }
+        }
+      }
+
+      if (location) ocupacion[location] = (ocupacion[location] ?? 0) + maletas
+    })
+    return ocupacion
+  }, [allLegs, simTime])
+
+  // Airports with real-time warehouse occupancy merged in.
+  const aeropuertosConOcupacion = useMemo(() => {
+    if (Object.keys(almacenOcupacion).length === 0) return aeropuertosActivos
+    const result = {}
+    Object.entries(aeropuertosActivos).forEach(([code, ap]) => {
+      result[code] = { ...ap, almacen: { ...ap.almacen, actual: almacenOcupacion[code] ?? 0 } }
+    })
+    return result
+  }, [aeropuertosActivos, almacenOcupacion])
+
+  // One line per unique leg (desde→hasta), with revealAt = earliest departure
+  // of any shipment using that leg. Lines appear progressively as simTime advances.
   const rutasLineas = useMemo(() => {
-    if (routes === null) return airports ? [] : RUTAS
-    return Array.from(
-      new Map(routes.map(r => [`${r.origenIcao}-${r.destinoIcao}`, { desde: r.origenIcao, hasta: r.destinoIcao }])).values()
-    )
-  }, [routes, airports])
+    // No routes at all → static demo fallback
+    if (routes === null) {
+      return (airports ? [] : RUTAS).map(r => ({ ...r, revealAt: null }))
+    }
+    // Legs not yet reconstructed (flights still loading) → origin-destination fallback
+    if (allLegs.length === 0) {
+      return Array.from(
+        new Map(routes.map(r => [
+          `${r.origenIcao}-${r.destinoIcao}`,
+          { desde: r.origenIcao, hasta: r.destinoIcao, revealAt: null },
+        ])).values()
+      )
+    }
+    // Build one entry per unique leg, keyed by desde-hasta, revealAt = min(salida)
+    const map = {}
+    allLegs.forEach(leg => {
+      const key = `${leg.desde}-${leg.hasta}`
+      if (!map[key] || leg.salida < map[key].revealAt) {
+        map[key] = { desde: leg.desde, hasta: leg.hasta, revealAt: leg.salida }
+      }
+    })
+    return Object.values(map)
+  }, [allLegs, routes, airports])
 
   // Simulation time boundaries (Date objects)
   const simStart = useMemo(() => {
@@ -207,13 +309,6 @@ export default function MapaMundi({ runId, runCompleted = false }) {
     return ts.length > 0 ? new Date(ts[ts.length - 1]) : null
   }, [routes])
 
-  // Pre-computed legs for every route with exact Date timestamps
-  const allLegs = useMemo(() => {
-    if (!routes || routes.length === 0 || flights.length === 0) return []
-    const flightMap = new Map(flights.map(f => [f.businessId, f]))
-    return routes.flatMap(r => buildRouteLegs(r, flightMap))
-  }, [routes, flights])
-
   // Legs currently in transit at simTime
   const activeLegs = simTime
     ? allLegs
@@ -226,10 +321,11 @@ export default function MapaMundi({ runId, runCompleted = false }) {
   activeLegs.forEach(leg => {
     const key = `${leg.desde}-${leg.hasta}`
     if (!activeDotMap[key]) {
-      activeDotMap[key] = { desde: leg.desde, hasta: leg.hasta, progreso: leg.progreso, count: 0, maletas: 0 }
+      activeDotMap[key] = { desde: leg.desde, hasta: leg.hasta, progreso: leg.progreso, count: 0, maletas: 0, capacidadTotal: 0 }
     }
-    activeDotMap[key].count   += 1
-    activeDotMap[key].maletas += leg.cantidadMaletas
+    activeDotMap[key].count          += 1
+    activeDotMap[key].maletas        += leg.cantidadMaletas
+    activeDotMap[key].capacidadTotal += leg.capacidadVuelo ?? 0
   })
   const activeDots = Object.values(activeDotMap)
 
@@ -334,7 +430,7 @@ export default function MapaMundi({ runId, runCompleted = false }) {
   const dotR    = 5   / s
 
   const coords = {}
-  Object.values(aeropuertosActivos).forEach(ap => {
+  Object.values(aeropuertosConOcupacion).forEach(ap => {
     coords[ap.codigo] = pctToXY(ap.mapX, ap.mapY)
   })
 
@@ -360,33 +456,39 @@ export default function MapaMundi({ runId, runCompleted = false }) {
             {COUNTRY_PATHS.map((d, i) => <path key={i} d={d} />)}
           </g>
 
-          {/* Rutas estáticas (líneas punteadas) */}
-          {rutasLineas.map((ruta, i) => {
-            const a = coords[ruta.desde]
-            const b = coords[ruta.hasta]
-            if (!a || !b) return null
-            const mx = (a.x + b.x) / 2
-            const my = Math.min(a.y, b.y) - 40
-            return (
-              <path
-                key={i}
-                d={`M ${a.x} ${a.y} Q ${mx} ${my} ${b.x} ${b.y}`}
-                fill="none" stroke="#3b82f6" strokeWidth="0.8"
-                strokeDasharray="4 3" opacity="0.4"
-              />
-            )
-          })}
+          {/* Rutas por tramo — aparecen cuando simTime alcanza su salida */}
+          {rutasLineas
+            .filter(r => !r.revealAt || !simTime || simTime >= r.revealAt)
+            .map(ruta => {
+              const a = coords[ruta.desde]
+              const b = coords[ruta.hasta]
+              if (!a || !b) return null
+              const mx = (a.x + b.x) / 2
+              const my = Math.min(a.y, b.y) - 40
+              return (
+                <path
+                  key={`${ruta.desde}-${ruta.hasta}`}
+                  d={`M ${a.x} ${a.y} Q ${mx} ${my} ${b.x} ${b.y}`}
+                  fill="none" stroke="#3b82f6" strokeWidth="0.8"
+                  strokeDasharray="4 3" opacity="0.45"
+                />
+              )
+            })}
 
-          {/* Maletas en tránsito — un punto por par origen-destino activo */}
+          {/* Aviones en tránsito — icono top-down rotado en la tangente */}
           {activeDots.map(dot => {
-            const a = coords[dot.desde]
-            const b = coords[dot.hasta]
+            const a  = coords[dot.desde]
+            const b  = coords[dot.hasta]
             if (!a || !b) return null
-            const mx = (a.x + b.x) / 2
-            const my = Math.min(a.y, b.y) - 40
-            const t  = dot.progreso
-            const bx = (1 - t) * (1 - t) * a.x + 2 * (1 - t) * t * mx + t * t * b.x
-            const by = (1 - t) * (1 - t) * a.y + 2 * (1 - t) * t * my + t * t * b.y
+            const mx  = (a.x + b.x) / 2
+            const my  = Math.min(a.y, b.y) - 40
+            const t   = dot.progreso
+            const px  = (1-t)*(1-t)*a.x + 2*(1-t)*t*mx + t*t*b.x
+            const py  = (1-t)*(1-t)*a.y + 2*(1-t)*t*my + t*t*b.y
+            const ang = bezierAngle(a.x, a.y, mx, my, b.x, b.y, t)
+            const ps  = 0.75 / s   // plane scale: visual size constant across zoom levels
+            const pct = dot.capacidadTotal > 0 ? (dot.maletas / dot.capacidadTotal) * 100 : 0
+            const pc  = getPlaneColors(pct)
             return (
               <g
                 key={`${dot.desde}-${dot.hasta}`}
@@ -394,16 +496,22 @@ export default function MapaMundi({ runId, runCompleted = false }) {
                 onMouseEnter={() => setTooltipDot(dot)}
                 onMouseLeave={() => setTooltipDot(null)}
               >
-                {/* Halo pulsante */}
-                <circle cx={bx} cy={by} r={dotR * 2} fill="#3b82f6" opacity="0.15" />
-                {/* Punto principal */}
-                <circle cx={bx} cy={by} r={dotR} fill="#3b82f6" stroke="#93c5fd" strokeWidth={nodeSW} />
-                {/* Contador si hay más de un envío en este tramo */}
+                {/* Halo — color según ocupación */}
+                <circle cx={px} cy={py} r={7 / s} fill={pc.halo} opacity="0.18" />
+                {/* Avión rotado en dirección de vuelo */}
+                <g transform={`translate(${px},${py}) rotate(${ang}) scale(${ps})`}>
+                  {/* Sombra desplazada para dar profundidad */}
+                  <path d={PLANE_PATH} fill={pc.shadow} opacity="0.45"
+                    transform="translate(0.8,0.8)" />
+                  {/* Cuerpo del avión — coloreado por ocupación */}
+                  <path d={PLANE_PATH} fill={pc.fill} stroke={pc.stroke} strokeWidth={1} />
+                </g>
+                {/* Contador de envíos — en coordenadas del mapa, sobre el avión */}
                 {dot.count > 1 && (
                   <text
-                    x={bx} y={by - dotR - 2 / s}
+                    x={px} y={py - 9 / s}
                     textAnchor="middle" fill="white"
-                    fontSize={labelSz * 0.9} fontWeight="700"
+                    fontSize={labelSz * 0.85} fontWeight="700"
                     fontFamily="Inter, sans-serif"
                     style={{ userSelect: 'none' }}
                   >
@@ -415,7 +523,7 @@ export default function MapaMundi({ runId, runCompleted = false }) {
           })}
 
           {/* Nodos de aeropuertos */}
-          {Object.values(aeropuertosActivos).map(ap => {
+          {Object.values(aeropuertosConOcupacion).map(ap => {
             const pos = coords[ap.codigo]
             if (!pos) return null
             const pct   = getOcupacionPct(ap)
