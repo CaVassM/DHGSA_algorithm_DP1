@@ -1,107 +1,179 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { feature } from 'topojson-client'
-import worldData from 'world-atlas/countries-110m.json'
-import { AEROPUERTOS, RUTAS, getOcupacionPct, getSemaforoPorOcupacion, SEMAFORO_COLORES } from '../data/aeropuertos'
-import { VUELOS_EN_AIRE } from '../data/vuelos'
-import BarraProgreso from './BarraProgreso'
-import { getAirports, getPlanningRunRoutes } from '../services/api'
+import {
+  MapContainer,
+  TileLayer,
+  CircleMarker,
+  Marker,
+  Polyline,
+  Tooltip,
+  useMap,
+} from 'react-leaflet'
+import L from 'leaflet'
+import {
+  AEROPUERTOS,
+  RUTAS,
+  getOcupacionPct,
+  getSemaforoPorOcupacion,
+  SEMAFORO_COLORES,
+} from '../data/aeropuertos'
+import { getAirports, getFlights, getPlanningRunRoutes } from '../services/api'
 
-// ---------------------------------------------------------------------------
-// Equirectangular projection → SVG 1000×500
-// x = (lon + 180) / 360 * 1000
-// y = (90  - lat) / 180 * 500
-// ---------------------------------------------------------------------------
-function geoProject(lon, lat) {
-  return [(lon + 180) / 360 * 1000, (90 - lat) / 180 * 500]
+// Returns the next Date at HH:mm that is strictly after `afterDate`.
+function getNextDeparture(horaSalida, afterDate) {
+  const [h, m] = horaSalida.split(':').map(Number)
+  const d = new Date(afterDate)
+  d.setHours(h, m, 0, 0)
+  if (d <= afterDate) d.setDate(d.getDate() + 1)
+  return d
 }
 
-function ringToSVG(ring) {
-  if (!ring || ring.length < 2) return ''
-  let d = ''
-  for (let i = 0; i < ring.length; i++) {
-    const [x, y] = geoProject(ring[i][0], ring[i][1])
-    d += i === 0
-      ? `M${x.toFixed(1)},${y.toFixed(1)}`
-      : `L${x.toFixed(1)},${y.toFixed(1)}`
-  }
-  return d + 'Z'
+// Reconstructs per-leg { desde, hasta, salida: Date, llegada: Date, ... }
+function buildRouteLegs(route, flightMap) {
+  let cursor = new Date(route.tiempoInicio)
+  return (route.flightBusinessIds ?? []).flatMap(fid => {
+    const flight = flightMap.get(fid)
+    if (!flight) return []
+    const salida = getNextDeparture(flight.horaSalida, cursor)
+    const llegada = new Date(salida.getTime() + flight.duracionMinutos * 60 * 1000)
+    cursor = llegada
+    return [{
+      shipmentId: route.shipmentBusinessId,
+      cantidadMaletas: route.cantidadMaletas ?? 0,
+      desde: flight.origenIcao,
+      hasta: flight.destinoIcao,
+      salida,
+      llegada,
+      capacidadVuelo: flight.capacidad ?? 0,
+    }]
+  })
 }
 
-function featureToD(f) {
-  if (!f?.geometry) return ''
-  const { type, coordinates } = f.geometry
-  if (type === 'Polygon')      return coordinates.map(ringToSVG).join('')
-  if (type === 'MultiPolygon') return coordinates.map(p => p.map(ringToSVG).join('')).join('')
-  return ''
+function formatSimDateTime(date) {
+  if (!date) return '-'
+  const p = n => String(n).padStart(2, '0')
+  return `${date.getFullYear()}-${p(date.getMonth() + 1)}-${p(date.getDate())} ${p(date.getHours())}:${p(date.getMinutes())}`
 }
 
-// Pre-compute at module load — static data, runs once
-const COUNTRY_PATHS = feature(worldData, worldData.objects.countries)
-  .features
-  .map(featureToD)
-  .filter(Boolean)
-
-// ---------------------------------------------------------------------------
-// mapX/mapY percentage → SVG coordinate  (pctToXY mirrors the projection)
-// ---------------------------------------------------------------------------
-function pctToXY(xPct, yPct) {
-  return { x: parseFloat(xPct) * 10, y: parseFloat(yPct) * 5 }
+function getPlaneColors(pct) {
+  if (pct > 85) return { fill: '#f87171', stroke: '#fecaca' }
+  if (pct >= 60) return { fill: '#fbbf24', stroke: '#fde68a' }
+  return { fill: '#4ade80', stroke: '#bbf7d0' }
 }
 
-// ---------------------------------------------------------------------------
-// Adaptar AirportResponse del backend al formato interno del mapa.
-// Sin dato de ocupación real: actual=0 → semáforo verde por defecto.
-// ---------------------------------------------------------------------------
+function getHeadingAngle(from, to) {
+  const dx = to.lng - from.lng
+  const dy = to.lat - from.lat
+  return Math.atan2(-dy, dx) * (180 / Math.PI)
+}
+
+function createPlaneIcon({ fill, stroke, angle, count }) {
+  const badgeHtml = count > 1 ? `<div class="tasf-plane-badge">${count}</div>` : ''
+  return L.divIcon({
+    className: 'tasf-plane-icon-wrapper',
+    html: `
+      <div class="tasf-plane-icon" style="--plane-rotation:${angle.toFixed(1)}deg;">
+        <svg viewBox="-8 -8 16 16" width="26" height="26" aria-hidden="true">
+          <path
+            d="M 7,0 L 2,-1.6 L 0,-5 L -2,-2.6 L -3.6,-3.5 L -4.6,-2 L -5,-1 L -5,1 L -4.6,2 L -3.6,3.5 L -2,2.6 L 0,5 L 2,1.6 Z"
+            fill="${fill}"
+            stroke="${stroke}"
+            stroke-width="1"
+          />
+        </svg>
+        ${badgeHtml}
+      </div>
+    `,
+    iconSize: [30, 30],
+    iconAnchor: [15, 15],
+  })
+}
+
+function fallbackPctToLatLng(ap) {
+  const x = parseFloat(ap.mapX ?? '')
+  const y = parseFloat(ap.mapY ?? '')
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null
+  const lng = (x / 100) * 360 - 180
+  const lat = 90 - (y / 100) * 180
+  return { latitud: lat, longitud: lng }
+}
+
 function adaptAirport(ap) {
   return {
-    codigo:              ap.codigoIcao,
-    nombre:              `${ap.ciudad} (${ap.codigoIcao})`,
-    ciudad:              ap.ciudad,
-    continente:          ap.continente ?? ap.pais,
-    mapX:                `${((ap.longitud + 180) / 360 * 100).toFixed(2)}%`,
-    mapY:                `${((90 - ap.latitud)  / 180 * 100).toFixed(2)}%`,
-    almacen:             { actual: 0, capacidad: ap.capacidadAlmacen },
-    maletasEnRiesgo:     0,
-    vuelosProximos:      0,
-    ultimaActualizacion: '—',
+    codigo: ap.codigoIcao,
+    nombre: `${ap.ciudad} (${ap.codigoIcao})`,
+    ciudad: ap.ciudad,
+    continente: ap.continente ?? ap.pais,
+    latitud: ap.latitud,
+    longitud: ap.longitud,
+    almacen: { actual: 0, capacidad: ap.capacidadAlmacen },
+    maletasEnRiesgo: 0,
+    vuelosProximos: 0,
+    ultimaActualizacion: '-',
   }
 }
 
-// ---------------------------------------------------------------------------
-// Zoom/pan constants
-// ---------------------------------------------------------------------------
-const SCALE_MIN      = 0.5
-const SCALE_MAX      = 8
-const ZOOM_FACTOR    = 1.3
-const DRAG_THRESHOLD = 4   // px before a mousedown is considered a drag
+const SPEED_OPTIONS = [1, 10, 30, 60, 120]
 
-const INITIAL_TRANSFORM = { scale: 1, tx: 0, ty: 0 }
+function fitMapToAirports(map, airportsByCode) {
+  const points = Object.values(airportsByCode)
+    .filter(ap => Number.isFinite(ap.latitud) && Number.isFinite(ap.longitud))
+    .map(ap => [ap.latitud, ap.longitud])
+
+  if (points.length === 0) {
+    map.setView([10, -20], 2)
+    map.setMinZoom(2)
+    map.setMaxBounds(L.latLngBounds([[-85, -180], [85, 180]]))
+    return
+  }
+
+  const bounds = L.latLngBounds(points)
+  map.fitBounds(bounds.pad(0.35), { padding: [24, 24], maxZoom: 5 })
+  const fitZoom = map.getZoom()
+  map.setMinZoom(Math.max(2, fitZoom - 1))
+  map.setMaxBounds(bounds.pad(1.2))
+}
+
+function MapViewportController({ airportsByCode, resetNonce }) {
+  const map = useMap()
+  const fitKey = useMemo(
+    () => Object.values(airportsByCode)
+      .filter(ap => Number.isFinite(ap.latitud) && Number.isFinite(ap.longitud))
+      .map(ap => `${ap.codigo}:${ap.latitud.toFixed(4)},${ap.longitud.toFixed(4)}`)
+      .sort()
+      .join('|'),
+    [airportsByCode],
+  )
+  const lastFitKeyRef = useRef('')
+
+  useEffect(() => {
+    if (!fitKey || fitKey === lastFitKeyRef.current) return
+    fitMapToAirports(map, airportsByCode)
+    lastFitKeyRef.current = fitKey
+  }, [map, airportsByCode, fitKey])
+
+  useEffect(() => {
+    if (resetNonce === 0) return
+    fitMapToAirports(map, airportsByCode)
+  }, [map, airportsByCode, resetNonce])
+
+  return null
+}
 
 export default function MapaMundi({ runId, runCompleted = false }) {
-  const navigate     = useNavigate()
-  const svgRef       = useRef(null)
-  const containerRef = useRef(null)
+  const navigate = useNavigate()
+  const timerRef = useRef(null)
 
-  // ── Tooltip state ─────────────────────────────────────────────────────────
-  const [tooltipAeropuerto, setTooltipAeropuerto] = useState(null)
-  const [tooltipVuelo, setTooltipVuelo]           = useState(null)
-  const [mousePos, setMousePos]                   = useState({ x: 0, y: 0 })
-
-  // ── Data state ────────────────────────────────────────────────────────────
   const [airports, setAirports] = useState(null)
-  const [routes,   setRoutes]   = useState(null)
+  const [routes, setRoutes] = useState(null)
+  const [flights, setFlights] = useState([])
 
-  // ── Zoom/pan state ────────────────────────────────────────────────────────
-  const [transform, setTransform] = useState(INITIAL_TRANSFORM)
-  const [isPanning, setIsPanning] = useState(false)
+  const [simTime, setSimTime] = useState(null)
+  const [isPlaying, setIsPlaying] = useState(false)
+  const [playSpeed, setPlaySpeed] = useState(60)
 
-  // Refs to avoid stale closures in event handlers
-  const transformRef = useRef(INITIAL_TRANSFORM)
-  const dragState    = useRef(null)   // { startX, startY, startTx, startTy } | null
-  const isDragging   = useRef(false)  // true once mouse moves past threshold
-
-  // ── Data effects ──────────────────────────────────────────────────────────
+  const [mapInstance, setMapInstance] = useState(null)
+  const [resetNonce, setResetNonce] = useState(0)
 
   useEffect(() => {
     getAirports()
@@ -120,278 +192,346 @@ export default function MapaMundi({ runId, runCompleted = false }) {
     if (!runId) return
     getPlanningRunRoutes(runId)
       .then(list => {
-        console.log('[MapaMundi] raw response:', list)
-        const rutas = Array.from(
-          new Map(
-            list
-              .filter(r => r.origenIcao && r.destinoIcao)
-              .map(r => [`${r.origenIcao}-${r.destinoIcao}`, { desde: r.origenIcao, hasta: r.destinoIcao }])
-          ).values()
-        )
-        console.log('[MapaMundi] rutas antes de setRoutes:', rutas)
-        setRoutes(rutas)
+        const valid = list.filter(r => r.origenIcao && r.destinoIcao)
+        setRoutes(valid)
+        const starts = valid.map(r => r.tiempoInicio).filter(Boolean).sort()
+        if (starts.length > 0) setSimTime(new Date(starts[0]))
       })
-      .catch(err => console.error('[MapaMundi] fetch rutas fallido:', err))
-  // runCompleted como dependencia: re-fetch cuando el run termina y las rutas ya existen
+      .catch(() => {})
   }, [runId, runCompleted])
 
-  // ── Zoom/pan helpers ──────────────────────────────────────────────────────
-
-  function applyTransform(t) {
-    const next = {
-      scale: Math.min(Math.max(t.scale, SCALE_MIN), SCALE_MAX),
-      tx:    t.tx,
-      ty:    t.ty,
-    }
-    transformRef.current = next
-    setTransform(next)
-  }
-
-  // Non-passive wheel listener — React cannot set { passive: false } via JSX
   useEffect(() => {
-    const el = containerRef.current
-    if (!el) return
+    getFlights(0, 500)
+      .then(page => setFlights(page.content ?? []))
+      .catch(() => {})
+  }, [])
 
-    function onWheel(e) {
-      e.preventDefault()
-      const { scale, tx, ty } = transformRef.current
-      const rect = svgRef.current?.getBoundingClientRect()
-      if (!rect) return
-
-      // Cursor position in SVG viewBox coordinates
-      const cx = (e.clientX - rect.left) / rect.width  * 1000
-      const cy = (e.clientY - rect.top)  / rect.height * 500
-
-      const factor   = e.deltaY < 0 ? ZOOM_FACTOR : 1 / ZOOM_FACTOR
-      const newScale = Math.min(Math.max(scale * factor, SCALE_MIN), SCALE_MAX)
-      const ratio    = newScale / scale
-
-      // Keep the point under the cursor fixed after scaling
-      applyTransform({ scale: newScale, tx: cx - (cx - tx) * ratio, ty: cy - (cy - ty) * ratio })
-    }
-
-    el.addEventListener('wheel', onWheel, { passive: false })
-    return () => el.removeEventListener('wheel', onWheel)
-  }, []) // eslint-disable-line — applyTransform only uses refs and stable setTransform
-
-  function handleMouseDown(e) {
-    if (e.button !== 0) return
-    isDragging.current = false
-    dragState.current  = {
-      startX:  e.clientX,
-      startY:  e.clientY,
-      startTx: transformRef.current.tx,
-      startTy: transformRef.current.ty,
-    }
-  }
-
-  function handleMouseMove(e) {
-    setMousePos({ x: e.clientX, y: e.clientY })
-
-    if (!dragState.current) return
-
-    const dx = e.clientX - dragState.current.startX
-    const dy = e.clientY - dragState.current.startY
-
-    if (!isDragging.current && Math.hypot(dx, dy) > DRAG_THRESHOLD) {
-      isDragging.current = true
-      setIsPanning(true)
-    }
-
-    if (!isDragging.current) return
-
-    const rect = svgRef.current?.getBoundingClientRect()
-    if (!rect) return
-
-    // Convert screen-pixel delta to SVG viewBox units
-    applyTransform({
-      scale: transformRef.current.scale,
-      tx:    dragState.current.startTx + dx * 1000 / rect.width,
-      ty:    dragState.current.startTy + dy * 500  / rect.height,
+  const aeropuertosActivos = useMemo(() => {
+    const base = airports ?? AEROPUERTOS
+    const out = {}
+    Object.entries(base).forEach(([code, ap]) => {
+      if (Number.isFinite(ap.latitud) && Number.isFinite(ap.longitud)) {
+        out[code] = ap
+        return
+      }
+      const fallback = fallbackPctToLatLng(ap)
+      out[code] = fallback ? { ...ap, ...fallback } : ap
     })
+    return out
+  }, [airports])
+
+  const allLegs = useMemo(() => {
+    if (!routes || routes.length === 0 || flights.length === 0) return []
+    const flightMap = new Map(flights.map(f => [f.businessId, f]))
+    return routes.flatMap(r => buildRouteLegs(r, flightMap))
+  }, [routes, flights])
+
+  const almacenOcupacion = useMemo(() => {
+    if (!simTime || allLegs.length === 0) return {}
+
+    const byShipment = {}
+    allLegs.forEach(leg => {
+      ;(byShipment[leg.shipmentId] ??= []).push(leg)
+    })
+
+    const ocupacion = {}
+    Object.values(byShipment).forEach(legs => {
+      const maletas = legs[0].cantidadMaletas
+      let location = null
+
+      if (simTime < legs[0].salida) {
+        location = legs[0].desde
+      } else {
+        for (let i = 0; i < legs.length; i++) {
+          const leg = legs[i]
+          if (simTime >= leg.salida && simTime <= leg.llegada) {
+            location = null
+            break
+          }
+          if (simTime > leg.llegada) {
+            const next = legs[i + 1]
+            if (!next) { location = leg.hasta; break }
+            if (simTime < next.salida) { location = leg.hasta; break }
+          }
+        }
+      }
+
+      if (location) ocupacion[location] = (ocupacion[location] ?? 0) + maletas
+    })
+
+    return ocupacion
+  }, [allLegs, simTime])
+
+  const aeropuertosConOcupacion = useMemo(() => {
+    if (Object.keys(almacenOcupacion).length === 0) return aeropuertosActivos
+    const result = {}
+    Object.entries(aeropuertosActivos).forEach(([code, ap]) => {
+      result[code] = {
+        ...ap,
+        almacen: { ...ap.almacen, actual: almacenOcupacion[code] ?? 0 },
+      }
+    })
+    return result
+  }, [aeropuertosActivos, almacenOcupacion])
+
+  const rutasLineas = useMemo(() => {
+    if (routes === null) {
+      return (airports ? [] : RUTAS).map(r => ({ ...r, revealAt: null }))
+    }
+
+    if (allLegs.length === 0) {
+      return Array.from(
+        new Map(routes.map(r => [
+          `${r.origenIcao}-${r.destinoIcao}`,
+          { desde: r.origenIcao, hasta: r.destinoIcao, revealAt: null },
+        ])).values(),
+      )
+    }
+
+    const map = {}
+    allLegs.forEach(leg => {
+      const key = `${leg.desde}-${leg.hasta}`
+      if (!map[key] || leg.salida < map[key].revealAt) {
+        map[key] = { desde: leg.desde, hasta: leg.hasta, revealAt: leg.salida }
+      }
+    })
+    return Object.values(map)
+  }, [allLegs, routes, airports])
+
+  const simStart = useMemo(() => {
+    if (!routes || routes.length === 0) return null
+    const ts = routes.map(r => r.tiempoInicio).filter(Boolean).sort()
+    return ts.length > 0 ? new Date(ts[0]) : null
+  }, [routes])
+
+  const simEnd = useMemo(() => {
+    if (!routes || routes.length === 0) return null
+    const ts = routes.map(r => r.tiempoLlegadaEstimado).filter(Boolean).sort()
+    return ts.length > 0 ? new Date(ts[ts.length - 1]) : null
+  }, [routes])
+
+  const activeLegs = simTime
+    ? allLegs
+        .filter(leg => leg.salida <= simTime && simTime <= leg.llegada)
+        .map(leg => ({ ...leg, progreso: (simTime - leg.salida) / (leg.llegada - leg.salida) }))
+    : []
+
+  const activeDotMap = {}
+  activeLegs.forEach(leg => {
+    const key = `${leg.desde}-${leg.hasta}`
+    if (!activeDotMap[key]) {
+      activeDotMap[key] = {
+        desde: leg.desde,
+        hasta: leg.hasta,
+        progreso: leg.progreso,
+        count: 0,
+        maletas: 0,
+        capacidadTotal: 0,
+      }
+    }
+    activeDotMap[key].count += 1
+    activeDotMap[key].maletas += leg.cantidadMaletas
+    activeDotMap[key].capacidadTotal += leg.capacidadVuelo ?? 0
+  })
+  const activeDots = Object.values(activeDotMap)
+
+  const simProgress = simStart && simEnd && simTime
+    ? Math.min(1, Math.max(0, (simTime - simStart) / (simEnd - simStart)))
+    : 0
+
+  useEffect(() => {
+    clearInterval(timerRef.current)
+    if (!isPlaying || !simEnd) return
+
+    timerRef.current = setInterval(() => {
+      setSimTime(t => {
+        if (!t) return t
+        const next = new Date(t.getTime() + playSpeed * 60 * 1000)
+        if (next >= simEnd) {
+          setIsPlaying(false)
+          return new Date(simEnd)
+        }
+        return next
+      })
+    }, 1000)
+
+    return () => clearInterval(timerRef.current)
+  }, [isPlaying, playSpeed, simEnd])
+
+  const coords = useMemo(() => {
+    const c = {}
+    Object.values(aeropuertosConOcupacion).forEach(ap => {
+      if (Number.isFinite(ap.latitud) && Number.isFinite(ap.longitud)) {
+        c[ap.codigo] = { lat: ap.latitud, lng: ap.longitud }
+      }
+    })
+    return c
+  }, [aeropuertosConOcupacion])
+
+  function zoomIn() {
+    mapInstance?.zoomIn()
   }
 
-  function endDrag() {
-    dragState.current = null
-    setIsPanning(false)
-    // isDragging must remain true until the click event fires (click fires
-    // synchronously after mouseup in the same event flush), then reset.
-    setTimeout(() => { isDragging.current = false }, 0)
-  }
-
-  function zoomBy(factor) {
-    const { scale, tx, ty } = transformRef.current
-    const cx = 500, cy = 250 // SVG centre
-    const newScale = Math.min(Math.max(scale * factor, SCALE_MIN), SCALE_MAX)
-    const ratio    = newScale / scale
-    applyTransform({ scale: newScale, tx: cx - (cx - tx) * ratio, ty: cy - (cy - ty) * ratio })
+  function zoomOut() {
+    mapInstance?.zoomOut()
   }
 
   function resetView() {
-    applyTransform(INITIAL_TRANSFORM)
+    if (!mapInstance) return
+    setResetNonce(v => v + 1)
   }
 
-  // ── Derived data ──────────────────────────────────────────────────────────
-
-  const aeropuertosActivos = airports ?? AEROPUERTOS
-  const rutasActivas       = routes ?? (airports ? [] : RUTAS)
-
-  console.log('[MapaMundi] render — airports:', Object.keys(aeropuertosActivos).length, '| routes state:', routes?.length ?? 'null', '| rutasActivas:', rutasActivas.length, '| runId:', runId, '| runCompleted:', runCompleted)
-
-  // Tamaños inversamente proporcionales al zoom → tamaño visual constante en pantalla
-  const s       = transform.scale
-  const nodeR   = 8   / s   // radio del círculo de aeropuerto
-  const nodeSW  = 1.5 / s   // grosor de borde del círculo
-  const labelSz = 8   / s   // tamaño de fuente de la etiqueta ICAO
-  const labelDy = 13  / s   // separación vertical etiqueta↑nodo (en unidades SVG)
-  const dotR    = 5   / s   // radio del punto de vuelo en tránsito
-
-  const coords = {}
-  Object.values(aeropuertosActivos).forEach((ap) => {
-    coords[ap.codigo] = pctToXY(ap.mapX, ap.mapY)
-  })
-
-  const svgTransform = `translate(${transform.tx},${transform.ty}) scale(${transform.scale})`
-
   return (
-    <div
-      ref={containerRef}
-      className={`relative w-full h-full overflow-hidden bg-[#0c1a2e] select-none ${isPanning ? 'cursor-grabbing' : 'cursor-grab'}`}
-      onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={endDrag}
-      onMouseLeave={endDrag}
-    >
-      <svg
-        ref={svgRef}
-        viewBox="0 0 1000 500"
+    <div className="relative w-full h-full overflow-hidden bg-[#0c1a2e] select-none">
+      <MapContainer
         className="w-full h-full"
+        zoomControl={false}
+        scrollWheelZoom="center"
+        maxBoundsViscosity={1.0}
+        whenCreated={setMapInstance}
       >
-        {/* Océano — fixed, outside the transform group */}
-        <rect width="1000" height="500" fill="#0c1a2e" />
+        <MapViewportController airportsByCode={aeropuertosActivos} resetNonce={resetNonce} />
 
-        {/* All map content inside the zoom/pan transform */}
-        <g transform={svgTransform}>
+        <TileLayer
+          attribution='&copy; OpenStreetMap contributors &copy; CARTO'
+          url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+        />
 
-          {/* Países del mundo — topojson countries-110m */}
-          <g fill="#1e3a5f" stroke="#0f2744" strokeWidth="0.5">
-            {COUNTRY_PATHS.map((d, i) => <path key={i} d={d} />)}
-          </g>
-
-          {/* Rutas de vuelo */}
-          {rutasActivas.map((ruta, i) => {
+        {rutasLineas
+          .filter(r => !r.revealAt || !simTime || simTime >= r.revealAt)
+          .map(ruta => {
             const a = coords[ruta.desde]
             const b = coords[ruta.hasta]
             if (!a || !b) return null
-            const mx = (a.x + b.x) / 2
-            const my = Math.min(a.y, b.y) - 40
             return (
-              <path
-                key={i}
-                d={`M ${a.x} ${a.y} Q ${mx} ${my} ${b.x} ${b.y}`}
-                fill="none"
-                stroke="#3b82f6"
-                strokeWidth="0.8"
-                strokeDasharray="4 3"
-                opacity="0.4"
+              <Polyline
+                key={`${ruta.desde}-${ruta.hasta}`}
+                positions={[[a.lat, a.lng], [b.lat, b.lng]]}
+                pathOptions={{ color: '#3b82f6', weight: 2, opacity: 0.5, dashArray: '6 6' }}
               />
             )
           })}
 
-          {/* Puntos de vuelo animados */}
-          {VUELOS_EN_AIRE.filter(v => v.progreso > 0).map((vuelo, i) => {
-            const a = coords[vuelo.desde]
-            const b = coords[vuelo.hasta]
-            if (!a || !b) return null
-            const mx = (a.x + b.x) / 2
-            const my = Math.min(a.y, b.y) - 40
-            const t  = vuelo.progreso
-            const bx = (1 - t) * (1 - t) * a.x + 2 * (1 - t) * t * mx + t * t * b.x
-            const by = (1 - t) * (1 - t) * a.y + 2 * (1 - t) * t * my + t * t * b.y
-            const animDelay = `${i * -1.5}s`
-            return (
-              <g key={vuelo.codigo}>
-                <circle
-                  cx={bx} cy={by} r={dotR}
-                  fill="#3b82f6" stroke="#93c5fd" strokeWidth={nodeSW}
-                  style={{ cursor: 'pointer' }}
-                  onMouseEnter={() => setTooltipVuelo(vuelo)}
-                  onMouseLeave={() => setTooltipVuelo(null)}
-                />
-                <circle cx={bx} cy={by} r={dotR} fill="none" stroke="#93c5fd" strokeWidth={nodeSW} opacity="0.5">
-                  <animate attributeName="r" from={dotR} to={dotR * 2} dur="2s" repeatCount="indefinite" begin={animDelay} />
-                  <animate attributeName="opacity" from="0.6" to="0" dur="2s" repeatCount="indefinite" begin={animDelay} />
-                </circle>
-              </g>
-            )
-          })}
+        {activeDots.map(dot => {
+          const a = coords[dot.desde]
+          const b = coords[dot.hasta]
+          if (!a || !b) return null
 
-          {/* Nodos de aeropuertos */}
-          {Object.values(aeropuertosActivos).map((ap) => {
-            const pos = coords[ap.codigo]
-            if (!pos) return null
-            const pct   = getOcupacionPct(ap)
-            const color = getSemaforoPorOcupacion(pct)
-            const hex   = SEMAFORO_COLORES[color]
-            return (
-              <g
-                key={ap.codigo}
-                style={{ cursor: 'pointer' }}
-                onMouseEnter={() => setTooltipAeropuerto(ap)}
-                onMouseLeave={() => setTooltipAeropuerto(null)}
-                onClick={() => {
-                  if (isDragging.current) return
-                  navigate(`/aeropuerto/${ap.codigo}`)
-                }}
-              >
-                <circle cx={pos.x} cy={pos.y} r={nodeR * 1.5} fill={hex} opacity="0.15">
-                  <animate attributeName="r" values={`${nodeR * 1.25};${nodeR * 2};${nodeR * 1.25}`} dur="3s" repeatCount="indefinite" />
-                  <animate attributeName="opacity" values="0.15;0.05;0.15" dur="3s" repeatCount="indefinite" />
-                </circle>
-                <circle cx={pos.x} cy={pos.y} r={nodeR} fill={hex} stroke="white" strokeWidth={nodeSW} />
-                <text
-                  x={pos.x} y={pos.y - labelDy}
-                  textAnchor="middle"
-                  fill="white" fontSize={labelSz} fontWeight="600"
-                  fontFamily="Inter, sans-serif"
-                  style={{ userSelect: 'none' }}
-                >
-                  {ap.codigo}
-                </text>
-              </g>
-            )
-          })}
+          const t = dot.progreso
+          const lat = a.lat + (b.lat - a.lat) * t
+          const lng = a.lng + (b.lng - a.lng) * t
+          const pct = dot.capacidadTotal > 0 ? (dot.maletas / dot.capacidadTotal) * 100 : 0
+          const color = getPlaneColors(pct)
+          const angle = getHeadingAngle(a, b)
+          const planeIcon = createPlaneIcon({ fill: color.fill, stroke: color.stroke, angle, count: dot.count })
 
-        </g>
-      </svg>
+          return (
+            <Marker
+              key={`${dot.desde}-${dot.hasta}`}
+              position={[lat, lng]}
+              icon={planeIcon}
+            >
+              <Tooltip direction="top" offset={[0, -10]} className="tasf-tooltip" opacity={1}>
+                <div className="text-xs">
+                  <div className="font-bold text-white mb-1">{dot.desde} {'->'} {dot.hasta}</div>
+                  <div className="text-slate-300">Envios: <span className="text-blue-300 font-semibold">{dot.count}</span></div>
+                  <div className="text-slate-300">Maletas: <span className="text-blue-300 font-semibold">{dot.maletas.toLocaleString()}</span></div>
+                  <div className="text-slate-300">Progreso: <span className="text-slate-200 font-semibold">{Math.round(dot.progreso * 100)}%</span></div>
+                </div>
+              </Tooltip>
+            </Marker>
+          )
+        })}
 
-      {/* ── Controles de zoom ─────────────────────────────────────────────── */}
-      <div
-        className="absolute top-3 right-3 flex flex-col gap-1 z-10"
-        onMouseDown={e => e.stopPropagation()}  // no inicia pan al usar los botones
-      >
-        <ZoomButton label="+" title="Acercar"        onClick={() => zoomBy(ZOOM_FACTOR)} />
-        <ZoomButton label="−" title="Alejar"         onClick={() => zoomBy(1 / ZOOM_FACTOR)} />
+        {Object.values(aeropuertosConOcupacion).map(ap => {
+          const pos = coords[ap.codigo]
+          if (!pos) return null
+
+          const pct = getOcupacionPct(ap)
+          const color = getSemaforoPorOcupacion(pct)
+          const hex = SEMAFORO_COLORES[color]
+
+          return (
+            <CircleMarker
+              key={ap.codigo}
+              center={[pos.lat, pos.lng]}
+              radius={9}
+              pathOptions={{ color: '#ffffff', weight: 2, fillColor: hex, fillOpacity: 0.92 }}
+              eventHandlers={{
+                click: () => navigate(`/aeropuerto/${ap.codigo}`),
+              }}
+            >
+              <Tooltip direction="right" offset={[8, 0]} className="tasf-tooltip" opacity={1}>
+                <div className="text-xs min-w-[180px]">
+                  <div className="font-bold text-white text-sm mb-0.5">{ap.nombre}</div>
+                  <div className="text-blue-300 font-mono mb-1">{ap.codigo}</div>
+                  <div className="text-slate-400 mb-1">{ap.ciudad} - {ap.continente}</div>
+                  <div className="text-slate-300">Ocupacion: <span className="font-semibold text-green-300">{ap.almacen.actual.toLocaleString()}/{ap.almacen.capacidad.toLocaleString()}</span></div>
+                  <div className="text-slate-300">Riesgo: <span className="text-amber-300">{ap.maletasEnRiesgo}</span></div>
+                  <div className="text-blue-300 mt-1">Hover + click para ver detalles {'->'}</div>
+                </div>
+              </Tooltip>
+            </CircleMarker>
+          )
+        })}
+      </MapContainer>
+
+      <div className="absolute top-3 right-3 flex flex-col gap-1 z-[1000]">
+        <ZoomButton label="+" title="Acercar" onClick={zoomIn} />
+        <ZoomButton label="-" title="Alejar" onClick={zoomOut} />
         <div className="h-px bg-slate-600 my-0.5" />
-        <ZoomButton label="↺" title="Restablecer vista" onClick={resetView} />
+        <ZoomButton label="R" title="Restablecer vista" onClick={resetView} />
       </div>
 
-      {/* ── Tooltips (ocultos mientras se arrastra) ───────────────────────── */}
-      {tooltipAeropuerto && !isPanning && (
-        <TooltipAeropuerto
-          ap={tooltipAeropuerto}
-          pos={mousePos}
-          onNavegar={() => navigate(`/aeropuerto/${tooltipAeropuerto.codigo}`)}
-        />
-      )}
-      {tooltipVuelo && !tooltipAeropuerto && !isPanning && (
-        <TooltipVuelo vuelo={tooltipVuelo} pos={mousePos} />
+      {simTime && (
+        <div className="absolute bottom-14 left-4 right-4 z-[1000]">
+          <div className="bg-slate-900/92 backdrop-blur border border-slate-700 rounded-xl px-4 py-2.5 flex items-center gap-3">
+            <button
+              onClick={() => setIsPlaying(p => !p)}
+              className="w-8 h-8 shrink-0 flex items-center justify-center rounded-lg bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white font-bold transition-colors"
+              title={isPlaying ? 'Pausar' : 'Reproducir'}
+            >
+              {isPlaying ? '||' : '>'}
+            </button>
+
+            <select
+              value={playSpeed}
+              onChange={e => setPlaySpeed(Number(e.target.value))}
+              className="shrink-0 bg-slate-800 border border-slate-600 text-slate-200 text-xs rounded px-2 py-1 cursor-pointer focus:outline-none focus:border-blue-500"
+            >
+              {SPEED_OPTIONS.map(v => (
+                <option key={v} value={v}>{v}x</option>
+              ))}
+            </select>
+
+            <span className="shrink-0 text-slate-300 text-xs font-mono whitespace-nowrap">
+              Fecha: {formatSimDateTime(simTime)}
+            </span>
+
+            <div
+              className="flex-1 bg-slate-700/80 rounded-full h-1.5 cursor-pointer"
+              onClick={e => {
+                if (!simStart || !simEnd) return
+                const rect = e.currentTarget.getBoundingClientRect()
+                const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
+                setSimTime(new Date(simStart.getTime() + ratio * (simEnd - simStart)))
+              }}
+            >
+              <div
+                className="bg-blue-500 h-1.5 rounded-full pointer-events-none"
+                style={{ width: `${simProgress * 100}%`, transition: isPlaying ? 'width 0.9s linear' : 'none' }}
+              />
+            </div>
+
+            <span className="shrink-0 text-xs font-mono min-w-[6rem] text-right text-blue-400">
+              {activeLegs.length > 0 ? `${activeLegs.length} en vuelo` : 'sin vuelos'}
+            </span>
+          </div>
+        </div>
       )}
     </div>
   )
 }
-
-// ── Sub-components ─────────────────────────────────────────────────────────
 
 function ZoomButton({ label, title, onClick }) {
   return (
@@ -402,56 +542,5 @@ function ZoomButton({ label, title, onClick }) {
     >
       {label}
     </button>
-  )
-}
-
-function TooltipAeropuerto({ ap, pos }) {
-  const pct = getOcupacionPct(ap)
-  const color = getSemaforoPorOcupacion(pct)
-  const barColor  = { verde: 'bg-green-500', ambar: 'bg-amber-500', rojo: 'bg-red-500' }[color]
-  const textColor = { verde: 'text-green-400', ambar: 'text-amber-400', rojo: 'text-red-400' }[color]
-
-  return (
-    <div className="fixed z-50 pointer-events-none" style={{ left: pos.x + 16, top: pos.y - 10 }}>
-      <div className="bg-slate-800 border border-slate-600 rounded-lg shadow-2xl p-3 min-w-[220px]">
-        <div className="font-bold text-white text-sm mb-0.5">{ap.nombre}</div>
-        <div className="text-slate-400 text-xs mb-2">{ap.ciudad} — {ap.continente}</div>
-        <div className="text-xs text-slate-300 mb-1">Ocupación almacén</div>
-        <div className={`font-mono font-semibold text-sm mb-1 ${textColor}`}>
-          {ap.almacen.actual.toLocaleString()}/{ap.almacen.capacidad.toLocaleString()} maletas ({pct}%)
-        </div>
-        <div className="w-full bg-slate-700 rounded-full h-1.5 mb-2">
-          <div className={`h-1.5 rounded-full ${barColor}`} style={{ width: `${Math.min(pct, 100)}%` }} />
-        </div>
-        <div className="grid grid-cols-2 gap-x-3 text-xs text-slate-400 mb-2">
-          <span>Maletas en riesgo</span><span className="text-amber-400 font-mono">{ap.maletasEnRiesgo}</span>
-          <span>Vuelos próximos</span><span className="text-blue-400 font-mono">{ap.vuelosProximos}</span>
-          <span>Última actualiz.</span><span className="text-slate-300">{ap.ultimaActualizacion}</span>
-        </div>
-        <div className="text-blue-400 text-xs">Click para ver detalles →</div>
-      </div>
-    </div>
-  )
-}
-
-function TooltipVuelo({ vuelo, pos }) {
-  const pct = Math.round((vuelo.maletasActual / vuelo.maletasCapacidad) * 100)
-  const color = pct > 100 ? 'text-red-400' : pct >= 85 ? 'text-amber-400' : 'text-green-400'
-  return (
-    <div className="fixed z-50 pointer-events-none" style={{ left: pos.x + 16, top: pos.y - 10 }}>
-      <div className="bg-slate-800 border border-slate-600 rounded-lg shadow-2xl p-3 min-w-[200px]">
-        <div className="font-bold text-white text-sm mb-0.5">{vuelo.codigo}</div>
-        <div className="text-slate-400 text-xs mb-2">Ruta: {vuelo.desde} → {vuelo.hasta}</div>
-        <div className={`font-mono font-semibold text-sm mb-2 ${color}`}>
-          {vuelo.maletasActual}/{vuelo.maletasCapacidad} ({pct}%)
-        </div>
-        <div className="grid grid-cols-2 gap-x-3 text-xs text-slate-400">
-          <span>Duración</span><span className="text-slate-300">{vuelo.tiempoVuelo}</span>
-          <span>Despegue</span><span className="text-slate-300">{vuelo.horaDespegue}</span>
-          <span>Llegada est.</span><span className="text-slate-300">{vuelo.horaLlegada}</span>
-          <span>Estado</span><span className="text-blue-400">{vuelo.estado}</span>
-        </div>
-      </div>
-    </div>
   )
 }

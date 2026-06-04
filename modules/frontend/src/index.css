@@ -44,3 +44,63 @@
     100% { offset-distance: 100%; }
   }
 }
+
+/* Leaflet tooltip theme for dark dashboard */
+.tasf-tooltip {
+  background: #1e293b;
+  border: 1px solid #475569;
+  color: #e2e8f0;
+  border-radius: 8px;
+  box-shadow: 0 10px 25px rgba(2, 6, 23, 0.45);
+}
+
+.tasf-tooltip:before {
+  border-top-color: #1e293b !important;
+}
+
+.tasf-airport-code {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+  text-shadow: 0 1px 2px rgba(2, 6, 23, 0.85);
+}
+
+.tasf-airport-code:before {
+  display: none;
+}
+
+.tasf-plane-icon-wrapper {
+  background: transparent;
+  border: 0;
+}
+
+.tasf-plane-icon {
+  position: relative;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  transform: rotate(var(--plane-rotation));
+  filter: drop-shadow(0 3px 6px rgba(2, 6, 23, 0.7));
+}
+
+.tasf-plane-badge {
+  position: absolute;
+  top: -3px;
+  right: -4px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 9999px;
+  background: #1d4ed8;
+  color: #ffffff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.9);
+}
+
