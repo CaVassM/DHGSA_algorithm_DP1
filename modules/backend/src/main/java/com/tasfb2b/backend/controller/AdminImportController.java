@@ -5,6 +5,7 @@ import com.tasfb2b.backend.dto.response.ImportSummaryResponse;
 import com.tasfb2b.backend.service.AdminImportService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -14,6 +15,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.http.MediaType;
+import org.springframework.web.bind.annotation.RequestPart;
 
 @RestController
 @RequestMapping("/api/v1/admin/imports")
@@ -41,9 +43,20 @@ public class AdminImportController {
         return ResponseEntity.ok(adminImportService.importFlights(file));
     }
 
+    /*
     @PostMapping(value = "/shipments", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @Operation(summary = "Importar envíos (uno o varios envios_XXXX_.txt). Origen inferido del nombre. Upsert por businessId.")
     public ResponseEntity<ImportSummaryResponse> importShipments(@RequestParam("files") MultipartFile[] files) {
         return ResponseEntity.ok(adminImportService.importShipments(files));
+    }*/
+    
+    @PostMapping(value = "/shipments", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @Operation(summary = "Importar envíos (uno o varios envios_XXXX_.txt). Origen inferido del nombre. Upsert por businessId.")
+    public ResponseEntity<ImportSummaryResponse> importShipments(
+            @RequestPart("files") List<MultipartFile> files
+    ) {
+        return ResponseEntity.ok(
+                adminImportService.importShipments(files.toArray(new MultipartFile[0]))
+        );
     }
 }

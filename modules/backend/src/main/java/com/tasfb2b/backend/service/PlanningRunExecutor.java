@@ -202,15 +202,23 @@ public class PlanningRunExecutor {
 
         Map<String, ShipmentEntity> shipmentByBusinessId = new HashMap<>();
         Map<String, FlightEntity> flightByBusinessId = new HashMap<>();
-
+        log.info("Cantidad de rutas recibidas en outcome: {}", outcome.rutasPorEnvioId().size());
         for (Map.Entry<String, RutaEnvio> entry : outcome.rutasPorEnvioId().entrySet()) {
             String envioBusinessId = entry.getKey();
             RutaEnvio ruta = entry.getValue();
-            if (ruta == null) continue;
-
+            log.info("Intentando guardar ruta para envío {}", envioBusinessId);
+              if (ruta == null) {
+                    log.warn("Ruta null para envío {}", envioBusinessId);
+                    continue;
+                }
+             
+                    
             ShipmentEntity shipment = shipmentByBusinessId.computeIfAbsent(envioBusinessId,
                     id -> shipmentRepository.findByBusinessId(id).orElse(null));
-            if (shipment == null) continue;
+            if (shipment == null) {
+                log.warn("No se guardó ruta: no existe ShipmentEntity con businessId={}", envioBusinessId);
+                continue;
+            }
 
             RouteEntity route = RouteEntity.builder()
                     .planningRun(run)
@@ -224,13 +232,23 @@ public class PlanningRunExecutor {
                     .build();
 
             List<Vuelo> secuencia = ruta.getSecuenciaVuelos();
+            log.info("Ruta para envío {} tiene {} vuelos",envioBusinessId,secuencia == null ? 0 : secuencia.size());
             if (secuencia != null) {
                 for (int i = 0; i < secuencia.size(); i++) {
                     Vuelo vuelo = secuencia.get(i);
                     String fid = vuelo.getId();
-                    FlightEntity flightEntity = flightByBusinessId.computeIfAbsent(fid,
+                    
+                    String flightBusinessId = fid != null && fid.contains("@")
+                            ? fid.substring(0, fid.indexOf("@"))
+                            : fid;
+                    /*FlightEntity flightEntity = flightByBusinessId.computeIfAbsent(fid,
+                            bid -> flightRepository.findByBusinessId(bid).orElse(null));*/
+                    FlightEntity flightEntity = flightByBusinessId.computeIfAbsent(flightBusinessId,
                             bid -> flightRepository.findByBusinessId(bid).orElse(null));
-                    if (flightEntity == null) continue;
+                    if (flightEntity == null) {
+                        log.warn("No se guardó leg: no existe FlightEntity con businessId={}", fid);
+                        continue;
+                    }
                     route.getLegs().add(RouteLegEntity.builder()
                             .route(route)
                             .flight(flightEntity)
@@ -239,6 +257,9 @@ public class PlanningRunExecutor {
                 }
             }
             routeRepository.save(route);
+            log.info("Ruta guardada para envío {} con {} legs",
+            envioBusinessId,
+            route.getLegs().size());
         }
     }
 

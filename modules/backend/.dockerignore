@@ -1,0 +1,38 @@
+# Maven build output
+target/
+
+# IDE files
+.idea/
+.vscode/
+*.iml
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# Git
+.git/
+.gitignore
+
+# Docker files that no necesitas copiar dentro de la imagen
+docker-compose.yml
+
+# Environment files
+.env
+*.env
+
+# Temporary files
+tmp/
+temp/
+
+# Node files, por si tu backend tuviera algo mezclado
+node_modules/
+dist/
+
+# Test reports
+surefire-reports/
+failsafe-reports/
