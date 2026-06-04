@@ -46,7 +46,7 @@ export default function Dashboard() {
       <NavBar />
       <div className="flex flex-1 overflow-hidden">
         {/* Mapa */}
-        <main className="flex-1 relative overflow-hidden p-4">
+        <main className="flex-1 relative overflow-hidden p-1">
           <MapaMundi runId={runId} runCompleted={!!(run && TERMINAL_STATUSES.has(run.status))} />
           {/* Leyenda */}
           <div className="absolute bottom-4 left-4 flex gap-3 bg-slate-900/80 backdrop-blur rounded-lg px-4 py-2 border border-slate-700">

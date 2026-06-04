@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { startPlanningRun, getImportStatus, importShipments } from '../services/api'
+import { startPlanningRun, getPlanningRun, getImportStatus, getShipments, importShipments } from '../services/api'
 
 const UMBRALES = [
   { indicador: 'Almacenes',    verde: '< 60%',       ambar: '60% - 85%',   rojo: '> 85%' },
@@ -8,15 +8,28 @@ const UMBRALES = [
   { indicador: 'Cumplimiento', verde: '> 95%',        ambar: '85% - 95%',   rojo: '< 85%' },
 ]
 
-const PLANNING_REQUEST = {
+const BASE_PLANNING_REQUEST = {
   algorithm:        'IALNS_SA',
   scenario:         'PERIOD_SIMULATION',
-  planningStart:    '2026-07-14T00:00:00',
   horizonDays:      5,
   epochHours:       4,
   populationSize:   6,
   timeLimitSeconds: 2,
   dataSetReference: 'DB',
+}
+
+const TERMINAL_STATUSES = new Set(['COMPLETED', 'COMPLETED_WITH_PENDING_SHIPMENTS', 'FAILED'])
+const SUCCESS_STATUSES = new Set(['COMPLETED', 'COMPLETED_WITH_PENDING_SHIPMENTS'])
+const POLL_INTERVAL_MS = 3000
+const POLL_MAX_ATTEMPTS = 240 // ~12 minutos
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function toDateTimeLocalValue(dateTimeString) {
+  if (!dateTimeString) return ''
+  return String(dateTimeString).slice(0, 16)
 }
 
 export default function ConfiguracionSimulacion() {
@@ -36,12 +49,43 @@ export default function ConfiguracionSimulacion() {
   // ── Start simulation ───────────────────────────────────────────────────────
   const [loading, setLoading] = useState(false)
   const [error,   setError]   = useState(null)
+  const [planningStart, setPlanningStart] = useState('')
+  const [maxPlanningStart, setMaxPlanningStart] = useState('')
+
+  async function loadPlanningDateLimit() {
+    try {
+      const page = await getShipments(0, 1, 'fechaHoraCreacion,desc')
+      const latest = page?.content?.[0]?.fechaHoraCreacion
+      if (!latest) {
+        setMaxPlanningStart('')
+        setPlanningStart('')
+        return
+      }
+
+      const latestLocal = toDateTimeLocalValue(latest)
+      setMaxPlanningStart(latestLocal)
+      setPlanningStart(prev => {
+        if (!prev || prev > latestLocal) return latestLocal
+        return prev
+      })
+    } catch {
+      // Si falla esta consulta, se mantiene la validación básica por campo requerido.
+      setMaxPlanningStart('')
+    }
+  }
 
   // Consultar status al montar
   useEffect(() => {
     let alive = true
     getImportStatus()
-      .then(s  => { if (alive) { setImportStatus(s); setStatusErr(false) } })
+      .then(async s => {
+        if (!alive) return
+        setImportStatus(s)
+        setStatusErr(false)
+        if (s.shipmentsCount > 0) {
+          await loadPlanningDateLimit()
+        }
+      })
       .catch(() => { if (alive) setStatusErr(true) })
     return () => { alive = false }
   }, [])
@@ -59,6 +103,9 @@ export default function ConfiguracionSimulacion() {
       // Re-fetch para obtener el total real en BD
       const updated = await getImportStatus()
       setImportStatus(updated)
+      if (updated.shipmentsCount > 0) {
+        await loadPlanningDateLimit()
+      }
     } catch (err) {
       setImportErr(err.response?.data?.message ?? 'Error al importar los archivos.')
     } finally {
@@ -66,20 +113,49 @@ export default function ConfiguracionSimulacion() {
     }
   }
 
+  async function waitUntilPlanningEnds(runId) {
+    for (let attempt = 0; attempt < POLL_MAX_ATTEMPTS; attempt++) {
+      const run = await getPlanningRun(runId)
+      if (TERMINAL_STATUSES.has(run.status)) return run
+      await sleep(POLL_INTERVAL_MS)
+    }
+    throw new Error('La planificación está tardando más de lo esperado. Intenta revisar el dashboard en unos minutos.')
+  }
+
   async function handleIniciar() {
+    if (!planningStart) {
+      setError('Selecciona una fecha de inicio para la planificación.')
+      return
+    }
+    if (maxPlanningStart && planningStart > maxPlanningStart) {
+      setError('La fecha de inicio no puede ser mayor que la última fecha disponible en envíos.')
+      return
+    }
+
     setLoading(true)
     setError(null)
     try {
-      const response = await startPlanningRun(PLANNING_REQUEST)
+      const response = await startPlanningRun({
+        ...BASE_PLANNING_REQUEST,
+        planningStart: `${planningStart}:00`,
+      })
+      const run = await waitUntilPlanningEnds(response.runId)
+
+      if (!SUCCESS_STATUSES.has(run.status)) {
+        throw new Error('La simulación terminó con error. Revisa logs del backend o vuelve a intentar.')
+      }
+
       navigate('/dashboard', { state: { runId: response.runId } })
     } catch (err) {
-      setError(err.response?.data?.message ?? 'No se pudo conectar con el servidor. Verifica que el backend esté corriendo.')
+      setError(err.response?.data?.message ?? err.message ?? 'No se pudo conectar con el servidor. Verifica que el backend esté corriendo.')
+    } finally {
       setLoading(false)
     }
   }
 
   const shipmentsReady = importStatus !== null && importStatus.shipmentsCount > 0
-  const canStart       = shipmentsReady && !loading && !statusErr
+  const isPlanningStartValid = Boolean(planningStart) && (!maxPlanningStart || planningStart <= maxPlanningStart)
+  const canStart       = shipmentsReady && !loading && !statusErr && isPlanningStartValid
 
   return (
     <div className="min-h-screen bg-[#0f172a] flex items-center justify-center p-6">
@@ -108,6 +184,22 @@ export default function ConfiguracionSimulacion() {
               <ParamCard label="Algoritmo planificador" value="Genético (AG)"  icon="🧬" />
               <ParamCard label="Duración estimada"      value="~60 minutos"    icon="⏱"  />
               <ParamCard label="Carga inicial"           value="20,485 maletas" icon="🧳" />
+            </div>
+            <div className="mt-4">
+              <label className="block text-xs text-slate-400 mb-1.5">Fecha de inicio de planificación</label>
+              <input
+                type="datetime-local"
+                value={planningStart}
+                max={maxPlanningStart || undefined}
+                onChange={e => setPlanningStart(e.target.value)}
+                disabled={!shipmentsReady || loading}
+                className="w-full px-3 py-2 rounded-lg bg-slate-700/60 border border-slate-600 text-slate-200 text-sm focus:outline-none focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+              />
+              <p className="mt-1 text-xs text-slate-500">
+                {maxPlanningStart
+                  ? `Máximo permitido por envíos: ${maxPlanningStart.replace('T', ' ')}`
+                  : 'El límite se habilita cuando hay envíos disponibles.'}
+              </p>
             </div>
           </div>
 
@@ -280,7 +372,7 @@ export default function ConfiguracionSimulacion() {
           {loading ? (
             <>
               <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-              Iniciando simulación...
+              Planificando... (esperando fin del algoritmo)
             </>
           ) : (
             <>
@@ -294,7 +386,7 @@ export default function ConfiguracionSimulacion() {
           {importStatus === null && !statusErr
             ? 'Verificando datos...'
             : shipmentsReady
-              ? `${importStatus.shipmentsCount.toLocaleString()} envíos en BD — dataset listo.`
+              ? `${importStatus.shipmentsCount.toLocaleString()} envíos en BD — dataset listo${planningStart ? '.' : ', falta elegir fecha de inicio.'}`
               : 'Carga los archivos de envíos para habilitar la simulación.'}
         </p>
       </div>

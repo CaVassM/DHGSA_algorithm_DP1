@@ -37,8 +37,10 @@ export async function getFlights(page = 0, size = 100) {
   return data
 }
 
-export async function getShipments(page = 0, size = 100) {
-  const { data } = await api.get('/shipments', { params: { page, size } })
+export async function getShipments(page = 0, size = 100, sort = null) {
+  const params = { page, size }
+  if (sort) params.sort = sort
+  const { data } = await api.get('/shipments', { params })
   return data
 }
 
