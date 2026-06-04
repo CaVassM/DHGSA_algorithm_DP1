@@ -57,3 +57,17 @@ export async function importShipments(files) {
   const { data } = await api.post('/admin/imports/shipments', formData, { timeout: 30000 })
   return data
 }
+
+export async function importAirports(file) {
+  const formData = new FormData()
+  formData.append('file', file)
+  const { data } = await api.post('/admin/imports/airports', formData, { timeout: 30000 })
+  return data
+}
+
+export async function importFlights(file) {
+  const formData = new FormData()
+  formData.append('file', file)
+  const { data } = await api.post('/admin/imports/flights', formData, { timeout: 30000 })
+  return data
+}

@@ -388,7 +388,7 @@ export default function MapaMundi({ runId, runCompleted = false }) {
         zoomControl={false}
         scrollWheelZoom="center"
         maxBoundsViscosity={1.0}
-        whenCreated={setMapInstance}
+        ref={setMapInstance}
       >
         <MapViewportController airportsByCode={aeropuertosActivos} resetNonce={resetNonce} />
 
