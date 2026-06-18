@@ -55,6 +55,15 @@ function formatSimDateTime(date) {
   return `${date.getFullYear()}-${p(date.getMonth() + 1)}-${p(date.getDate())} ${p(date.getHours())}:${p(date.getMinutes())}`
 }
 
+function formatElapsed(ms) {
+  if (ms == null || ms < 0) return '-'
+  const totalMin = Math.floor(ms / 60000)
+  const d = Math.floor(totalMin / 1440)
+  const h = Math.floor((totalMin % 1440) / 60)
+  const m = totalMin % 60
+  return `${d}d ${h}h ${m}m`
+}
+
 function getPlaneColors(pct) {
   if (pct > 85) return { fill: '#f87171', stroke: '#fecaca' }
   if (pct >= 60) return { fill: '#fbbf24', stroke: '#fde68a' }
@@ -506,6 +515,10 @@ export default function MapaMundi({ runId, runCompleted = false }) {
 
             <span className="shrink-0 text-slate-300 text-xs font-mono whitespace-nowrap">
               Fecha: {formatSimDateTime(simTime)}
+            </span>
+
+            <span className="shrink-0 text-slate-400 text-xs font-mono whitespace-nowrap">
+              +{formatElapsed(simTime && simStart ? simTime - simStart : null)}
             </span>
 
             <div
