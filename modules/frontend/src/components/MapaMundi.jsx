@@ -16,7 +16,7 @@ import {
   getOcupacionPct,
   getSemaforoPorOcupacion,
   SEMAFORO_COLORES,
-  UMBRAL_VACIO,
+  UMBRALES_ALMACEN,
 } from '../data/aeropuertos'
 import { getAirports, getFlights, getPlanningRunRoutes } from '../services/api'
 
@@ -72,7 +72,7 @@ function formatElapsed(ms) {
 }
 
 function getPlaneColors(pct) {
-  if (pct <= UMBRAL_VACIO) return { fill: '#94a3b8', stroke: '#cbd5e1' }
+  if (pct <= UMBRALES_ALMACEN.vacio) return { fill: '#94a3b8', stroke: '#cbd5e1' }
   if (pct > 85) return { fill: '#f87171', stroke: '#fecaca' }
   if (pct >= 60) return { fill: '#fbbf24', stroke: '#fde68a' }
   return { fill: '#4ade80', stroke: '#bbf7d0' }
