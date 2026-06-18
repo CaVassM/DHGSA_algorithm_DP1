@@ -4,16 +4,17 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from 'recharts'
 import { AEROPUERTOS, getOcupacionPct, getSemaforoPorOcupacion } from '../data/aeropuertos'
-import { getOcupacionVueloPct } from '../data/vuelos'
+import { getOcupacionVueloPct, VUELOS_EN_AIRE } from '../data/vuelos'
 import { KPIS, DATOS_GRAFICO_DIAS, CONTINENTES } from '../data/simulacion'
 import NavBar from '../components/NavBar'
 import SemaforoBadge from '../components/SemaforoBadge'
 import BarraProgreso from '../components/BarraProgreso'
-import { getPlanningRun, getAirports, getPlanningRunRoutes } from '../services/api'
+import { getPlanningRun, getAirports, getFlights, getPlanningRunRoutes } from '../services/api'
 
 const LS_KEY = 'tasf_runId'
 
 const SEMAFORO_LABEL = {
+  vacio: { label: 'VACÍO (0)',     color: 'vacio' },
   verde: { label: '<60% ÓPTIMO',   color: 'verde' },
   ambar: { label: '60-85% RIESGO', color: 'ambar' },
   rojo:  { label: '>85% CRÍTICO',  color: 'rojo'  },
@@ -54,6 +55,72 @@ function adaptRoutes(routeList) {
   return Array.from(groups.values())
     .map(g => ({ ...g, capacidad: maxActual }))
     .sort((a, b) => b.actual - a.actual)
+}
+
+// Normaliza un horario (LocalTime "HH:mm:ss" del backend, o "10:30 AM" del mock) a "HH:mm".
+function formatHorario(h) {
+  if (!h) return '—'
+  const s = String(h)
+  const m = s.match(/^(\d{1,2}):(\d{2})/)
+  if (!m) return s
+  const hh = m[1].padStart(2, '0')
+  const suffix = /am|pm/i.test(s) ? ` ${s.match(/am|pm/i)[0].toUpperCase()}` : ''
+  return `${hh}:${m[2]}${suffix}`
+}
+
+// Construye la lista de UT individuales (Unidades de Transporte = vuelos).
+// El stock/ocupación de cada UT = suma de maletas de las rutas que la usan.
+function buildUTs(flightList, routeList) {
+  const maletasPorVuelo = new Map()
+  ;(routeList ?? []).forEach(r => {
+    ;(r.flightBusinessIds ?? []).forEach(fid => {
+      maletasPorVuelo.set(fid, (maletasPorVuelo.get(fid) ?? 0) + (r.cantidadMaletas ?? 0))
+    })
+  })
+  return (flightList ?? [])
+    .filter(Boolean)
+    .map((f, i) => {
+      const codigo    = String(f.businessId ?? f.id ?? `UT-${i + 1}`)
+      const actual    = maletasPorVuelo.get(f.businessId) ?? 0
+      const capacidad = f.capacidad || 0
+      return {
+        codigo,
+        desde:     f.origenIcao ?? '—',
+        hasta:     f.destinoIcao ?? '—',
+        horario:   f.horaSalida,
+        actual,
+        capacidad,
+        pct: capacidad > 0 ? Math.round((actual / capacidad) * 100) : 0,
+      }
+    })
+    .sort((a, b) => b.pct - a.pct || a.codigo.localeCompare(b.codigo))
+}
+
+// Lista de UT a partir de los datos mock (cada vuelo en aire ya es una UT individual).
+function buildUTsMock() {
+  return VUELOS_EN_AIRE
+    .map(v => {
+      const capacidad = v.maletasCapacidad || 0
+      return {
+        codigo:    v.codigo,
+        desde:     v.desde,
+        hasta:     v.hasta,
+        horario:   v.horaDespegue,
+        actual:    v.maletasActual,
+        capacidad,
+        pct: capacidad > 0 ? Math.round((v.maletasActual / capacidad) * 100) : 0,
+      }
+    })
+    .sort((a, b) => b.pct - a.pct || a.codigo.localeCompare(b.codigo))
+}
+
+// Color del semáforo de ocupación de una UT (reutiliza el estado VACÍO para 0 maletas).
+function colorOcupacionUT(ut) {
+  if (ut.capacidad === 0) return 'azul'
+  if (ut.actual === 0)    return 'vacio'
+  if (ut.pct >= 90)       return 'rojo'
+  if (ut.pct >= 50)       return 'ambar'
+  return 'verde'
 }
 
 // Agrupar AirportResponse[] por continente; sumar maletas de rutas cuyo origen esté en ese continente
@@ -108,6 +175,7 @@ export default function IndicadoresGlobales() {
   const [run,      setRun]      = useState(null)
   const [airports, setAirports] = useState(null)
   const [routes,   setRoutes]   = useState(null)
+  const [flights,  setFlights]  = useState(null)
 
   useEffect(() => {
     if (!runId) return
@@ -117,6 +185,12 @@ export default function IndicadoresGlobales() {
   useEffect(() => {
     getAirports()
       .then(page => { if (page.content?.length > 0) setAirports(page.content) })
+      .catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    getFlights()
+      .then(page => { if (page.content?.length > 0) setFlights(page.content) })
       .catch(() => {})
   }, [])
 
@@ -140,6 +214,14 @@ export default function IndicadoresGlobales() {
 
   // ── Tabla de rutas — sin fallback a datos mock ───────────────────────────
   const vuelosData  = routes ? adaptRoutes(routes) : []
+
+  // ── Lista de UT individuales (Unidades de Transporte) ────────────────────
+  // Con vuelos reales se enumera cada UT y se le imputa el stock de las rutas;
+  // sin datos reales se usan los vuelos mock (cada uno ya es una UT individual).
+  const utsData      = flights ? buildUTs(flights, routes ?? []) : buildUTsMock()
+  const utsReales    = !!flights
+  const utsOcupadas  = utsData.filter(u => u.actual > 0).length
+  const utsVacias    = utsData.filter(u => u.actual === 0).length
 
   const vuelosActivos = vuelosData.length
   const vuelosAltos   = vuelosData.filter(v => getOcupacionVueloPct(v) >= 90).length
@@ -294,6 +376,71 @@ export default function IndicadoresGlobales() {
           </div>
         </div>
 
+        {/* Lista de UT individuales (Unidades de Transporte) */}
+        <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+          <div className="px-5 py-4 border-b border-slate-700 flex items-center justify-between gap-4 flex-wrap">
+            <div>
+              <h2 className="font-semibold text-white">Unidades de Transporte (UT)</h2>
+              <p className="text-xs text-slate-400 mt-0.5">
+                {utsReales
+                  ? 'Cada vuelo individual con su ocupación/stock'
+                  : 'Cada vuelo individual con su ocupación/stock — datos de demostración'}
+              </p>
+            </div>
+            <div className="flex items-center gap-4 text-xs">
+              <span className="text-slate-400">Total: <span className="font-mono font-bold text-white">{utsData.length}</span></span>
+              <span className="text-slate-400">Con carga: <span className="font-mono font-bold text-green-400">{utsOcupadas}</span></span>
+              <span className="text-slate-400">Vacías: <span className="font-mono font-bold text-slate-300">{utsVacias}</span></span>
+            </div>
+          </div>
+          <div className="overflow-x-auto max-h-[460px] overflow-y-auto">
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 z-10">
+                <tr className="bg-slate-700 text-slate-400 text-xs uppercase">
+                  <th className="text-left px-4 py-3">UT (código)</th>
+                  <th className="text-left px-4 py-3">Origen → Destino</th>
+                  <th className="text-left px-4 py-3">Horario</th>
+                  <th className="text-right px-4 py-3">Stock</th>
+                  <th className="text-left px-4 py-3 w-44">Ocupación</th>
+                  <th className="text-left px-4 py-3">Estado</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-700/50">
+                {utsData.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="px-4 py-10 text-center text-slate-500 text-sm">
+                      {runId ? 'Cargando unidades de transporte...' : 'No hay unidades de transporte para mostrar'}
+                    </td>
+                  </tr>
+                ) : (
+                  utsData.map((ut) => {
+                    const color = colorOcupacionUT(ut)
+                    return (
+                      <tr key={ut.codigo} className="hover:bg-slate-700/20 transition-colors">
+                        <td className="px-4 py-3 font-mono font-semibold text-blue-400 text-xs">{ut.codigo}</td>
+                        <td className="px-4 py-3 text-slate-300 whitespace-nowrap">{ut.desde} → {ut.hasta}</td>
+                        <td className="px-4 py-3 text-slate-400 font-mono text-xs whitespace-nowrap">{formatHorario(ut.horario)}</td>
+                        <td className="px-4 py-3 font-mono text-slate-300 text-right whitespace-nowrap">
+                          {ut.actual.toLocaleString()}/{ut.capacidad.toLocaleString()}
+                        </td>
+                        <td className="px-4 py-3">
+                          <BarraProgreso pct={ut.pct} color={color} height="h-1.5" showLabel />
+                        </td>
+                        <td className="px-4 py-3">
+                          <SemaforoBadge
+                            color={color}
+                            label={ut.actual === 0 ? 'VACÍA' : ut.pct >= 90 ? 'LLENA' : ut.pct >= 50 ? 'ALTA' : 'BAJA'}
+                          />
+                        </td>
+                      </tr>
+                    )
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
         {/* Resumen por continente */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {continentesReales
@@ -374,7 +521,7 @@ export default function IndicadoresGlobales() {
               </thead>
               <tbody className="divide-y divide-slate-700/50">
                 {rankingAeropuertos.map((ap, i) => {
-                  const sem = SEMAFORO_LABEL[ap.color]
+                  const sem = SEMAFORO_LABEL[ap.color] ?? SEMAFORO_LABEL.verde
                   return (
                     <tr key={ap.codigo} className="hover:bg-slate-700/20 transition-colors">
                       <td className="px-4 py-3 text-slate-500 font-mono">{i + 1}</td>

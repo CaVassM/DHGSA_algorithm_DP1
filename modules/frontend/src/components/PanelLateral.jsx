@@ -38,6 +38,22 @@ function writeLog(runId, entries) {
   localStorage.setItem(logStorageKey(runId), JSON.stringify(entries))
 }
 
+// ── Estado de colapso (panel completo + secciones acordeón) ────────────────────
+
+const PANEL_COLLAPSED_KEY = 'tasf_panel_collapsed'
+function sectionKey(id) { return `tasf_panel_section_${id}` }
+
+function readPersistedBool(key, def) {
+  try {
+    const v = localStorage.getItem(key)
+    return v === null ? def : v === '1'
+  } catch { return def }
+}
+
+function writePersistedBool(key, val) {
+  try { localStorage.setItem(key, val ? '1' : '0') } catch { /* ignore */ }
+}
+
 // ── Component ────────────────────────────────────────────────────────────────
 
 export default function PanelLateral({ run }) {
@@ -46,6 +62,10 @@ export default function PanelLateral({ run }) {
   const statusCfg  = isReal
     ? (STATUS_CONFIG[run.status] ?? STATUS_CONFIG.RUNNING)
     : { label: 'Simulación en Curso', dotClass: 'bg-green-500 animate-pulse', textClass: 'text-green-400' }
+
+  // ── Colapso del panel completo (toggle ocultar/mostrar) ─────────────────────
+  const [panelCollapsed, setPanelCollapsed] = useState(() => readPersistedBool(PANEL_COLLAPSED_KEY, false))
+  useEffect(() => { writePersistedBool(PANEL_COLLAPSED_KEY, panelCollapsed) }, [panelCollapsed])
 
   // ── Log persistente ───────────────────────────────────────────────────────
   const [logHistory, setLogHistory] = useState([])
@@ -93,17 +113,54 @@ export default function PanelLateral({ run }) {
 
   const logEntries = isReal ? logHistory : LOG_EVENTOS
 
+  // ── Panel colapsado: riel angosto con botón para volver a mostrar ───────────
+  if (panelCollapsed) {
+    return (
+      <aside className="w-11 shrink-0 flex flex-col items-center gap-3 bg-slate-900 border-l border-slate-700 py-3">
+        <button
+          onClick={() => setPanelCollapsed(false)}
+          title="Mostrar panel de control"
+          aria-label="Mostrar panel de control"
+          className="flex flex-col items-center gap-1 px-1.5 py-2 rounded text-slate-300 hover:bg-slate-700 transition-colors"
+        >
+          <span className="text-base leading-none">«</span>
+          <span className="text-[9px] font-semibold uppercase tracking-wider">Mostrar</span>
+        </button>
+        <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider [writing-mode:vertical-rl] rotate-180">
+          Panel de control
+        </span>
+        <span className={`w-2.5 h-2.5 rounded-full ${statusCfg.dotClass}`} title={statusCfg.label} />
+      </aside>
+    )
+  }
+
   return (
     <aside className="w-72 shrink-0 flex flex-col bg-slate-900 border-l border-slate-700 overflow-y-auto">
 
+      {/* Cabecera del panel con botón de ocultar */}
+      <div className="flex items-center justify-between px-4 py-2.5 border-b border-slate-700 sticky top-0 bg-slate-900 z-10">
+        <span className="text-xs font-semibold text-slate-300 uppercase tracking-wider">Panel de Control</span>
+        <button
+          onClick={() => setPanelCollapsed(true)}
+          title="Ocultar panel de control"
+          aria-label="Ocultar panel de control"
+          className="flex items-center gap-1 px-2 py-1 rounded text-slate-400 hover:text-white hover:bg-slate-700 transition-colors"
+        >
+          <span className="text-[10px] font-semibold uppercase tracking-wider">Ocultar</span>
+          <span className="text-base leading-none">»</span>
+        </button>
+      </div>
+
       {/* Estado de la simulación */}
-      <section className="p-4 border-b border-slate-700">
-        <div className="flex items-center gap-2 mb-3">
-          <span className={`w-2.5 h-2.5 rounded-full ${statusCfg.dotClass}`} />
-          <span className={`text-xs font-semibold uppercase tracking-wider ${statusCfg.textClass}`}>
-            {statusCfg.label}
+      <CollapsibleSection
+        id="estado"
+        title={
+          <span className="flex items-center gap-2 normal-case">
+            <span className={`w-2.5 h-2.5 rounded-full ${statusCfg.dotClass}`} />
+            <span className={statusCfg.textClass}>{statusCfg.label}</span>
           </span>
-        </div>
+        }
+      >
         <div className="space-y-2 text-sm">
           {isReal ? (
             <>
@@ -135,11 +192,10 @@ export default function PanelLateral({ run }) {
             </>
           )}
         </div>
-      </section>
+      </CollapsibleSection>
 
       {/* KPIs */}
-      <section className="p-4 border-b border-slate-700">
-        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Estado Actual</h3>
+      <CollapsibleSection id="kpis" title="Estado Actual">
         <div className="space-y-2.5">
           {isReal ? (
             <>
@@ -167,15 +223,15 @@ export default function PanelLateral({ run }) {
             </>
           )}
         </div>
-      </section>
+      </CollapsibleSection>
 
       {/* Log de eventos */}
-      <section className="p-4 border-b border-slate-700 flex-1">
-        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">
-          {isReal
-            ? `Log de Eventos${logHistory.length > 0 ? ` (${logHistory.length})` : ''}`
-            : `Log de Eventos — Día ${SIMULACION.diaActual}`}
-        </h3>
+      <CollapsibleSection
+        id="log"
+        title={isReal
+          ? `Log de Eventos${logHistory.length > 0 ? ` (${logHistory.length})` : ''}`
+          : `Log de Eventos — Día ${SIMULACION.diaActual}`}
+      >
         <ul className="space-y-2.5">
           {logEntries.length === 0 ? (
             <li className="text-xs text-slate-500">
@@ -190,11 +246,11 @@ export default function PanelLateral({ run }) {
             ))
           )}
         </ul>
-      </section>
+      </CollapsibleSection>
 
-      {/* Atención requerida — mock estático (el backend no provee esto aún) */}
-      <section className="p-4">
-        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Atención Requerida</h3>
+      {/* Atención requerida — mock estático (el backend no provee esto aún).
+          Arranca contraída para dar una vista limpia del mapa. */}
+      <CollapsibleSection id="atencion" title="Atención Requerida" defaultOpen={false}>
         <ul className="space-y-2">
           {ATENCION_REQUERIDA.map((item) => (
             <li key={item.codigo} className="flex items-start gap-2">
@@ -209,8 +265,29 @@ export default function PanelLateral({ run }) {
             </li>
           ))}
         </ul>
-      </section>
+      </CollapsibleSection>
     </aside>
+  )
+}
+
+// Sección acordeón con cabecera que alterna mostrar/ocultar su contenido.
+// El estado abierto/cerrado se persiste por `id` en localStorage.
+function CollapsibleSection({ id, title, defaultOpen = true, children }) {
+  const [open, setOpen] = useState(() => readPersistedBool(sectionKey(id), defaultOpen))
+  useEffect(() => { writePersistedBool(sectionKey(id), open) }, [id, open])
+
+  return (
+    <section className="border-b border-slate-700">
+      <button
+        onClick={() => setOpen(o => !o)}
+        aria-expanded={open}
+        className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-slate-800/50 transition-colors"
+      >
+        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">{title}</h3>
+        <span className={`text-slate-500 text-sm shrink-0 ml-2 transition-transform ${open ? 'rotate-90' : ''}`}>›</span>
+      </button>
+      {open && <div className="px-4 pb-4">{children}</div>}
+    </section>
   )
 }
 
