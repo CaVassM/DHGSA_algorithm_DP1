@@ -130,13 +130,28 @@ export function getOcupacionPct(aeropuerto) {
   return Math.round((aeropuerto.almacen.actual / aeropuerto.almacen.capacidad) * 100 * 10) / 10
 }
 
-export function getSemaforoPorOcupacion(pct) {
-  if (pct > 85) return 'rojo'
-  if (pct >= 60) return 'ambar'
+// Umbrales (en % de ocupación) del semáforo del almacén. Parametrizables:
+// ajustar estos rangos cambia el comportamiento en todo el frontend
+// (mapa, detalle de aeropuerto, barras de progreso y leyenda).
+//   ocupación <= vacio  → VACÍO  (almacén sin maletas)
+//   ocupación <  ambar  → VERDE  (óptimo)
+//   ambar <= ocupación <= rojo → ÁMBAR (riesgo)
+//   ocupación >  rojo   → ROJO   (crítico)
+export const UMBRALES_ALMACEN = {
+  vacio: 0,   // % máximo considerado VACÍO (0 maletas)
+  ambar: 60,  // % a partir del cual entra en ÁMBAR
+  rojo:  85,  // % a partir del cual (estrictamente mayor) entra en ROJO
+}
+
+export function getSemaforoPorOcupacion(pct, umbrales = UMBRALES_ALMACEN) {
+  if (pct <= umbrales.vacio) return 'vacio'
+  if (pct >  umbrales.rojo)  return 'rojo'
+  if (pct >= umbrales.ambar) return 'ambar'
   return 'verde'
 }
 
 export const SEMAFORO_COLORES = {
+  vacio: '#94a3b8',  // slate-400 — color propio del estado VACÍO, distinto del verde
   verde: '#22c55e',
   ambar: '#f59e0b',
   rojo:  '#ef4444',

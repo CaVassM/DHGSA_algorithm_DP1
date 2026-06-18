@@ -37,11 +37,6 @@ export const LOG_EVENTOS = [
     mensaje: 'DESPACHO COMPLETO: FL-290 entregó 224 maletas en PEK',
   },
   {
-    hora: '12:35',
-    tipo: 'info',
-    mensaje: 'REPLANIFICACIÓN: 47 maletas redirigidas, vuelo cancelado GRU→MAD',
-  },
-  {
     hora: '12:30',
     tipo: 'alerta',
     mensaje: 'ALERTA MALETA TB2B-578WX0 (GRU→LHR): Fuera de plazo (-4h)',

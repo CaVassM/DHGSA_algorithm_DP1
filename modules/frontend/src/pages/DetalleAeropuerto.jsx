@@ -35,7 +35,7 @@ export default function DetalleAeropuerto() {
 
   const pct = getOcupacionPct(ap)
   const color = getSemaforoPorOcupacion(pct)
-  const barColor = { verde: 'text-green-400', ambar: 'text-amber-400', rojo: 'text-red-400' }[color]
+  const barColor = { vacio: 'text-slate-300', verde: 'text-green-400', ambar: 'text-amber-400', rojo: 'text-red-400' }[color]
 
   return (
     <div className="min-h-screen bg-[#0f172a] flex flex-col">
