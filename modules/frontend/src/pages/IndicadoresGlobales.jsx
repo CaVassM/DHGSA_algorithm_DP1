@@ -109,7 +109,8 @@ export default function IndicadoresGlobales() {
   const [run,      setRun]      = useState(null)
   const [airports, setAirports] = useState(null)
   const [routes,   setRoutes]   = useState(null)
-  const [sortDir,  setSortDir]  = useState('desc')
+  const [sortDir,     setSortDir]     = useState('desc')
+  const [filtroTexto, setFiltroTexto] = useState('')
 
   useEffect(() => {
     if (!runId) return
@@ -165,8 +166,9 @@ export default function IndicadoresGlobales() {
       : Object.values(AEROPUERTOS)
     return base
       .map(ap => ({ ...ap, pct: getOcupacionPct(ap), color: getSemaforoPorOcupacion(getOcupacionPct(ap)) }))
+      .filter(ap => ap.codigo.toLowerCase().includes(filtroTexto.toLowerCase()))
       .sort(cmp)
-  }, [airports, sortDir])
+  }, [airports, sortDir, filtroTexto])
 
   return (
     <div className="min-h-screen bg-[#0f172a] flex flex-col">
@@ -358,13 +360,22 @@ export default function IndicadoresGlobales() {
 
         {/* Ranking aeropuertos */}
         <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
-          <div className="px-5 py-4 border-b border-slate-700">
-            <h2 className="font-semibold text-white">Ranking de Ocupación por Aeropuerto</h2>
-            <p className="text-xs text-slate-400 mt-0.5">
-              {airports
-                ? 'Aeropuertos del sistema — ocupación actual no disponible en este endpoint'
-                : 'Ordenado por mayor ocupación de almacén'}
-            </p>
+          <div className="px-5 py-4 border-b border-slate-700 flex items-center gap-4">
+            <div className="flex-1">
+              <h2 className="font-semibold text-white">Ranking de Ocupación por Aeropuerto</h2>
+              <p className="text-xs text-slate-400 mt-0.5">
+                {airports
+                  ? 'Aeropuertos del sistema — ocupación actual no disponible en este endpoint'
+                  : 'Ordenado por mayor ocupación de almacén'}
+              </p>
+            </div>
+            <input
+              type="text"
+              value={filtroTexto}
+              onChange={e => setFiltroTexto(e.target.value)}
+              placeholder="Filtrar por código..."
+              className="bg-slate-700 border border-slate-600 text-slate-200 text-xs rounded px-3 py-1.5 w-44 placeholder-slate-500 focus:outline-none focus:border-blue-500"
+            />
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
