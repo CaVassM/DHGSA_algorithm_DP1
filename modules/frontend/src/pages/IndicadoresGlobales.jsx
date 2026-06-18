@@ -109,8 +109,9 @@ export default function IndicadoresGlobales() {
   const [run,      setRun]      = useState(null)
   const [airports, setAirports] = useState(null)
   const [routes,   setRoutes]   = useState(null)
-  const [sortDir,     setSortDir]     = useState('desc')
-  const [filtroTexto, setFiltroTexto] = useState('')
+  const [sortDir,          setSortDir]          = useState('desc')
+  const [filtroTexto,      setFiltroTexto]      = useState('')
+  const [filtroContinente, setFiltroContinente] = useState('Todos')
 
   useEffect(() => {
     if (!runId) return
@@ -157,6 +158,11 @@ export default function IndicadoresGlobales() {
   const continentesReales = airports ? buildContinentes(airports, routes ?? []) : null
 
   // ── Ranking de aeropuertos ───────────────────────────────────────────────
+  const continentesUnicos = useMemo(() => {
+    const base = airports ? adaptAirports(airports) : Object.values(AEROPUERTOS)
+    return [...new Set(base.map(ap => ap.continente))].sort()
+  }, [airports])
+
   const rankingAeropuertos = useMemo(() => {
     const cmp = sortDir === 'desc'
       ? (a, b) => b.pct - a.pct || a.codigo.localeCompare(b.codigo)
@@ -167,8 +173,9 @@ export default function IndicadoresGlobales() {
     return base
       .map(ap => ({ ...ap, pct: getOcupacionPct(ap), color: getSemaforoPorOcupacion(getOcupacionPct(ap)) }))
       .filter(ap => ap.codigo.toLowerCase().includes(filtroTexto.toLowerCase()))
+      .filter(ap => filtroContinente === 'Todos' || ap.continente === filtroContinente)
       .sort(cmp)
-  }, [airports, sortDir, filtroTexto])
+  }, [airports, sortDir, filtroTexto, filtroContinente])
 
   return (
     <div className="min-h-screen bg-[#0f172a] flex flex-col">
@@ -376,6 +383,16 @@ export default function IndicadoresGlobales() {
               placeholder="Filtrar por código..."
               className="bg-slate-700 border border-slate-600 text-slate-200 text-xs rounded px-3 py-1.5 w-44 placeholder-slate-500 focus:outline-none focus:border-blue-500"
             />
+            <select
+              value={filtroContinente}
+              onChange={e => setFiltroContinente(e.target.value)}
+              className="bg-slate-700 border border-slate-600 text-slate-200 text-xs rounded px-2 py-1.5 cursor-pointer focus:outline-none focus:border-blue-500"
+            >
+              <option value="Todos">Todos</option>
+              {continentesUnicos.map(c => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
