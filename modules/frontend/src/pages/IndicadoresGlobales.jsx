@@ -20,6 +20,20 @@ const SEMAFORO_LABEL = {
   rojo:  { label: '>85% CRÍTICO',  color: 'rojo'  },
 }
 
+const SEMAFORO_FLOTA_LABEL = {
+  vacio: '0% VACÍO',
+  verde: '<70% ÓPTIMO',
+  ambar: '70-90% RIESGO',
+  rojo:  '>90% CRÍTICO',
+}
+
+function getSemaforoFlota(pct) {
+  if (pct === 0)   return 'vacio'
+  if (pct < 70)    return 'verde'
+  if (pct <= 90)   return 'ambar'
+  return 'rojo'
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 // Adaptar AirportResponse[] al formato mínimo que necesita el ranking
@@ -151,6 +165,7 @@ export default function IndicadoresGlobales() {
   const promGlobal    = vuelosData.length > 0
     ? Math.round(vuelosData.reduce((acc, v) => acc + getOcupacionVueloPct(v), 0) / vuelosData.length * 10) / 10
     : 0
+  const colorFlota  = getSemaforoFlota(promGlobal)
 
   // ── Continentes ──────────────────────────────────────────────────────────
   // Cuando hay aeropuertos reales, se agrupan por continente con rutas reales.
@@ -261,7 +276,13 @@ export default function IndicadoresGlobales() {
 
             <div className="p-5">
               <div className="space-y-3">
-                <MetricaVuelo label="Promedio global" value={`${promGlobal}%`} color="text-blue-400" />
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400 text-sm">Promedio global</span>
+                  <div className="flex items-center gap-2">
+                    <SemaforoBadge color={colorFlota} label={SEMAFORO_FLOTA_LABEL[colorFlota]} />
+                    <span className="font-mono font-bold text-lg text-blue-400">{promGlobal}%</span>
+                  </div>
+                </div>
                 <MetricaVuelo label="Vuelos activos"  value={vuelosActivos}    color="text-white" />
                 <MetricaVuelo label="Vuelos >90%"     value={vuelosAltos}      color="text-red-400" />
                 <MetricaVuelo label="Vuelos <50%"     value={vuelosBajos}      color="text-blue-400" />
