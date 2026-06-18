@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useLocation } from 'react-router-dom'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
@@ -14,6 +14,7 @@ import { getPlanningRun, getAirports, getPlanningRunRoutes } from '../services/a
 const LS_KEY = 'tasf_runId'
 
 const SEMAFORO_LABEL = {
+  vacio: { label: '0% VACÍO',      color: 'vacio' },
   verde: { label: '<60% ÓPTIMO',   color: 'verde' },
   ambar: { label: '60-85% RIESGO', color: 'ambar' },
   rojo:  { label: '>85% CRÍTICO',  color: 'rojo'  },
@@ -108,6 +109,7 @@ export default function IndicadoresGlobales() {
   const [run,      setRun]      = useState(null)
   const [airports, setAirports] = useState(null)
   const [routes,   setRoutes]   = useState(null)
+  const [sortDir,  setSortDir]  = useState('desc')
 
   useEffect(() => {
     if (!runId) return
@@ -154,13 +156,17 @@ export default function IndicadoresGlobales() {
   const continentesReales = airports ? buildContinentes(airports, routes ?? []) : null
 
   // ── Ranking de aeropuertos ───────────────────────────────────────────────
-  const rankingAeropuertos = airports
-    ? adaptAirports(airports)
-        .map(ap => ({ ...ap, pct: getOcupacionPct(ap), color: getSemaforoPorOcupacion(getOcupacionPct(ap)) }))
-        .sort((a, b) => b.pct - a.pct || a.codigo.localeCompare(b.codigo))
-    : Object.values(AEROPUERTOS)
-        .map(ap => ({ ...ap, pct: getOcupacionPct(ap), color: getSemaforoPorOcupacion(getOcupacionPct(ap)) }))
-        .sort((a, b) => b.pct - a.pct)
+  const rankingAeropuertos = useMemo(() => {
+    const cmp = sortDir === 'desc'
+      ? (a, b) => b.pct - a.pct || a.codigo.localeCompare(b.codigo)
+      : (a, b) => a.pct - b.pct || a.codigo.localeCompare(b.codigo)
+    const base = airports
+      ? adaptAirports(airports)
+      : Object.values(AEROPUERTOS)
+    return base
+      .map(ap => ({ ...ap, pct: getOcupacionPct(ap), color: getSemaforoPorOcupacion(getOcupacionPct(ap)) }))
+      .sort(cmp)
+  }, [airports, sortDir])
 
   return (
     <div className="min-h-screen bg-[#0f172a] flex flex-col">
@@ -368,7 +374,12 @@ export default function IndicadoresGlobales() {
                   <th className="text-left px-4 py-3">Código</th>
                   <th className="text-left px-4 py-3">Continente</th>
                   <th className="text-left px-4 py-3">Almacén</th>
-                  <th className="text-left px-4 py-3 w-40">Ocupación</th>
+                  <th
+                    className="text-left px-4 py-3 w-40 cursor-pointer select-none hover:text-slate-200 transition-colors"
+                    onClick={() => setSortDir(d => d === 'desc' ? 'asc' : 'desc')}
+                  >
+                    Ocupación {sortDir === 'desc' ? '▼' : '▲'}
+                  </th>
                   <th className="text-left px-4 py-3">Estado</th>
                 </tr>
               </thead>
