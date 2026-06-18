@@ -487,6 +487,40 @@ export default function MapaMundi({ runId, runCompleted = false }) {
         })}
       </MapContainer>
 
+      {simTime && (
+        <div className="absolute top-3 left-3 z-[1000] pointer-events-none">
+          <div className="bg-slate-950/95 backdrop-blur border border-blue-500/25 rounded-xl overflow-hidden min-w-[220px] shadow-lg shadow-black/50">
+
+            {/* Header */}
+            <div className="flex items-center gap-2 px-3 py-2 bg-slate-800/60 border-b border-slate-700/60">
+              <svg className="w-3.5 h-3.5 text-blue-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0z" />
+              </svg>
+              <span className="text-[10px] text-slate-300 uppercase tracking-widest font-semibold">Tiempo simulado</span>
+            </div>
+
+            {/* Fecha + Hora */}
+            <div className="flex items-end gap-5 p-4">
+              <div>
+                <p className="text-[9px] text-slate-500 uppercase tracking-widest mb-1">Fecha</p>
+                <p className="text-sm text-slate-300 font-mono">{formatSimDateTime(simTime).split(' ')[0]}</p>
+              </div>
+              <div>
+                <p className="text-[9px] text-slate-500 uppercase tracking-widest mb-1">Hora</p>
+                <p className="text-5xl font-bold font-mono text-white leading-none">{formatSimDateTime(simTime).split(' ')[1]}</p>
+              </div>
+            </div>
+
+            {/* Transcurrido */}
+            <div className="px-4 pt-3 pb-4 border-t border-slate-700/50">
+              <p className="text-[9px] text-slate-500 uppercase tracking-widest mb-1">Transcurrido</p>
+              <p className="text-base font-mono text-green-400">+{formatElapsed(simStart ? simTime - simStart : null)}</p>
+            </div>
+
+          </div>
+        </div>
+      )}
+
       <div className="absolute top-3 right-3 flex flex-col gap-1 z-[1000]">
         <ZoomButton label="+" title="Acercar" onClick={zoomIn} />
         <ZoomButton label="-" title="Alejar" onClick={zoomOut} />
@@ -515,15 +549,7 @@ export default function MapaMundi({ runId, runCompleted = false }) {
               ))}
             </select>
 
-            <span className="shrink-0 text-slate-300 text-xs font-mono whitespace-nowrap">
-              Fecha: {formatSimDateTime(simTime)}
-            </span>
-
-            <span className="shrink-0 text-slate-400 text-xs font-mono whitespace-nowrap">
-              +{formatElapsed(simTime && simStart ? simTime - simStart : null)}
-            </span>
-
-            <div
+<div
               className="flex-1 bg-slate-700/80 rounded-full h-1.5 cursor-pointer"
               onClick={e => {
                 if (!simStart || !simEnd) return
