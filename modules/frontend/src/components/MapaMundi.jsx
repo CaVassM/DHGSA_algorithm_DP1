@@ -16,6 +16,7 @@ import {
   getOcupacionPct,
   getSemaforoPorOcupacion,
   SEMAFORO_COLORES,
+  UMBRALES_ALMACEN,
 } from '../data/aeropuertos'
 import { getAirports, getFlights, getPlanningRunRoutes } from '../services/api'
 
@@ -55,7 +56,23 @@ function formatSimDateTime(date) {
   return `${date.getFullYear()}-${p(date.getMonth() + 1)}-${p(date.getDate())} ${p(date.getHours())}:${p(date.getMinutes())}`
 }
 
+function formatRealTime(date) {
+  if (!date) return '--:--:--'
+  const p = n => String(n).padStart(2, '0')
+  return `${p(date.getHours())}:${p(date.getMinutes())}:${p(date.getSeconds())}`
+}
+
+function formatElapsed(ms) {
+  if (ms == null || ms < 0) return '-'
+  const totalMin = Math.floor(ms / 60000)
+  const d = Math.floor(totalMin / 1440)
+  const h = Math.floor((totalMin % 1440) / 60)
+  const m = totalMin % 60
+  return `${d}d ${h}h ${m}m`
+}
+
 function getPlaneColors(pct) {
+  if (pct <= UMBRALES_ALMACEN.vacio) return { fill: '#94a3b8', stroke: '#cbd5e1' }
   if (pct > 85) return { fill: '#f87171', stroke: '#fecaca' }
   if (pct >= 60) return { fill: '#fbbf24', stroke: '#fde68a' }
   return { fill: '#4ade80', stroke: '#bbf7d0' }
@@ -157,6 +174,17 @@ function MapViewportController({ airportsByCode, resetNonce }) {
     fitMapToAirports(map, airportsByCode)
   }, [map, airportsByCode, resetNonce])
 
+  // Leaflet no re-renderiza al cambiar el tamaño de su contenedor (p. ej. al
+  // colapsar/expandir el panel lateral), dejando una franja gris sin teselas.
+  // Un ResizeObserver lo fuerza a recalcular su tamaño.
+  useEffect(() => {
+    const container = map.getContainer()
+    if (!container || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => map.invalidateSize())
+    ro.observe(container)
+    return () => ro.disconnect()
+  }, [map])
+
   return null
 }
 
@@ -171,6 +199,12 @@ export default function MapaMundi({ runId, runCompleted = false }) {
   const [simTime, setSimTime] = useState(null)
   const [isPlaying, setIsPlaying] = useState(false)
   const [playSpeed, setPlaySpeed] = useState(60)
+
+  const [realTime, setRealTime] = useState(() => new Date())
+  useEffect(() => {
+    const id = setInterval(() => setRealTime(new Date()), 1000)
+    return () => clearInterval(id)
+  }, [])
 
   const [mapInstance, setMapInstance] = useState(null)
   const [resetNonce, setResetNonce] = useState(0)
@@ -476,6 +510,56 @@ export default function MapaMundi({ runId, runCompleted = false }) {
         })}
       </MapContainer>
 
+      <div className="absolute top-3 left-3 z-[1000] flex flex-col gap-2 pointer-events-none">
+
+        {/* Tarjeta: Tiempo simulado */}
+        {simTime && (
+          <div className="bg-slate-950/95 backdrop-blur border border-blue-500/25 rounded-xl overflow-hidden min-w-[220px] shadow-lg shadow-black/50">
+            <div className="flex items-center gap-2 px-3 py-2 bg-slate-800/60 border-b border-slate-700/60">
+              <svg className="w-3.5 h-3.5 text-blue-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0z" />
+              </svg>
+              <span className="text-[10px] text-slate-300 uppercase tracking-widest font-semibold">Tiempo simulado</span>
+            </div>
+            <div className="flex items-end gap-5 p-4">
+              <div>
+                <p className="text-[9px] text-slate-500 uppercase tracking-widest mb-1">Fecha</p>
+                <p className="text-sm text-slate-300 font-mono">{formatSimDateTime(simTime).split(' ')[0]}</p>
+              </div>
+              <div>
+                <p className="text-[9px] text-slate-500 uppercase tracking-widest mb-1">Hora</p>
+                <p className="text-5xl font-bold font-mono text-white leading-none">{formatSimDateTime(simTime).split(' ')[1]}</p>
+              </div>
+            </div>
+            <div className="px-4 pt-3 pb-4 border-t border-slate-700/50">
+              <p className="text-[9px] text-slate-500 uppercase tracking-widest mb-1">Transcurrido</p>
+              <p className="text-base font-mono text-green-400">+{formatElapsed(simStart ? simTime - simStart : null)}</p>
+            </div>
+          </div>
+        )}
+
+        {/* Tarjeta: Hora real */}
+        <div className="bg-slate-950/90 backdrop-blur border border-emerald-500/20 rounded-xl overflow-hidden min-w-[220px] shadow-md shadow-black/40">
+          <div className="flex items-center gap-2 px-3 py-2 bg-slate-800/50 border-b border-slate-700/60">
+            <svg className="w-3.5 h-3.5 text-emerald-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0z" />
+            </svg>
+            <span className="text-[10px] text-slate-300 uppercase tracking-widest font-semibold">Hora real</span>
+          </div>
+          <div className="flex items-end gap-5 px-4 pt-3 pb-3">
+            <div>
+              <p className="text-[9px] text-slate-500 uppercase tracking-widest mb-1">Fecha</p>
+              <p className="text-sm text-slate-300 font-mono">{formatSimDateTime(realTime).split(' ')[0]}</p>
+            </div>
+            <div>
+              <p className="text-[9px] text-slate-500 uppercase tracking-widest mb-1">Hora</p>
+              <p className="text-2xl font-bold font-mono text-emerald-400 leading-none">{formatRealTime(realTime)}</p>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
       <div className="absolute top-3 right-3 flex flex-col gap-1 z-[1000]">
         <ZoomButton label="+" title="Acercar" onClick={zoomIn} />
         <ZoomButton label="-" title="Alejar" onClick={zoomOut} />
@@ -504,11 +588,7 @@ export default function MapaMundi({ runId, runCompleted = false }) {
               ))}
             </select>
 
-            <span className="shrink-0 text-slate-300 text-xs font-mono whitespace-nowrap">
-              Fecha: {formatSimDateTime(simTime)}
-            </span>
-
-            <div
+<div
               className="flex-1 bg-slate-700/80 rounded-full h-1.5 cursor-pointer"
               onClick={e => {
                 if (!simStart || !simEnd) return
