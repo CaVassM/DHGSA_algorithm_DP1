@@ -178,6 +178,14 @@ export default function IndicadoresGlobales() {
     return [...new Set(base.map(ap => ap.continente))].sort()
   }, [airports])
 
+  const promAlmacenes = useMemo(() => {
+    const base = airports ? adaptAirports(airports) : Object.values(AEROPUERTOS)
+    const pcts = base.map(ap => getOcupacionPct(ap))
+    return pcts.length > 0
+      ? Math.round(pcts.reduce((a, b) => a + b, 0) / pcts.length * 10) / 10
+      : 0
+  }, [airports])
+
   const rankingAeropuertos = useMemo(() => {
     const cmp = sortDir === 'desc'
       ? (a, b) => b.pct - a.pct || a.codigo.localeCompare(b.codigo)
@@ -395,6 +403,16 @@ export default function IndicadoresGlobales() {
                 {airports
                   ? 'Aeropuertos del sistema — ocupación actual no disponible en este endpoint'
                   : 'Ordenado por mayor ocupación de almacén'}
+              </p>
+              <p className="text-xs text-slate-500 mt-1">
+                Promedio ocupación almacenes:
+                <span className="font-mono font-semibold text-slate-300 ml-1">{promAlmacenes}%</span>
+                {airports && (
+                  <span
+                    className="ml-1.5 text-amber-500 cursor-help"
+                    title="Con datos reales del backend el valor es siempre 0% porque el endpoint /api/v1/airports no expone la ocupación actual. Se requiere un endpoint de estado de almacenes."
+                  >⚠</span>
+                )}
               </p>
             </div>
             <input
