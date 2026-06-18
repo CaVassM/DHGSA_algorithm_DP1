@@ -50,6 +50,7 @@ export default function Dashboard() {
           <MapaMundi runId={runId} runCompleted={!!(run && TERMINAL_STATUSES.has(run.status))} />
           {/* Leyenda */}
           <div className="absolute bottom-4 left-4 z-[1000] flex gap-3 bg-slate-900/80 backdrop-blur rounded-lg px-4 py-2 border border-slate-700 shadow-lg">
+            <LeyendaItem color="bg-slate-400" label="Vacío (0 maletas)" />
             <LeyendaItem color="bg-green-500" label="Óptimo (<60%)" />
             <LeyendaItem color="bg-amber-500" label="Riesgo (60–85%)" />
             <LeyendaItem color="bg-red-500" label="Crítico (>85%)" />

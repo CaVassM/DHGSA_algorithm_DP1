@@ -1,4 +1,5 @@
 const CONFIG = {
+  vacio: { bg: 'bg-slate-500/20', text: 'text-slate-300', border: 'border-slate-500/40' },
   verde: { bg: 'bg-green-500/20', text: 'text-green-400', border: 'border-green-500/40' },
   ambar: { bg: 'bg-amber-500/20', text: 'text-amber-400', border: 'border-amber-500/40' },
   rojo:  { bg: 'bg-red-500/20',   text: 'text-red-400',   border: 'border-red-500/40'   },

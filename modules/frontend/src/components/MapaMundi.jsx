@@ -157,6 +157,17 @@ function MapViewportController({ airportsByCode, resetNonce }) {
     fitMapToAirports(map, airportsByCode)
   }, [map, airportsByCode, resetNonce])
 
+  // Leaflet no re-renderiza al cambiar el tamaño de su contenedor (p. ej. al
+  // colapsar/expandir el panel lateral), dejando una franja gris sin teselas.
+  // Un ResizeObserver lo fuerza a recalcular su tamaño.
+  useEffect(() => {
+    const container = map.getContainer()
+    if (!container || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => map.invalidateSize())
+    ro.observe(container)
+    return () => ro.disconnect()
+  }, [map])
+
   return null
 }
 
