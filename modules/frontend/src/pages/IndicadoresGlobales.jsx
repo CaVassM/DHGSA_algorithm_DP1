@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useLocation } from 'react-router-dom'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
@@ -18,6 +18,20 @@ const SEMAFORO_LABEL = {
   verde: { label: '<60% ÓPTIMO',   color: 'verde' },
   ambar: { label: '60-85% RIESGO', color: 'ambar' },
   rojo:  { label: '>85% CRÍTICO',  color: 'rojo'  },
+}
+
+const SEMAFORO_FLOTA_LABEL = {
+  vacio: '0% VACÍO',
+  verde: '<70% ÓPTIMO',
+  ambar: '70-90% RIESGO',
+  rojo:  '>90% CRÍTICO',
+}
+
+function getSemaforoFlota(pct) {
+  if (pct === 0)   return 'vacio'
+  if (pct < 70)    return 'verde'
+  if (pct <= 90)   return 'ambar'
+  return 'rojo'
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -176,6 +190,9 @@ export default function IndicadoresGlobales() {
   const [airports, setAirports] = useState(null)
   const [routes,   setRoutes]   = useState(null)
   const [flights,  setFlights]  = useState(null)
+  const [sortDir,          setSortDir]          = useState('desc')
+  const [filtroTexto,      setFiltroTexto]      = useState('')
+  const [filtroContinente, setFiltroContinente] = useState('Todos')
 
   useEffect(() => {
     if (!runId) return
@@ -229,6 +246,7 @@ export default function IndicadoresGlobales() {
   const promGlobal    = vuelosData.length > 0
     ? Math.round(vuelosData.reduce((acc, v) => acc + getOcupacionVueloPct(v), 0) / vuelosData.length * 10) / 10
     : 0
+  const colorFlota  = getSemaforoFlota(promGlobal)
 
   // ── Continentes ──────────────────────────────────────────────────────────
   // Cuando hay aeropuertos reales, se agrupan por continente con rutas reales.
@@ -236,13 +254,32 @@ export default function IndicadoresGlobales() {
   const continentesReales = airports ? buildContinentes(airports, routes ?? []) : null
 
   // ── Ranking de aeropuertos ───────────────────────────────────────────────
-  const rankingAeropuertos = airports
-    ? adaptAirports(airports)
-        .map(ap => ({ ...ap, pct: getOcupacionPct(ap), color: getSemaforoPorOcupacion(getOcupacionPct(ap)) }))
-        .sort((a, b) => b.pct - a.pct || a.codigo.localeCompare(b.codigo))
-    : Object.values(AEROPUERTOS)
-        .map(ap => ({ ...ap, pct: getOcupacionPct(ap), color: getSemaforoPorOcupacion(getOcupacionPct(ap)) }))
-        .sort((a, b) => b.pct - a.pct)
+  const continentesUnicos = useMemo(() => {
+    const base = airports ? adaptAirports(airports) : Object.values(AEROPUERTOS)
+    return [...new Set(base.map(ap => ap.continente))].sort()
+  }, [airports])
+
+  const promAlmacenes = useMemo(() => {
+    const base = airports ? adaptAirports(airports) : Object.values(AEROPUERTOS)
+    const pcts = base.map(ap => getOcupacionPct(ap))
+    return pcts.length > 0
+      ? Math.round(pcts.reduce((a, b) => a + b, 0) / pcts.length * 10) / 10
+      : 0
+  }, [airports])
+
+  const rankingAeropuertos = useMemo(() => {
+    const cmp = sortDir === 'desc'
+      ? (a, b) => b.pct - a.pct || a.codigo.localeCompare(b.codigo)
+      : (a, b) => a.pct - b.pct || a.codigo.localeCompare(b.codigo)
+    const base = airports
+      ? adaptAirports(airports)
+      : Object.values(AEROPUERTOS)
+    return base
+      .map(ap => ({ ...ap, pct: getOcupacionPct(ap), color: getSemaforoPorOcupacion(getOcupacionPct(ap)) }))
+      .filter(ap => ap.codigo.toLowerCase().includes(filtroTexto.toLowerCase()))
+      .filter(ap => filtroContinente === 'Todos' || ap.continente === filtroContinente)
+      .sort(cmp)
+  }, [airports, sortDir, filtroTexto, filtroContinente])
 
   return (
     <div className="min-h-screen bg-[#0f172a] flex flex-col">
@@ -328,7 +365,13 @@ export default function IndicadoresGlobales() {
 
             <div className="p-5">
               <div className="space-y-3">
-                <MetricaVuelo label="Promedio global" value={`${promGlobal}%`} color="text-blue-400" />
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400 text-sm">Promedio global</span>
+                  <div className="flex items-center gap-2">
+                    <SemaforoBadge color={colorFlota} label={SEMAFORO_FLOTA_LABEL[colorFlota]} />
+                    <span className="font-mono font-bold text-lg text-blue-400">{promGlobal}%</span>
+                  </div>
+                </div>
                 <MetricaVuelo label="Vuelos activos"  value={vuelosActivos}    color="text-white" />
                 <MetricaVuelo label="Vuelos >90%"     value={vuelosAltos}      color="text-red-400" />
                 <MetricaVuelo label="Vuelos <50%"     value={vuelosBajos}      color="text-blue-400" />
@@ -499,13 +542,42 @@ export default function IndicadoresGlobales() {
 
         {/* Ranking aeropuertos */}
         <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
-          <div className="px-5 py-4 border-b border-slate-700">
-            <h2 className="font-semibold text-white">Ranking de Ocupación por Aeropuerto</h2>
-            <p className="text-xs text-slate-400 mt-0.5">
-              {airports
-                ? 'Aeropuertos del sistema — ocupación actual no disponible en este endpoint'
-                : 'Ordenado por mayor ocupación de almacén'}
-            </p>
+          <div className="px-5 py-4 border-b border-slate-700 flex items-center gap-4">
+            <div className="flex-1">
+              <h2 className="font-semibold text-white">Ranking de Ocupación por Aeropuerto</h2>
+              <p className="text-xs text-slate-400 mt-0.5">
+                {airports
+                  ? 'Aeropuertos del sistema — ocupación actual no disponible en este endpoint'
+                  : 'Ordenado por mayor ocupación de almacén'}
+              </p>
+              <p className="text-xs text-slate-500 mt-1">
+                Promedio ocupación almacenes:
+                <span className="font-mono font-semibold text-slate-300 ml-1">{promAlmacenes}%</span>
+                {airports && (
+                  <span
+                    className="ml-1.5 text-amber-500 cursor-help"
+                    title="Con datos reales del backend el valor es siempre 0% porque el endpoint /api/v1/airports no expone la ocupación actual. Se requiere un endpoint de estado de almacenes."
+                  >⚠</span>
+                )}
+              </p>
+            </div>
+            <input
+              type="text"
+              value={filtroTexto}
+              onChange={e => setFiltroTexto(e.target.value)}
+              placeholder="Filtrar por código..."
+              className="bg-slate-700 border border-slate-600 text-slate-200 text-xs rounded px-3 py-1.5 w-44 placeholder-slate-500 focus:outline-none focus:border-blue-500"
+            />
+            <select
+              value={filtroContinente}
+              onChange={e => setFiltroContinente(e.target.value)}
+              className="bg-slate-700 border border-slate-600 text-slate-200 text-xs rounded px-2 py-1.5 cursor-pointer focus:outline-none focus:border-blue-500"
+            >
+              <option value="Todos">Todos</option>
+              {continentesUnicos.map(c => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -515,7 +587,12 @@ export default function IndicadoresGlobales() {
                   <th className="text-left px-4 py-3">Código</th>
                   <th className="text-left px-4 py-3">Continente</th>
                   <th className="text-left px-4 py-3">Almacén</th>
-                  <th className="text-left px-4 py-3 w-40">Ocupación</th>
+                  <th
+                    className="text-left px-4 py-3 w-40 cursor-pointer select-none hover:text-slate-200 transition-colors"
+                    onClick={() => setSortDir(d => d === 'desc' ? 'asc' : 'desc')}
+                  >
+                    Ocupación {sortDir === 'desc' ? '▼' : '▲'}
+                  </th>
                   <th className="text-left px-4 py-3">Estado</th>
                 </tr>
               </thead>
