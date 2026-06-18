@@ -130,13 +130,17 @@ export function getOcupacionPct(aeropuerto) {
   return Math.round((aeropuerto.almacen.actual / aeropuerto.almacen.capacidad) * 100 * 10) / 10
 }
 
+export const UMBRAL_VACIO = 0
+
 export function getSemaforoPorOcupacion(pct) {
+  if (pct <= UMBRAL_VACIO) return 'vacio'
   if (pct > 85) return 'rojo'
   if (pct >= 60) return 'ambar'
   return 'verde'
 }
 
 export const SEMAFORO_COLORES = {
+  vacio: '#94a3b8',
   verde: '#22c55e',
   ambar: '#f59e0b',
   rojo:  '#ef4444',
