@@ -245,6 +245,11 @@ export default function MapaMundi({ runId, runCompleted = false, onActiveLegsCha
   const [mapInstance, setMapInstance] = useState(null)
   const [resetNonce, setResetNonce] = useState(0)
 
+  // T45/T47: envío resaltado por búsqueda. T49: aeropuerto enfocado.
+  const [envioBuscado, setEnvioBuscado] = useState('')
+  const [busquedaInput, setBusquedaInput] = useState('')
+  const [airportInput, setAirportInput] = useState('')
+
   useEffect(() => {
     getAirports()
       .then(page => {
@@ -295,6 +300,17 @@ export default function MapaMundi({ runId, runCompleted = false, onActiveLegsCha
     const flightMap = new Map(flights.map(f => [f.businessId, f]))
     return routes.flatMap(r => buildRouteLegs(r, flightMap))
   }, [routes, flights])
+
+  // T45/T47: tramos (pares desde-hasta) que pertenecen al envío buscado.
+  // Si hay búsqueda activa, las demás rutas se atenúan.
+  const tramosEnvioBuscado = useMemo(() => {
+    if (!envioBuscado) return null
+    const set = new Set()
+    allLegs
+      .filter(l => String(l.shipmentId).toLowerCase() === envioBuscado.toLowerCase())
+      .forEach(l => set.add(`${l.desde}-${l.hasta}`))
+    return set
+  }, [envioBuscado, allLegs])
 
   const almacenOcupacion = useMemo(() => {
     if (!simTime || allLegs.length === 0) return {}
@@ -470,6 +486,24 @@ export default function MapaMundi({ runId, runCompleted = false, onActiveLegsCha
     setResetNonce(v => v + 1)
   }
 
+  // T49: centra el mapa en un aeropuerto (por ICAO) y lo deja enfocado.
+  function enfocarAeropuerto(icaoRaw) {
+    const icaoBusq = (icaoRaw || '').trim().toUpperCase()
+    if (!icaoBusq || !mapInstance) return
+    const c = coords[icaoBusq]
+    if (!c) return
+    mapInstance.flyTo([c.lat, c.lng], Math.max(mapInstance.getZoom(), 5), { duration: 0.8 })
+  }
+
+  // T45/T47: aplica/limpia la búsqueda de envío.
+  function buscarEnvio() {
+    setEnvioBuscado(busquedaInput.trim())
+  }
+  function limpiarBusqueda() {
+    setBusquedaInput('')
+    setEnvioBuscado('')
+  }
+
   return (
     <div className="relative w-full h-full overflow-hidden bg-[#0c1a2e] select-none">
       <MapContainer
@@ -487,7 +521,8 @@ export default function MapaMundi({ runId, runCompleted = false, onActiveLegsCha
         />
 
         {rutasLineas
-          .filter(r => !r.revealAt || !simTime || simTime >= r.revealAt)
+          .filter(r => tramosEnvioBuscado?.has(`${r.desde}-${r.hasta}`)
+            || !r.revealAt || !simTime || simTime >= r.revealAt)
           .map(ruta => {
             const a = coords[ruta.desde]
             const b = coords[ruta.hasta]
@@ -495,13 +530,24 @@ export default function MapaMundi({ runId, runCompleted = false, onActiveLegsCha
             // T9: tras la llegada (hideAt) el tramo ya se recorrió → se atenúa
             // en vez de quedar dibujado fuerte para siempre y acumularse.
             const recorrida = ruta.hideAt && simTime && simTime > ruta.hideAt
+            // T45/T47: si hay envío buscado, resaltar sus tramos y atenuar el resto.
+            const key = `${ruta.desde}-${ruta.hasta}`
+            const esDelEnvio = tramosEnvioBuscado?.has(key)
+            let pathOptions
+            if (tramosEnvioBuscado) {
+              pathOptions = esDelEnvio
+                ? { color: '#facc15', weight: 4, opacity: 0.95 }                 // resaltado
+                : { color: '#475569', weight: 1, opacity: 0.1, dashArray: '2 8' } // atenuado
+            } else if (recorrida) {
+              pathOptions = { color: '#475569', weight: 1, opacity: 0.18, dashArray: '2 8' }
+            } else {
+              pathOptions = { color: '#3b82f6', weight: 2, opacity: 0.5, dashArray: '6 6' }
+            }
             return (
               <Polyline
-                key={`${ruta.desde}-${ruta.hasta}`}
+                key={key}
                 positions={[[a.lat, a.lng], [b.lat, b.lng]]}
-                pathOptions={recorrida
-                  ? { color: '#475569', weight: 1, opacity: 0.18, dashArray: '2 8' }
-                  : { color: '#3b82f6', weight: 2, opacity: 0.5, dashArray: '6 6' }}
+                pathOptions={pathOptions}
               />
             )
           })}
@@ -633,6 +679,45 @@ export default function MapaMundi({ runId, runCompleted = false, onActiveLegsCha
         <div className="h-px bg-slate-600 my-0.5" />
         <ZoomButton label="R" title="Restablecer vista" onClick={resetView} />
       </div>
+
+      {/* T45/T47/T49: vinculación — buscar envío (resaltar ruta) / aeropuerto (enfocar) */}
+      <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[1000] flex gap-2">
+        <div className="bg-slate-900/92 backdrop-blur border border-slate-700 rounded-lg px-2 py-1.5 flex items-center gap-1.5 shadow-lg">
+          <span className="text-[10px] text-slate-400 uppercase tracking-wider hidden sm:inline">Envío</span>
+          <input
+            value={busquedaInput}
+            onChange={e => setBusquedaInput(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && buscarEnvio()}
+            placeholder="ID de envío…"
+            className="w-28 bg-slate-800 border border-slate-600 text-slate-200 text-xs rounded px-2 py-1 placeholder-slate-500 focus:outline-none focus:border-blue-500"
+          />
+          <button onClick={buscarEnvio} title="Resaltar ruta del envío"
+            className="px-2 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium">Buscar</button>
+          {envioBuscado && (
+            <button onClick={limpiarBusqueda} title="Limpiar"
+              className="px-1.5 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs">✕</button>
+          )}
+        </div>
+        <div className="bg-slate-900/92 backdrop-blur border border-slate-700 rounded-lg px-2 py-1.5 flex items-center gap-1.5 shadow-lg">
+          <span className="text-[10px] text-slate-400 uppercase tracking-wider hidden sm:inline">Almacén</span>
+          <input
+            value={airportInput}
+            onChange={e => setAirportInput(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && enfocarAeropuerto(airportInput)}
+            placeholder="ICAO…"
+            className="w-20 bg-slate-800 border border-slate-600 text-slate-200 text-xs rounded px-2 py-1 placeholder-slate-500 focus:outline-none focus:border-blue-500 uppercase"
+          />
+          <button onClick={() => enfocarAeropuerto(airportInput)} title="Centrar en el aeropuerto"
+            className="px-2 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium">Ir</button>
+        </div>
+      </div>
+
+      {/* Aviso cuando el envío buscado no tiene ruta visible */}
+      {envioBuscado && tramosEnvioBuscado && tramosEnvioBuscado.size === 0 && (
+        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-[1000] bg-amber-500/15 border border-amber-500/40 text-amber-300 text-xs rounded px-3 py-1.5">
+          No se encontró ruta para el envío "{envioBuscado}".
+        </div>
+      )}
 
       {simTime && (
         <div className="absolute bottom-14 left-4 right-4 z-[1000]">
