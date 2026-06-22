@@ -110,6 +110,21 @@ function buildUTs(flightList, routeList) {
     .sort((a, b) => b.pct - a.pct || a.codigo.localeCompare(b.codigo))
 }
 
+// T40: lista de envíos individuales planificados (destino, UT/vuelos, maletas).
+function buildEnviosPlanificados(routeList) {
+  return (routeList ?? [])
+    .map(r => ({
+      envio:   r.shipmentBusinessId,
+      desde:   r.origenIcao,
+      destino: r.destinoIcao,
+      uts:     r.flightBusinessIds ?? [],
+      maletas: r.cantidadMaletas ?? 0,
+      directa: r.esDirecta,
+      escalas: r.escalas ?? 0,
+    }))
+    .sort((a, b) => b.maletas - a.maletas)
+}
+
 // T14: envíos que traslada una UT (vuelo) — rutas cuyo recorrido incluye ese vuelo.
 function enviosDeUT(vueloId, routeList) {
   return (routeList ?? [])
@@ -255,6 +270,9 @@ export default function IndicadoresGlobales() {
   const utsReales    = !!flights
   const utsOcupadas  = utsData.filter(u => u.actual > 0).length
   const utsVacias    = utsData.filter(u => u.actual === 0).length
+
+  // T40: envíos planificados individuales (desde rutas reales del run)
+  const enviosPlanificados = routes ? buildEnviosPlanificados(routes) : []
 
   const vuelosActivos = vuelosData.length
   const vuelosAltos   = vuelosData.filter(v => getOcupacionVueloPct(v) >= 90).length
@@ -554,6 +572,49 @@ export default function IndicadoresGlobales() {
                     }
                     return filas
                   })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* T40 — Lista de envíos planificados */}
+        <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+          <div className="px-5 py-4 border-b border-slate-700 flex items-center justify-between gap-4 flex-wrap">
+            <div>
+              <h2 className="font-semibold text-white">Envíos Planificados</h2>
+              <p className="text-xs text-slate-400 mt-0.5">Cada envío con su destino, UT(s) y cantidad de maletas</p>
+            </div>
+            <span className="text-xs text-slate-400">Total: <span className="font-mono font-bold text-white">{enviosPlanificados.length}</span></span>
+          </div>
+          <div className="overflow-x-auto max-h-[460px] overflow-y-auto">
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 z-10">
+                <tr className="bg-slate-700 text-slate-400 text-xs uppercase">
+                  <th className="text-left px-4 py-3">Envío</th>
+                  <th className="text-left px-4 py-3">Origen → Destino</th>
+                  <th className="text-left px-4 py-3">UT (vuelos)</th>
+                  <th className="text-right px-4 py-3">Maletas</th>
+                  <th className="text-left px-4 py-3">Tipo</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-700/50">
+                {enviosPlanificados.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="px-4 py-10 text-center text-slate-500 text-sm">
+                      {runId ? 'Cargando envíos...' : 'Inicia una simulación para ver los envíos planificados'}
+                    </td>
+                  </tr>
+                ) : (
+                  enviosPlanificados.map((e) => (
+                    <tr key={e.envio} className="hover:bg-slate-700/20 transition-colors">
+                      <td className="px-4 py-3 font-mono font-semibold text-blue-400 text-xs">{e.envio}</td>
+                      <td className="px-4 py-3 text-slate-300 whitespace-nowrap">{e.desde} → {e.destino}</td>
+                      <td className="px-4 py-3 text-slate-400 font-mono text-xs">{e.uts.join(', ') || '—'}</td>
+                      <td className="px-4 py-3 font-mono text-slate-300 text-right">{e.maletas.toLocaleString()}</td>
+                      <td className="px-4 py-3 text-slate-400 text-xs">{e.directa ? 'Directo' : `${e.escalas} escala(s)`}</td>
+                    </tr>
+                  ))
                 )}
               </tbody>
             </table>

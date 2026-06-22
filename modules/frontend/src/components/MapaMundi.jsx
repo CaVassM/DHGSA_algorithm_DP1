@@ -217,7 +217,7 @@ function MapViewportController({ airportsByCode, resetNonce }) {
   return null
 }
 
-export default function MapaMundi({ runId, runCompleted = false }) {
+export default function MapaMundi({ runId, runCompleted = false, onActiveLegsChange }) {
   const navigate = useNavigate()
   const timerRef = useRef(null)
 
@@ -409,6 +409,20 @@ export default function MapaMundi({ runId, runCompleted = false }) {
     activeDotMap[key].capacidadTotal += leg.capacidadVuelo ?? 0
   })
   const activeDots = Object.values(activeDotMap)
+
+  // T41: reportar al padre (Dashboard) los envíos actualmente en vuelo, para
+  // mostrarlos como lista. Se dispara cuando cambia el reloj simulado.
+  useEffect(() => {
+    if (!onActiveLegsChange) return
+    onActiveLegsChange(activeLegs.map(l => ({
+      shipmentId: l.shipmentId,
+      desde: l.desde,
+      hasta: l.hasta,
+      maletas: l.cantidadMaletas,
+      progreso: l.progreso,
+    })))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [simTime, allLegs])
 
   const simProgress = simStart && simEnd && simTime
     ? Math.min(1, Math.max(0, (simTime - simStart) / (simEnd - simStart)))
