@@ -70,6 +70,18 @@ export async function reiniciarDiario() {
   return data
 }
 
+// --- Simulación de periodo en vivo (salto de algoritmo) ---
+
+export async function iniciarSimulacionEnVivo(request) {
+  const { data } = await api.post('/simulacion/live', request)
+  return data // { runId, topic, mensaje }
+}
+
+export async function cancelarSimulacionEnVivo(runId) {
+  const { data } = await api.post(`/simulacion/live/${runId}/cancel`)
+  return data
+}
+
 // --- Admin imports ---
 
 export async function getImportStatus() {
