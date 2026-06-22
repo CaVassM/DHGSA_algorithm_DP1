@@ -3,7 +3,6 @@ import { useNavigate } from 'react-router-dom'
 import {
   MapContainer,
   TileLayer,
-  CircleMarker,
   Marker,
   Polyline,
   Tooltip,
@@ -71,6 +70,17 @@ function formatElapsed(ms) {
   return `${d}d ${h}h ${m}m`
 }
 
+// T4: tiempo real transcurrido (reloj de pared), en h:mm:ss / mm:ss.
+function formatElapsedReal(ms) {
+  if (ms == null || ms < 0) return '--:--'
+  const totalSec = Math.floor(ms / 1000)
+  const h = Math.floor(totalSec / 3600)
+  const m = Math.floor((totalSec % 3600) / 60)
+  const s = totalSec % 60
+  const p = n => String(n).padStart(2, '0')
+  return h > 0 ? `${h}:${p(m)}:${p(s)}` : `${m}:${p(s)}`
+}
+
 function getPlaneColors(pct) {
   if (pct <= UMBRALES_ALMACEN.vacio) return { fill: '#94a3b8', stroke: '#cbd5e1' }
   if (pct > 85) return { fill: '#f87171', stroke: '#fecaca' }
@@ -103,6 +113,25 @@ function createPlaneIcon({ fill, stroke, angle, count }) {
     `,
     iconSize: [30, 30],
     iconAnchor: [15, 15],
+  })
+}
+
+// T6: ícono de aeropuerto (en vez de un círculo). El color del semáforo va en
+// el relleno; el borde blanco lo mantiene legible sobre el mapa oscuro.
+function createAirportIcon({ fill }) {
+  return L.divIcon({
+    className: 'tasf-airport-icon-wrapper',
+    html: `
+      <div class="tasf-airport-icon" style="--ap-fill:${fill};">
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+          <circle cx="12" cy="12" r="11" fill="${fill}" stroke="#ffffff" stroke-width="2"/>
+          <path fill="#0f172a" transform="translate(4.6 4.6) scale(0.62)"
+            d="M21 16v-2l-8-5V3.5A1.5 1.5 0 0 0 11.5 2 1.5 1.5 0 0 0 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5z"/>
+        </svg>
+      </div>
+    `,
+    iconSize: [24, 24],
+    iconAnchor: [12, 12],
   })
 }
 
@@ -205,6 +234,13 @@ export default function MapaMundi({ runId, runCompleted = false }) {
     const id = setInterval(() => setRealTime(new Date()), 1000)
     return () => clearInterval(id)
   }, [])
+
+  // T4: marca de inicio real de la operación (primera vez que se da play).
+  // Permite mostrar el tiempo REAL transcurrido desde que arrancó la corrida.
+  const [inicioReal, setInicioReal] = useState(null)
+  useEffect(() => {
+    if (isPlaying && !inicioReal) setInicioReal(new Date())
+  }, [isPlaying, inicioReal])
 
   const [mapInstance, setMapInstance] = useState(null)
   const [resetNonce, setResetNonce] = useState(0)
@@ -322,11 +358,16 @@ export default function MapaMundi({ runId, runCompleted = false }) {
       )
     }
 
+    // revealAt = primera salida del tramo (cuándo aparece la línea).
+    // hideAt   = última llegada del tramo (cuándo dejar de dibujarla). T9.
     const map = {}
     allLegs.forEach(leg => {
       const key = `${leg.desde}-${leg.hasta}`
-      if (!map[key] || leg.salida < map[key].revealAt) {
-        map[key] = { desde: leg.desde, hasta: leg.hasta, revealAt: leg.salida }
+      if (!map[key]) {
+        map[key] = { desde: leg.desde, hasta: leg.hasta, revealAt: leg.salida, hideAt: leg.llegada }
+      } else {
+        if (leg.salida < map[key].revealAt) map[key].revealAt = leg.salida
+        if (leg.llegada > map[key].hideAt) map[key].hideAt = leg.llegada
       }
     })
     return Object.values(map)
@@ -437,11 +478,16 @@ export default function MapaMundi({ runId, runCompleted = false }) {
             const a = coords[ruta.desde]
             const b = coords[ruta.hasta]
             if (!a || !b) return null
+            // T9: tras la llegada (hideAt) el tramo ya se recorrió → se atenúa
+            // en vez de quedar dibujado fuerte para siempre y acumularse.
+            const recorrida = ruta.hideAt && simTime && simTime > ruta.hideAt
             return (
               <Polyline
                 key={`${ruta.desde}-${ruta.hasta}`}
                 positions={[[a.lat, a.lng], [b.lat, b.lng]]}
-                pathOptions={{ color: '#3b82f6', weight: 2, opacity: 0.5, dashArray: '6 6' }}
+                pathOptions={recorrida
+                  ? { color: '#475569', weight: 1, opacity: 0.18, dashArray: '2 8' }
+                  : { color: '#3b82f6', weight: 2, opacity: 0.5, dashArray: '6 6' }}
               />
             )
           })}
@@ -484,13 +530,13 @@ export default function MapaMundi({ runId, runCompleted = false }) {
           const pct = getOcupacionPct(ap)
           const color = getSemaforoPorOcupacion(pct)
           const hex = SEMAFORO_COLORES[color]
+          const airportIcon = createAirportIcon({ fill: hex })
 
           return (
-            <CircleMarker
+            <Marker
               key={ap.codigo}
-              center={[pos.lat, pos.lng]}
-              radius={9}
-              pathOptions={{ color: '#ffffff', weight: 2, fillColor: hex, fillOpacity: 0.92 }}
+              position={[pos.lat, pos.lng]}
+              icon={airportIcon}
               eventHandlers={{
                 click: () => navigate(`/aeropuerto/${ap.codigo}`),
               }}
@@ -505,7 +551,7 @@ export default function MapaMundi({ runId, runCompleted = false }) {
                   <div className="text-blue-300 mt-1">Hover + click para ver detalles {'->'}</div>
                 </div>
               </Tooltip>
-            </CircleMarker>
+            </Marker>
           )
         })}
       </MapContainer>
@@ -555,6 +601,13 @@ export default function MapaMundi({ runId, runCompleted = false }) {
               <p className="text-[9px] text-slate-500 uppercase tracking-widest mb-1">Hora</p>
               <p className="text-2xl font-bold font-mono text-emerald-400 leading-none">{formatRealTime(realTime)}</p>
             </div>
+          </div>
+          {/* T4: tiempo real transcurrido desde que arrancó la operación */}
+          <div className="px-4 pt-2 pb-3 border-t border-slate-700/50">
+            <p className="text-[9px] text-slate-500 uppercase tracking-widest mb-1">Transcurrido real</p>
+            <p className="text-base font-mono text-emerald-400">
+              {inicioReal ? `+${formatElapsedReal(realTime - inicioReal)}` : '--:--'}
+            </p>
           </div>
         </div>
 

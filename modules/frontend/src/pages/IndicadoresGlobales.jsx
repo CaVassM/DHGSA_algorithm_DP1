@@ -110,6 +110,21 @@ function buildUTs(flightList, routeList) {
     .sort((a, b) => b.pct - a.pct || a.codigo.localeCompare(b.codigo))
 }
 
+// T14: envíos que traslada una UT (vuelo) — rutas cuyo recorrido incluye ese vuelo.
+function enviosDeUT(vueloId, routeList) {
+  return (routeList ?? [])
+    .filter(r => (r.flightBusinessIds ?? []).includes(vueloId))
+    .map(r => ({
+      envio:   r.shipmentBusinessId,
+      desde:   r.origenIcao,
+      hasta:   r.destinoIcao,
+      maletas: r.cantidadMaletas ?? 0,
+      directa: r.esDirecta,
+      escalas: r.escalas ?? 0,
+    }))
+    .sort((a, b) => b.maletas - a.maletas)
+}
+
 // Lista de UT a partir de los datos mock (cada vuelo en aire ya es una UT individual).
 function buildUTsMock() {
   return VUELOS_EN_AIRE
@@ -193,6 +208,7 @@ export default function IndicadoresGlobales() {
   const [sortDir,          setSortDir]          = useState('desc')
   const [filtroTexto,      setFiltroTexto]      = useState('')
   const [filtroContinente, setFiltroContinente] = useState('Todos')
+  const [utExpandida,      setUtExpandida]      = useState(null) // T14: código de UT abierta
 
   useEffect(() => {
     if (!runId) return
@@ -456,11 +472,22 @@ export default function IndicadoresGlobales() {
                     </td>
                   </tr>
                 ) : (
-                  utsData.map((ut) => {
+                  utsData.flatMap((ut) => {
                     const color = colorOcupacionUT(ut)
-                    return (
-                      <tr key={ut.codigo} className="hover:bg-slate-700/20 transition-colors">
-                        <td className="px-4 py-3 font-mono font-semibold text-blue-400 text-xs">{ut.codigo}</td>
+                    const abierta = utExpandida === ut.codigo
+                    // T14: drill-down sólo tiene sentido con rutas reales cargadas.
+                    const puedeExpandir = utsReales && ut.actual > 0
+                    const envios = abierta ? enviosDeUT(ut.codigo, routes ?? []) : []
+                    const filas = [
+                      <tr
+                        key={ut.codigo}
+                        className={`transition-colors ${puedeExpandir ? 'cursor-pointer' : ''} ${abierta ? 'bg-slate-700/30' : 'hover:bg-slate-700/20'}`}
+                        onClick={() => puedeExpandir && setUtExpandida(abierta ? null : ut.codigo)}
+                      >
+                        <td className="px-4 py-3 font-mono font-semibold text-blue-400 text-xs">
+                          {puedeExpandir && <span className="text-slate-500 mr-1">{abierta ? '▾' : '▸'}</span>}
+                          {ut.codigo}
+                        </td>
                         <td className="px-4 py-3 text-slate-300 whitespace-nowrap">{ut.desde} → {ut.hasta}</td>
                         <td className="px-4 py-3 text-slate-400 font-mono text-xs whitespace-nowrap">{formatHorario(ut.horario)}</td>
                         <td className="px-4 py-3 font-mono text-slate-300 text-right whitespace-nowrap">
@@ -475,8 +502,45 @@ export default function IndicadoresGlobales() {
                             label={ut.actual === 0 ? 'VACÍA' : ut.pct >= 90 ? 'LLENA' : ut.pct >= 50 ? 'ALTA' : 'BAJA'}
                           />
                         </td>
-                      </tr>
-                    )
+                      </tr>,
+                    ]
+                    if (abierta) {
+                      filas.push(
+                        <tr key={`${ut.codigo}-detalle`} className="bg-slate-900/40">
+                          <td colSpan={6} className="px-6 py-3">
+                            <p className="text-xs text-slate-400 mb-2">
+                              Envíos que traslada <span className="font-mono text-blue-300">{ut.codigo}</span>
+                              <span className="text-slate-500"> ({envios.length})</span>
+                            </p>
+                            {envios.length === 0 ? (
+                              <p className="text-xs text-slate-500">Sin envíos asignados a esta UT.</p>
+                            ) : (
+                              <table className="w-full text-xs">
+                                <thead>
+                                  <tr className="text-slate-500">
+                                    <th className="text-left py-1">Envío</th>
+                                    <th className="text-left py-1">Origen → Destino</th>
+                                    <th className="text-right py-1">Maletas</th>
+                                    <th className="text-left py-1 pl-4">Tipo</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-800">
+                                  {envios.map(e => (
+                                    <tr key={e.envio} className="text-slate-300">
+                                      <td className="py-1 font-mono text-blue-300">{e.envio}</td>
+                                      <td className="py-1">{e.desde} → {e.hasta}</td>
+                                      <td className="py-1 font-mono text-right">{e.maletas.toLocaleString()}</td>
+                                      <td className="py-1 pl-4 text-slate-400">{e.directa ? 'Directo' : `${e.escalas} escala(s)`}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            )}
+                          </td>
+                        </tr>,
+                      )
+                    }
+                    return filas
                   })
                 )}
               </tbody>
