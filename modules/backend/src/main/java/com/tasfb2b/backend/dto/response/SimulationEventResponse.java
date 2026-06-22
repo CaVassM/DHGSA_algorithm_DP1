@@ -53,4 +53,7 @@ public class SimulationEventResponse {
 
     /** Mensaje informativo (sobre todo para INICIO/FIN/ERROR). */
     private String mensaje;
+
+    /** Reporte final, presente en eventos de tipo COLAPSO/FIN del colapso. */
+    private CollapseReportResponse reporteColapso;
 }

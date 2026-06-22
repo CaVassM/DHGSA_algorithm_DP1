@@ -42,4 +42,14 @@ public class LiveSimulationRequest {
 
     /** Pre-buffer: emitir un bloque por adelantado para evitar lag (reservado). */
     private boolean preBuffer = true;
+
+    // --- Colapso (solo para POST /collapse) ---
+
+    /** Multiplica la carga original para saturar el sistema (x2, x5, x10...). */
+    @Min(1) @Max(1000)
+    private int factorCarga = 5;
+
+    /** % de envíos sin atender que se considera colapso (0-100). */
+    @Min(1) @Max(100)
+    private double umbralColapso = 40.0;
 }

@@ -3,6 +3,7 @@ package com.tasfb2b.backend.service;
 import com.tasfb2b.backend.domain.model.AirportEntity;
 import com.tasfb2b.backend.domain.model.FlightEntity;
 import com.tasfb2b.backend.domain.model.ShipmentEntity;
+import com.tasfb2b.backend.dto.response.CollapseReportResponse;
 import com.tasfb2b.backend.dto.response.SimulationEventResponse;
 import com.tasfb2b.backend.mapper.DomainMapper;
 import com.tasfb2b.backend.repository.AirportRepository;
@@ -96,7 +97,11 @@ public class SimulacionEnVivoService {
             int populationSize,
             int timeLimitSeconds,
             int multiplicadorTemporal,
-            boolean preBuffer
+            boolean preBuffer,
+            // --- Colapso (COLLAPSE_SIMULATION) ---
+            boolean modoColapso,
+            int factorCarga,          // multiplica la carga original (x2, x5, x10...)
+            double umbralColapso      // % de envíos sin atender que define el colapso (0-100)
     ) {}
 
     public void cancelar(Long runId) {
@@ -142,6 +147,12 @@ public class SimulacionEnVivoService {
             }
             List<Aeropuerto> aeropuertos = new ArrayList<>(aeropuertosByIcao.values());
 
+            int totalEnviosOriginal = envios.size();
+            // --- Modo colapso: multiplicar la carga para saturar el sistema ---
+            if (params.modoColapso() && params.factorCarga() > 1) {
+                envios = multiplicarCarga(envios, params.factorCarga());
+            }
+
             // --- Organizar épocas ---
             // Copia local: organizarEnEpocas devuelve la lista interna del
             // singleton; trabajar sobre una copia evita iterarla si algo más
@@ -182,6 +193,8 @@ public class SimulacionEnVivoService {
             // --- Loop de épocas contra el reloj ---
             List<Envio> pendientes = new ArrayList<>();
             int totalAsignados = 0;
+            boolean colapsoDetectado = false;
+            Map<String, Double> ultimaOcupacion = new HashMap<>();
 
             for (EpocaData epoca : epocas) {
                 if (cancelado.get()) {
@@ -215,6 +228,8 @@ public class SimulacionEnVivoService {
                             rutas.add(RutaDTO.from(envio, ruta)));
                 }
 
+                ultimaOcupacion = ocupacionDe(epoca);
+
                 emitir(topic, SimulationEventResponse.builder()
                         .tipo("EPOCA").runId(runId)
                         .numeroEpoca(epoca.getNumeroEpoca())
@@ -226,22 +241,59 @@ public class SimulacionEnVivoService {
                         .enviosPostpuestos(pendientes.size())
                         .costoEpoca(epoca.getCostoEpoca())
                         .rutas(rutas)
-                        .ocupacionAlmacenes(ocupacionDe(epoca))
+                        .ocupacionAlmacenes(ultimaOcupacion)
                         .totalAsignadosAcumulado(totalAsignados)
                         .costoAcumulado(simuladorEpocas.getCostoAcumulado())
                         .build());
 
+                // --- Detección de colapso ---
+                if (params.modoColapso()) {
+                    boolean almacenSaturado = ultimaOcupacion.values().stream()
+                            .anyMatch(pct -> pct >= 100.0);
+                    int totalConsiderado = totalAsignados + pendientes.size();
+                    double pctSinAtender = totalConsiderado > 0
+                            ? (pendientes.size() * 100.0) / totalConsiderado : 0.0;
+                    if (almacenSaturado || pctSinAtender >= params.umbralColapso()) {
+                        colapsoDetectado = true;
+                        CollapseReportResponse reporte = construirReporte(
+                                true, params.factorCarga(), epoca.getNumeroEpoca(), epoca.getFin(),
+                                almacenSaturado ? "Almacén saturado (capacidad excedida)."
+                                        : String.format("%.0f%% de envíos sin atender (umbral %.0f%%).",
+                                                pctSinAtender, params.umbralColapso()),
+                                totalEnviosOriginal * Math.max(1, params.factorCarga()),
+                                totalAsignados, pendientes.size(), ultimaOcupacion);
+                        emitir(topic, SimulationEventResponse.builder()
+                                .tipo("COLAPSO").runId(runId)
+                                .numeroEpoca(epoca.getNumeroEpoca())
+                                .totalEpocas(epocas.size())
+                                .relojSimulado(epoca.getFin())
+                                .totalAsignadosAcumulado(totalAsignados)
+                                .ocupacionAlmacenes(ultimaOcupacion)
+                                .reporteColapso(reporte)
+                                .mensaje("⚠ COLAPSO detectado: " + reporte.getMotivo())
+                                .build());
+                        return;
+                    }
+                }
+
                 dormir(pausaMsPorEpoca, cancelado);
             }
 
-            emitir(topic, SimulationEventResponse.builder()
+            // Fin sin colapso (o simulación normal de periodo)
+            SimulationEventResponse.SimulationEventResponseBuilder fin = SimulationEventResponse.builder()
                     .tipo("FIN").runId(runId)
                     .totalEpocas(epocas.size())
                     .totalAsignadosAcumulado(totalAsignados)
                     .costoAcumulado(simuladorEpocas.getCostoAcumulado())
                     .mensaje(String.format("Simulación finalizada: %d asignados, %d pendientes.",
-                            totalAsignados, pendientes.size()))
-                    .build());
+                            totalAsignados, pendientes.size()));
+            if (params.modoColapso() && !colapsoDetectado) {
+                fin.reporteColapso(construirReporte(false, params.factorCarga(), null, null,
+                        "El sistema absorbió toda la carga sin colapsar (prueba con un factor mayor).",
+                        totalEnviosOriginal * Math.max(1, params.factorCarga()),
+                        totalAsignados, pendientes.size(), ultimaOcupacion));
+            }
+            emitir(topic, fin.build());
 
         } catch (Exception ex) {
             log.error("Simulación en vivo {} falló", runId, ex);
@@ -275,6 +327,50 @@ public class SimulacionEnVivoService {
             }
         }
         return ocup;
+    }
+
+    /** Duplica la carga {@code factor} veces, clonando envíos con id único. */
+    private List<Envio> multiplicarCarga(List<Envio> originales, int factor) {
+        List<Envio> resultado = new ArrayList<>(originales);
+        for (int copia = 1; copia < factor; copia++) {
+            for (Envio src : originales) {
+                Envio e = new Envio();
+                e.setId(src.getId() + "-C" + copia);
+                e.setAeropuertoOrigen(src.getAeropuertoOrigen());
+                e.setAeropuertoDestino(src.getAeropuertoDestino());
+                e.setFechaHoraCreacion(src.getFechaHoraCreacion());
+                e.setCantidadMaletas(src.getCantidadMaletas());
+                e.setIdCliente(src.getIdCliente());
+                resultado.add(e);
+            }
+        }
+        return resultado;
+    }
+
+    private CollapseReportResponse construirReporte(boolean colapso, int factor,
+            Integer epoca, LocalDateTime momento, String motivo,
+            int totalCargados, int totalAsignados, int sinAtender,
+            Map<String, Double> ocupacion) {
+        double pct = (totalAsignados + sinAtender) > 0
+                ? (sinAtender * 100.0) / (totalAsignados + sinAtender) : 0.0;
+        List<String> saturados = ocupacion.entrySet().stream()
+                .filter(en -> en.getValue() >= 85.0)
+                .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
+                .map(Map.Entry::getKey)
+                .toList();
+        return CollapseReportResponse.builder()
+                .colapso(colapso)
+                .factorCarga(factor)
+                .epocaColapso(epoca)
+                .momentoColapso(momento)
+                .motivo(motivo)
+                .totalEnviosCargados(totalCargados)
+                .totalAsignados(totalAsignados)
+                .totalSinAtender(sinAtender)
+                .porcentajeSinAtender(Math.round(pct * 100.0) / 100.0)
+                .ocupacionFinal(ocupacion)
+                .aeropuertosSaturados(saturados)
+                .build();
     }
 
     private void emitir(String topic, SimulationEventResponse evento) {

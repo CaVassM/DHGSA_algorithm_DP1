@@ -50,7 +50,8 @@ public class LiveSimulationController {
                 request.getPopulationSize(),
                 request.getTimeLimitSeconds(),
                 request.getMultiplicadorTemporal(),
-                request.isPreBuffer()
+                request.isPreBuffer(),
+                false, 1, 100.0   // modo normal: sin colapso
         );
 
         simulacionEnVivoService.iniciar(runId, params);
@@ -59,6 +60,38 @@ public class LiveSimulationController {
                 "runId", runId,
                 "topic", "/topic/simulacion/" + runId,
                 "mensaje", "Simulación en vivo iniciada. Suscríbete al topic para recibir el progreso."
+        ));
+    }
+
+    @PostMapping("/collapse")
+    @Operation(summary = "Arrancar una simulación de colapso (COLLAPSE_SIMULATION)",
+            description = "Multiplica la carga por factorCarga y simula hasta saturar el sistema; "
+                    + "emite un evento COLAPSO con el reporte cuando se detecta.")
+    public ResponseEntity<Map<String, Object>> iniciarColapso(@Valid @RequestBody LiveSimulationRequest request) {
+        Long runId = secuencia.incrementAndGet();
+        OptimizationAlgorithm algoritmo = "IALNS".equalsIgnoreCase(request.getAlgorithm())
+                ? OptimizationAlgorithm.IALNS : OptimizationAlgorithm.DHGS;
+
+        LiveParams params = new LiveParams(
+                algoritmo,
+                request.getPlanningStart(),
+                request.getEpochHours(),
+                request.getHorizonDays(),
+                request.getPopulationSize(),
+                request.getTimeLimitSeconds(),
+                request.getMultiplicadorTemporal(),
+                request.isPreBuffer(),
+                true,
+                Math.max(1, request.getFactorCarga()),
+                request.getUmbralColapso()
+        );
+
+        simulacionEnVivoService.iniciar(runId, params);
+
+        return ResponseEntity.accepted().body(Map.of(
+                "runId", runId,
+                "topic", "/topic/simulacion/" + runId,
+                "mensaje", "Simulación de colapso iniciada. Suscríbete al topic para recibir el progreso."
         ));
     }
 

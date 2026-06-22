@@ -82,6 +82,11 @@ export async function cancelarSimulacionEnVivo(runId) {
   return data
 }
 
+export async function iniciarSimulacionColapso(request) {
+  const { data } = await api.post('/simulacion/collapse', request)
+  return data // { runId, topic, mensaje }
+}
+
 // --- Admin imports ---
 
 export async function getImportStatus() {

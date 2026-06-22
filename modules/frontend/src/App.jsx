@@ -5,6 +5,7 @@ import DetalleAeropuerto from './pages/DetalleAeropuerto'
 import IndicadoresGlobales from './pages/IndicadoresGlobales'
 import OperacionDiaria from './pages/OperacionDiaria'
 import SimulacionEnVivo from './pages/SimulacionEnVivo'
+import SimulacionColapso from './pages/SimulacionColapso'
 
 export default function App() {
   return (
@@ -17,6 +18,7 @@ export default function App() {
         <Route path="/indicadores" element={<IndicadoresGlobales />} />
         <Route path="/dia-a-dia" element={<OperacionDiaria />} />
         <Route path="/simulacion-vivo" element={<SimulacionEnVivo />} />
+        <Route path="/colapso" element={<SimulacionColapso />} />
       </Routes>
     </BrowserRouter>
   )
