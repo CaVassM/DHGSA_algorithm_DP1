@@ -2,6 +2,7 @@ package com.tasfb2b.backend.repository;
 
 import com.tasfb2b.backend.domain.model.ShipmentEntity;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
 import org.springframework.stereotype.Repository;
 
 import java.time.LocalDateTime;
@@ -16,4 +17,8 @@ public interface ShipmentRepository extends JpaRepository<ShipmentEntity, Long> 
     List<ShipmentEntity> findByFechaHoraCreacionBetween(LocalDateTime start, LocalDateTime end);
 
     boolean existsByBusinessId(String businessId);
+
+    /** Solo los businessId existentes; evita un SELECT por fila al importar en masa. */
+    @Query("select s.businessId from ShipmentEntity s")
+    List<String> findAllBusinessIds();
 }
