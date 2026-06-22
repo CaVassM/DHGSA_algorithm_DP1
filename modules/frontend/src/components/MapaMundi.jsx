@@ -88,6 +88,14 @@ function getPlaneColors(pct) {
   return { fill: '#4ade80', stroke: '#bbf7d0' }
 }
 
+// T55: color-nombre del semáforo de una UT (avión) según su % de ocupación.
+function getPlaneSemaforo(pct) {
+  if (pct <= UMBRALES_ALMACEN.vacio) return 'vacio'
+  if (pct > 85) return 'rojo'
+  if (pct >= 60) return 'ambar'
+  return 'verde'
+}
+
 function getHeadingAngle(from, to) {
   const dx = to.lng - from.lng
   const dy = to.lat - from.lat
@@ -118,11 +126,11 @@ function createPlaneIcon({ fill, stroke, angle, count }) {
 
 // T6: ícono de aeropuerto (en vez de un círculo). El color del semáforo va en
 // el relleno; el borde blanco lo mantiene legible sobre el mapa oscuro.
-function createAirportIcon({ fill }) {
+function createAirportIcon({ fill, atenuado = false }) {
   return L.divIcon({
     className: 'tasf-airport-icon-wrapper',
     html: `
-      <div class="tasf-airport-icon" style="--ap-fill:${fill};">
+      <div class="tasf-airport-icon" style="--ap-fill:${fill};opacity:${atenuado ? 0.3 : 1};">
         <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
           <circle cx="12" cy="12" r="11" fill="${fill}" stroke="#ffffff" stroke-width="2"/>
           <path fill="#0f172a" transform="translate(4.6 4.6) scale(0.62)"
@@ -250,6 +258,14 @@ export default function MapaMundi({ runId, runCompleted = false, onActiveLegsCha
   const [busquedaInput, setBusquedaInput] = useState('')
   const [airportInput, setAirportInput] = useState('')
 
+  // T54/T55: filtros por color de semáforo (almacenes y UT). null = todos visibles.
+  // Set de colores ocultos; si un color está en el set, se atenúan en el mapa.
+  const [almacenesOcultos, setAlmacenesOcultos] = useState(() => new Set())
+  const [utsOcultas, setUtsOcultas] = useState(() => new Set())
+
+  // T50: aeropuerto seleccionado para ver su detalle en panel (misma vista).
+  const [almacenSeleccionado, setAlmacenSeleccionado] = useState(null)
+
   useEffect(() => {
     getAirports()
       .then(page => {
@@ -300,6 +316,20 @@ export default function MapaMundi({ runId, runCompleted = false, onActiveLegsCha
     const flightMap = new Map(flights.map(f => [f.businessId, f]))
     return routes.flatMap(r => buildRouteLegs(r, flightMap))
   }, [routes, flights])
+
+  // T50: detalle del almacén seleccionado (entran/salen) derivado de las rutas.
+  const detalleAlmacen = useMemo(() => {
+    if (!almacenSeleccionado) return null
+    const ap = aeropuertosConOcupacion[almacenSeleccionado] ?? aeropuertosActivos[almacenSeleccionado]
+    let entran = 0, salen = 0, maletasEntran = 0, maletasSalen = 0
+    const flightMap = new Map(flights.map(f => [f.businessId, f]))
+    for (const r of (routes ?? [])) {
+      const legs = (r.flightBusinessIds ?? []).map(fid => flightMap.get(fid)).filter(Boolean)
+      if (legs.some(l => l.destinoIcao === almacenSeleccionado)) { entran++; maletasEntran += r.cantidadMaletas ?? 0 }
+      if (legs.some(l => l.origenIcao === almacenSeleccionado)) { salen++; maletasSalen += r.cantidadMaletas ?? 0 }
+    }
+    return { ap, entran, salen, maletasEntran, maletasSalen }
+  }, [almacenSeleccionado, routes, flights, aeropuertosConOcupacion, aeropuertosActivos])
 
   // T45/T47: tramos (pares desde-hasta) que pertenecen al envío buscado.
   // Si hay búsqueda activa, las demás rutas se atenúan.
@@ -562,12 +592,16 @@ export default function MapaMundi({ runId, runCompleted = false, onActiveLegsCha
           const lng = a.lng + (b.lng - a.lng) * t
           const pct = dot.capacidadTotal > 0 ? (dot.maletas / dot.capacidadTotal) * 100 : 0
           const color = getPlaneColors(pct)
+          // T55: filtro por semáforo de UT — atenuar aviones del color oculto.
+          const semUt = getPlaneSemaforo(pct)
+          const utAtenuada = utsOcultas.has(semUt)
           const angle = getHeadingAngle(a, b)
           const planeIcon = createPlaneIcon({ fill: color.fill, stroke: color.stroke, angle, count: dot.count })
 
           return (
             <Marker
               key={`${dot.desde}-${dot.hasta}`}
+              opacity={utAtenuada ? 0.2 : 1}
               position={[lat, lng]}
               icon={planeIcon}
             >
@@ -590,15 +624,19 @@ export default function MapaMundi({ runId, runCompleted = false, onActiveLegsCha
           const pct = getOcupacionPct(ap)
           const color = getSemaforoPorOcupacion(pct)
           const hex = SEMAFORO_COLORES[color]
-          const airportIcon = createAirportIcon({ fill: hex })
+          // T54: si el color está filtrado (oculto), atenuar este almacén.
+          const atenuado = almacenesOcultos.has(color)
+          const airportIcon = createAirportIcon({ fill: hex, atenuado })
 
           return (
             <Marker
               key={ap.codigo}
               position={[pos.lat, pos.lng]}
               icon={airportIcon}
+              opacity={atenuado ? 0.25 : 1}
               eventHandlers={{
-                click: () => navigate(`/aeropuerto/${ap.codigo}`),
+                // T50: clic abre el detalle en panel de la misma vista (no navega).
+                click: () => setAlmacenSeleccionado(ap.codigo),
               }}
             >
               <Tooltip direction="right" offset={[8, 0]} className="tasf-tooltip" opacity={1}>
@@ -719,6 +757,47 @@ export default function MapaMundi({ runId, runCompleted = false, onActiveLegsCha
         </div>
       )}
 
+      {/* T54/T55: filtros por semáforo (almacenes y UT) reflejados en el mapa */}
+      <div className="absolute bottom-28 right-4 z-[1000] bg-slate-900/92 backdrop-blur border border-slate-700 rounded-xl p-3 shadow-lg w-44">
+        <FiltroSemaforo
+          titulo="Almacenes"
+          ocultos={almacenesOcultos}
+          onToggle={(c) => setAlmacenesOcultos(prev => toggleSet(prev, c))}
+        />
+        <div className="h-px bg-slate-700 my-2" />
+        <FiltroSemaforo
+          titulo="UT (aviones)"
+          ocultos={utsOcultas}
+          onToggle={(c) => setUtsOcultas(prev => toggleSet(prev, c))}
+        />
+      </div>
+
+      {/* T50: detalle del almacén seleccionado en la MISMA vista (sin navegar) */}
+      {detalleAlmacen?.ap && (
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 mt-20 z-[1100] bg-slate-900/96 backdrop-blur border border-blue-500/40 rounded-xl p-4 shadow-xl w-72">
+          <div className="flex items-start justify-between mb-2">
+            <div>
+              <div className="font-bold text-white text-sm">{detalleAlmacen.ap.nombre ?? almacenSeleccionado}</div>
+              <div className="text-blue-300 font-mono text-xs">{almacenSeleccionado}</div>
+            </div>
+            <button onClick={() => setAlmacenSeleccionado(null)}
+              className="text-slate-400 hover:text-white text-sm">✕</button>
+          </div>
+          <div className="space-y-1 text-xs">
+            <div className="flex justify-between"><span className="text-slate-400">Capacidad</span>
+              <span className="font-mono text-slate-200">{(detalleAlmacen.ap.almacen?.capacidad ?? 0).toLocaleString()}</span></div>
+            <div className="flex justify-between"><span className="text-slate-400">Envíos que entran</span>
+              <span className="font-mono text-green-400">{detalleAlmacen.entran} ({detalleAlmacen.maletasEntran.toLocaleString()} mal.)</span></div>
+            <div className="flex justify-between"><span className="text-slate-400">Envíos que salen</span>
+              <span className="font-mono text-amber-400">{detalleAlmacen.salen} ({detalleAlmacen.maletasSalen.toLocaleString()} mal.)</span></div>
+          </div>
+          <button onClick={() => navigate(`/aeropuerto/${almacenSeleccionado}`)}
+            className="mt-3 w-full py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium">
+            Ver detalle completo →
+          </button>
+        </div>
+      )}
+
       {simTime && (
         <div className="absolute bottom-14 left-4 right-4 z-[1000]">
           <div className="bg-slate-900/92 backdrop-blur border border-slate-700 rounded-xl px-4 py-2.5 flex items-center gap-3">
@@ -761,6 +840,43 @@ export default function MapaMundi({ runId, runCompleted = false, onActiveLegsCha
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// Alterna un color en un Set (sin mutar el original).
+function toggleSet(set, color) {
+  const next = new Set(set)
+  if (next.has(color)) next.delete(color); else next.add(color)
+  return next
+}
+
+// T54/T55: selector de colores de semáforo. Un color "apagado" (en `ocultos`)
+// atenúa en el mapa las entidades de ese color.
+const SEMAFORO_FILTRO = [
+  { color: 'vacio', hex: '#94a3b8', label: 'Vacío' },
+  { color: 'verde', hex: '#4ade80', label: 'Óptimo' },
+  { color: 'ambar', hex: '#fbbf24', label: 'Riesgo' },
+  { color: 'rojo',  hex: '#f87171', label: 'Crítico' },
+]
+
+function FiltroSemaforo({ titulo, ocultos, onToggle }) {
+  return (
+    <div>
+      <p className="text-[10px] text-slate-400 uppercase tracking-wider mb-1.5">{titulo}</p>
+      <div className="flex flex-col gap-1">
+        {SEMAFORO_FILTRO.map(s => {
+          const activo = !ocultos.has(s.color)
+          return (
+            <button key={s.color} onClick={() => onToggle(s.color)}
+              className={`flex items-center gap-2 text-xs rounded px-1.5 py-0.5 transition-colors ${activo ? 'text-slate-200' : 'text-slate-600 line-through'}`}
+              title={activo ? 'Click para ocultar' : 'Click para mostrar'}>
+              <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: s.hex, opacity: activo ? 1 : 0.3 }} />
+              {s.label}
+            </button>
+          )
+        })}
+      </div>
     </div>
   )
 }
