@@ -508,10 +508,18 @@ export default function IndicadoresGlobales() {
                       filas.push(
                         <tr key={`${ut.codigo}-detalle`} className="bg-slate-900/40">
                           <td colSpan={6} className="px-6 py-3">
-                            <p className="text-xs text-slate-400 mb-2">
-                              Envíos que traslada <span className="font-mono text-blue-300">{ut.codigo}</span>
-                              <span className="text-slate-500"> ({envios.length})</span>
-                            </p>
+                            <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+                              <p className="text-xs text-slate-400">
+                                Envíos que traslada <span className="font-mono text-blue-300">{ut.codigo}</span>
+                                <span className="text-slate-500"> ({envios.length})</span>
+                              </p>
+                              {/* T15: desglose de maletas que carga la UT */}
+                              <p className="text-xs text-slate-400">
+                                Maletas: <span className="font-mono text-slate-200">{ut.actual.toLocaleString()}</span>
+                                <span className="text-slate-600"> / {ut.capacidad.toLocaleString()} cap.</span>
+                                <span className="text-blue-300 ml-1">({ut.pct}%)</span>
+                              </p>
+                            </div>
                             {envios.length === 0 ? (
                               <p className="text-xs text-slate-500">Sin envíos asignados a esta UT.</p>
                             ) : (
@@ -521,6 +529,7 @@ export default function IndicadoresGlobales() {
                                     <th className="text-left py-1">Envío</th>
                                     <th className="text-left py-1">Origen → Destino</th>
                                     <th className="text-right py-1">Maletas</th>
+                                    <th className="text-right py-1 pl-4">% UT</th>
                                     <th className="text-left py-1 pl-4">Tipo</th>
                                   </tr>
                                 </thead>
@@ -530,6 +539,9 @@ export default function IndicadoresGlobales() {
                                       <td className="py-1 font-mono text-blue-300">{e.envio}</td>
                                       <td className="py-1">{e.desde} → {e.hasta}</td>
                                       <td className="py-1 font-mono text-right">{e.maletas.toLocaleString()}</td>
+                                      <td className="py-1 font-mono text-right pl-4 text-slate-400">
+                                        {ut.actual > 0 ? Math.round((e.maletas / ut.actual) * 100) : 0}%
+                                      </td>
                                       <td className="py-1 pl-4 text-slate-400">{e.directa ? 'Directo' : `${e.escalas} escala(s)`}</td>
                                     </tr>
                                   ))}
