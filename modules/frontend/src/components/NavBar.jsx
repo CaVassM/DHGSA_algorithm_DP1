@@ -5,6 +5,7 @@ export default function NavBar() {
   const location = useLocation()
   const esDashboard = location.pathname === '/dashboard'
   const esIndicadores = location.pathname === '/indicadores'
+  const esDiaADia = location.pathname === '/dia-a-dia'
 
   return (
     <header className="flex items-center justify-between px-6 py-3 bg-slate-900 border-b border-slate-700 shrink-0">
@@ -32,6 +33,16 @@ export default function NavBar() {
           }`}
         >
           Indicadores Globales
+        </button>
+        <button
+          onClick={() => navigate('/dia-a-dia')}
+          className={`px-4 py-1.5 rounded text-sm font-medium transition-colors ${
+            esDiaADia
+              ? 'bg-blue-600 text-white'
+              : 'text-slate-400 hover:text-white hover:bg-slate-700'
+          }`}
+        >
+          Operación Día a Día
         </button>
       </nav>
     </header>
