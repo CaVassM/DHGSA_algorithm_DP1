@@ -301,6 +301,9 @@ export default function IndicadoresGlobales() {
       : 0
   }, [airports])
 
+  // T60: semáforo agregado del conjunto de almacenes (sobre el promedio).
+  const semaforoAlmacenesGlobal = getSemaforoPorOcupacion(promAlmacenes)
+
   const rankingAeropuertos = useMemo(() => {
     const cmp = sortDir === 'desc'
       ? (a, b) => b.pct - a.pct || a.codigo.localeCompare(b.codigo)
@@ -687,16 +690,20 @@ export default function IndicadoresGlobales() {
                   ? 'Aeropuertos del sistema — ocupación actual no disponible en este endpoint'
                   : 'Ordenado por mayor ocupación de almacén'}
               </p>
-              <p className="text-xs text-slate-500 mt-1">
-                Promedio ocupación almacenes:
-                <span className="font-mono font-semibold text-slate-300 ml-1">{promAlmacenes}%</span>
+              <div className="flex items-center gap-2 mt-1">
+                <p className="text-xs text-slate-500">
+                  Promedio ocupación almacenes:
+                  <span className="font-mono font-semibold text-slate-300 ml-1">{promAlmacenes}%</span>
+                </p>
+                {/* T60: semáforo agregado global del conjunto de almacenes */}
+                <SemaforoBadge color={semaforoAlmacenesGlobal} label={SEMAFORO_LABEL[semaforoAlmacenesGlobal]?.label ?? ''} />
                 {airports && (
                   <span
-                    className="ml-1.5 text-amber-500 cursor-help"
+                    className="text-amber-500 cursor-help text-xs"
                     title="Con datos reales del backend el valor es siempre 0% porque el endpoint /api/v1/airports no expone la ocupación actual. Se requiere un endpoint de estado de almacenes."
                   >⚠</span>
                 )}
-              </p>
+              </div>
             </div>
             <input
               type="text"

@@ -5,6 +5,7 @@ import PanelLateral from '../components/PanelLateral'
 import MapaMundi from '../components/MapaMundi'
 import EnviosEnVuelo from '../components/EnviosEnVuelo'
 import { getPlanningRun } from '../services/api'
+import { suscribirSimulacion } from '../services/simulacionSocket'
 
 const TERMINAL_STATUSES = new Set(['COMPLETED', 'COMPLETED_WITH_PENDING_SHIPMENTS', 'FAILED'])
 
@@ -41,6 +42,16 @@ export default function Dashboard() {
     poll()
     intervalRef.current = setInterval(poll, 3000)
     return () => clearInterval(intervalRef.current)
+  }, [runId])
+
+  // T62: además del polling (respaldo), suscribirse por WebSocket al estado del
+  // run para recibir actualizaciones en tiempo real (multi-dispositivo).
+  useEffect(() => {
+    if (!runId) return
+    const disconnect = suscribirSimulacion(`/topic/run/${runId}`, (data) => {
+      if (data && data.id === runId) setRun(data)
+    })
+    return disconnect
   }, [runId])
 
   return (
