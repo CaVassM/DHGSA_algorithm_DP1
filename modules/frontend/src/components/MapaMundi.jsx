@@ -317,20 +317,6 @@ export default function MapaMundi({ runId, runCompleted = false, onActiveLegsCha
     return routes.flatMap(r => buildRouteLegs(r, flightMap))
   }, [routes, flights])
 
-  // T50: detalle del almacén seleccionado (entran/salen) derivado de las rutas.
-  const detalleAlmacen = useMemo(() => {
-    if (!almacenSeleccionado) return null
-    const ap = aeropuertosConOcupacion[almacenSeleccionado] ?? aeropuertosActivos[almacenSeleccionado]
-    let entran = 0, salen = 0, maletasEntran = 0, maletasSalen = 0
-    const flightMap = new Map(flights.map(f => [f.businessId, f]))
-    for (const r of (routes ?? [])) {
-      const legs = (r.flightBusinessIds ?? []).map(fid => flightMap.get(fid)).filter(Boolean)
-      if (legs.some(l => l.destinoIcao === almacenSeleccionado)) { entran++; maletasEntran += r.cantidadMaletas ?? 0 }
-      if (legs.some(l => l.origenIcao === almacenSeleccionado)) { salen++; maletasSalen += r.cantidadMaletas ?? 0 }
-    }
-    return { ap, entran, salen, maletasEntran, maletasSalen }
-  }, [almacenSeleccionado, routes, flights, aeropuertosConOcupacion, aeropuertosActivos])
-
   // T45/T47: tramos (pares desde-hasta) que pertenecen al envío buscado.
   // Si hay búsqueda activa, las demás rutas se atenúan.
   const tramosEnvioBuscado = useMemo(() => {
@@ -389,6 +375,22 @@ export default function MapaMundi({ runId, runCompleted = false, onActiveLegsCha
     })
     return result
   }, [aeropuertosActivos, almacenOcupacion])
+
+  // T50: detalle del almacén seleccionado (entran/salen) derivado de las rutas.
+  // Definido aquí (después de aeropuertosConOcupacion) para no usarlo antes de
+  // su inicialización.
+  const detalleAlmacen = useMemo(() => {
+    if (!almacenSeleccionado) return null
+    const ap = aeropuertosConOcupacion[almacenSeleccionado] ?? aeropuertosActivos[almacenSeleccionado]
+    let entran = 0, salen = 0, maletasEntran = 0, maletasSalen = 0
+    const flightMap = new Map(flights.map(f => [f.businessId, f]))
+    for (const r of (routes ?? [])) {
+      const legs = (r.flightBusinessIds ?? []).map(fid => flightMap.get(fid)).filter(Boolean)
+      if (legs.some(l => l.destinoIcao === almacenSeleccionado)) { entran++; maletasEntran += r.cantidadMaletas ?? 0 }
+      if (legs.some(l => l.origenIcao === almacenSeleccionado)) { salen++; maletasSalen += r.cantidadMaletas ?? 0 }
+    }
+    return { ap, entran, salen, maletasEntran, maletasSalen }
+  }, [almacenSeleccionado, routes, flights, aeropuertosConOcupacion, aeropuertosActivos])
 
   const rutasLineas = useMemo(() => {
     if (routes === null) {
@@ -457,18 +459,28 @@ export default function MapaMundi({ runId, runCompleted = false, onActiveLegsCha
   const activeDots = Object.values(activeDotMap)
 
   // T41: reportar al padre (Dashboard) los envíos actualmente en vuelo, para
-  // mostrarlos como lista. Se dispara cuando cambia el reloj simulado.
-  useEffect(() => {
-    if (!onActiveLegsChange) return
-    onActiveLegsChange(activeLegs.map(l => ({
+  // mostrarlos como lista. Solo emite cuando el conjunto realmente cambia
+  // (comparando una firma estable) para no entrar en bucle de renders.
+  const enVueloPayload = useMemo(
+    () => activeLegs.map(l => ({
       shipmentId: l.shipmentId,
       desde: l.desde,
       hasta: l.hasta,
       maletas: l.cantidadMaletas,
       progreso: l.progreso,
-    })))
+    })),
+    // activeLegs se recalcula cada render; dependemos de su firma textual.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [simTime, allLegs])
+    [JSON.stringify(activeLegs.map(l => `${l.shipmentId}|${l.desde}|${l.hasta}|${Math.round((l.progreso ?? 0) * 100)}`))],
+  )
+  const lastPayloadRef = useRef('')
+  useEffect(() => {
+    if (!onActiveLegsChange) return
+    const sig = JSON.stringify(enVueloPayload)
+    if (sig === lastPayloadRef.current) return
+    lastPayloadRef.current = sig
+    onActiveLegsChange(enVueloPayload)
+  }, [enVueloPayload, onActiveLegsChange])
 
   const simProgress = simStart && simEnd && simTime
     ? Math.min(1, Math.max(0, (simTime - simStart) / (simEnd - simStart)))
