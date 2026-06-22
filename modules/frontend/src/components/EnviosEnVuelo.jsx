@@ -7,7 +7,7 @@ export default function EnviosEnVuelo({ envios = [] }) {
   const [abierto, setAbierto] = useState(true)
 
   return (
-    <div className="absolute bottom-4 right-4 z-[1000] w-72 max-w-[80vw]">
+    <div className="absolute bottom-28 right-4 z-[1000] w-72 max-w-[80vw]">
       <div className="bg-slate-900/92 backdrop-blur border border-slate-700 rounded-xl overflow-hidden shadow-lg shadow-black/50">
         <button
           onClick={() => setAbierto(a => !a)}

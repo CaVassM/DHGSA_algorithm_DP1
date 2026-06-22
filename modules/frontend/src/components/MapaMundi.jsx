@@ -770,7 +770,7 @@ export default function MapaMundi({ runId, runCompleted = false, onActiveLegsCha
       )}
 
       {/* T54/T55: filtros por semáforo (almacenes y UT) reflejados en el mapa */}
-      <div className="absolute bottom-28 right-4 z-[1000] bg-slate-900/92 backdrop-blur border border-slate-700 rounded-xl p-3 shadow-lg w-44">
+      <div className="absolute top-1/2 -translate-y-1/2 left-4 z-[1000] bg-slate-900/92 backdrop-blur border border-slate-700 rounded-xl p-3 shadow-lg w-40">
         <FiltroSemaforo
           titulo="Almacenes"
           ocultos={almacenesOcultos}
