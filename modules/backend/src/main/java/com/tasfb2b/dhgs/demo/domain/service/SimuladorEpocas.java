@@ -152,10 +152,9 @@ public class SimuladorEpocas {
             return inicioPorDefecto;
         }
 
-        // Nunca arrancar después del primer envío, para no dejar envíos fuera de la línea de tiempo.
-        return fechaInicioSolicitada.isAfter(primerEnvio)
-                ? primerEnvio.toLocalDate().atStartOfDay()
-                : fechaInicioSolicitada;
+        // La fecha explícita pertenece al usuario: no se ajusta a las fechas del dataset.
+        // Los envíos fuera del horizonte simplemente no participan en esa corrida.
+        return fechaInicioSolicitada;
     }
 
     // Supongo se itera el historial para utilizarlo, o algo que recorra las epocas generadas por todos los envios.
@@ -337,4 +336,3 @@ public class SimuladorEpocas {
         }
     }
 }
-

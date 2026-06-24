@@ -121,17 +121,11 @@ public class GrafoVuelos {
     }
 
     public List<Vuelo> dijkstraMenorTiempo(Aeropuerto origen, Aeropuerto destino) {
-        LocalDateTime referencia = fechaInicioOperacion != null
-                ? fechaInicioOperacion.atStartOfDay()
-                : LocalDateTime.of(2026, 1, 1, 0, 0);
-        return dijkstraMenorTiempo(origen, destino, 0, referencia);
+        return dijkstraMenorTiempo(origen, destino, 0, referenciaOperativa());
     }
 
     public List<Vuelo> dijkstraMenorTiempo(Aeropuerto origen, Aeropuerto destino, int cargaRequerida) {
-        LocalDateTime referencia = fechaInicioOperacion != null
-                ? fechaInicioOperacion.atStartOfDay()
-                : LocalDateTime.of(2026, 1, 1, 0, 0);
-        return dijkstraMenorTiempo(origen, destino, cargaRequerida, referencia);
+        return dijkstraMenorTiempo(origen, destino, cargaRequerida, referenciaOperativa());
     }
 
     public List<Vuelo> dijkstraMenorTiempo(Aeropuerto origen, Aeropuerto destino, int cargaRequerida, LocalDateTime salidaMinima) {
@@ -183,17 +177,11 @@ public class GrafoVuelos {
     }
 
     public List<List<Vuelo>> encontrarKRutas(Aeropuerto origen, Aeropuerto destino, int k) {
-        LocalDateTime referencia = fechaInicioOperacion != null
-                ? fechaInicioOperacion.atStartOfDay()
-                : LocalDateTime.of(2026, 1, 1, 0, 0);
-        return encontrarKRutas(origen, destino, k, 0, referencia);
+        return encontrarKRutas(origen, destino, k, 0, referenciaOperativa());
     }
 
     public List<List<Vuelo>> encontrarKRutas(Aeropuerto origen, Aeropuerto destino, int k, int cargaRequerida) {
-        LocalDateTime referencia = fechaInicioOperacion != null
-                ? fechaInicioOperacion.atStartOfDay()
-                : LocalDateTime.of(2026, 1, 1, 0, 0);
-        return encontrarKRutas(origen, destino, k, cargaRequerida, referencia);
+        return encontrarKRutas(origen, destino, k, cargaRequerida, referenciaOperativa());
     }
 
     public List<List<Vuelo>> encontrarKRutas(Aeropuerto origen, Aeropuerto destino, int k,
@@ -226,7 +214,7 @@ public class GrafoVuelos {
             if (rutas.size() >= k) break;
         }
 
-        rutas.sort(Comparator.comparing(this::obtenerTiempoTotalRuta));
+        rutas.sort(Comparator.comparing(ruta -> obtenerTiempoTotalRuta(ruta, salidaMinima)));
         return rutas.subList(0, Math.min(k, rutas.size()));
     }
 
@@ -287,8 +275,7 @@ public class GrafoVuelos {
             return instancia.getFechaHoraSalida();
         }
         LocalTime horaSalida = vuelo.getHoraSalida() != null ? vuelo.getHoraSalida() : LocalTime.MIDNIGHT;
-        LocalDate fecha = fechaInicioOperacion != null ? fechaInicioOperacion : LocalDate.of(2026, 1, 1);
-        return LocalDateTime.of(fecha, horaSalida);
+        return LocalDateTime.of(referenciaOperativa().toLocalDate(), horaSalida);
     }
 
     private LocalDateTime obtenerLlegadaUltimoTramo(List<Vuelo> ruta, LocalDateTime referencia) {
@@ -299,14 +286,12 @@ public class GrafoVuelos {
         return obtenerLlegadaProgramada(ultimo, referencia);
     }
 
-    private long obtenerTiempoTotalRuta(List<Vuelo> ruta) {
+    private long obtenerTiempoTotalRuta(List<Vuelo> ruta, LocalDateTime referencia) {
         if (ruta == null || ruta.isEmpty()) {
             return Long.MAX_VALUE;
         }
         Vuelo primero = ruta.get(0);
-        LocalDateTime salida = obtenerSalidaProgramada(primero, fechaInicioOperacion != null
-                ? fechaInicioOperacion.atStartOfDay()
-                : LocalDateTime.of(2026, 1, 1, 0, 0));
+        LocalDateTime salida = obtenerSalidaProgramada(primero, referencia);
         if (salida == null) {
             return Long.MAX_VALUE;
         }
@@ -318,6 +303,21 @@ public class GrafoVuelos {
             }
         }
         return java.time.Duration.between(salida, llegada).toMinutes();
+    }
+
+    private LocalDateTime referenciaOperativa() {
+        if (fechaInicioOperacion != null) {
+            return fechaInicioOperacion.atStartOfDay();
+        }
+
+        return adyacencia.values().stream()
+                .flatMap(Collection::stream)
+                .filter(InstanciaVuelo.class::isInstance)
+                .map(InstanciaVuelo.class::cast)
+                .map(InstanciaVuelo::getFechaHoraSalida)
+                .filter(Objects::nonNull)
+                .min(LocalDateTime::compareTo)
+                .orElse(LocalDate.MIN.atStartOfDay());
     }
 
     private void calcularMatrizDistancias(List<Aeropuerto> listaAeropuertos) {
@@ -342,4 +342,3 @@ public class GrafoVuelos {
     private record EstadoRuta(String icao, LocalDateTime momento) {
     }
 }
-
