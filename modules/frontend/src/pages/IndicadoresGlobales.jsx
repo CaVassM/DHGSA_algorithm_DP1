@@ -110,6 +110,36 @@ function buildUTs(flightList, routeList) {
     .sort((a, b) => b.pct - a.pct || a.codigo.localeCompare(b.codigo))
 }
 
+// T40: lista de envíos individuales planificados (destino, UT/vuelos, maletas).
+function buildEnviosPlanificados(routeList) {
+  return (routeList ?? [])
+    .map(r => ({
+      envio:   r.shipmentBusinessId,
+      desde:   r.origenIcao,
+      destino: r.destinoIcao,
+      uts:     r.flightBusinessIds ?? [],
+      maletas: r.cantidadMaletas ?? 0,
+      directa: r.esDirecta,
+      escalas: r.escalas ?? 0,
+    }))
+    .sort((a, b) => b.maletas - a.maletas)
+}
+
+// T14: envíos que traslada una UT (vuelo) — rutas cuyo recorrido incluye ese vuelo.
+function enviosDeUT(vueloId, routeList) {
+  return (routeList ?? [])
+    .filter(r => (r.flightBusinessIds ?? []).includes(vueloId))
+    .map(r => ({
+      envio:   r.shipmentBusinessId,
+      desde:   r.origenIcao,
+      hasta:   r.destinoIcao,
+      maletas: r.cantidadMaletas ?? 0,
+      directa: r.esDirecta,
+      escalas: r.escalas ?? 0,
+    }))
+    .sort((a, b) => b.maletas - a.maletas)
+}
+
 // Lista de UT a partir de los datos mock (cada vuelo en aire ya es una UT individual).
 function buildUTsMock() {
   return VUELOS_EN_AIRE
@@ -193,6 +223,7 @@ export default function IndicadoresGlobales() {
   const [sortDir,          setSortDir]          = useState('desc')
   const [filtroTexto,      setFiltroTexto]      = useState('')
   const [filtroContinente, setFiltroContinente] = useState('Todos')
+  const [utExpandida,      setUtExpandida]      = useState(null) // T14: código de UT abierta
 
   useEffect(() => {
     if (!runId) return
@@ -240,6 +271,9 @@ export default function IndicadoresGlobales() {
   const utsOcupadas  = utsData.filter(u => u.actual > 0).length
   const utsVacias    = utsData.filter(u => u.actual === 0).length
 
+  // T40: envíos planificados individuales (desde rutas reales del run)
+  const enviosPlanificados = routes ? buildEnviosPlanificados(routes) : []
+
   const vuelosActivos = vuelosData.length
   const vuelosAltos   = vuelosData.filter(v => getOcupacionVueloPct(v) >= 90).length
   const vuelosBajos   = vuelosData.filter(v => getOcupacionVueloPct(v) < 50).length
@@ -266,6 +300,9 @@ export default function IndicadoresGlobales() {
       ? Math.round(pcts.reduce((a, b) => a + b, 0) / pcts.length * 10) / 10
       : 0
   }, [airports])
+
+  // T60: semáforo agregado del conjunto de almacenes (sobre el promedio).
+  const semaforoAlmacenesGlobal = getSemaforoPorOcupacion(promAlmacenes)
 
   const rankingAeropuertos = useMemo(() => {
     const cmp = sortDir === 'desc'
@@ -456,11 +493,22 @@ export default function IndicadoresGlobales() {
                     </td>
                   </tr>
                 ) : (
-                  utsData.map((ut) => {
+                  utsData.flatMap((ut) => {
                     const color = colorOcupacionUT(ut)
-                    return (
-                      <tr key={ut.codigo} className="hover:bg-slate-700/20 transition-colors">
-                        <td className="px-4 py-3 font-mono font-semibold text-blue-400 text-xs">{ut.codigo}</td>
+                    const abierta = utExpandida === ut.codigo
+                    // T14: drill-down sólo tiene sentido con rutas reales cargadas.
+                    const puedeExpandir = utsReales && ut.actual > 0
+                    const envios = abierta ? enviosDeUT(ut.codigo, routes ?? []) : []
+                    const filas = [
+                      <tr
+                        key={ut.codigo}
+                        className={`transition-colors ${puedeExpandir ? 'cursor-pointer' : ''} ${abierta ? 'bg-slate-700/30' : 'hover:bg-slate-700/20'}`}
+                        onClick={() => puedeExpandir && setUtExpandida(abierta ? null : ut.codigo)}
+                      >
+                        <td className="px-4 py-3 font-mono font-semibold text-blue-400 text-xs">
+                          {puedeExpandir && <span className="text-slate-500 mr-1">{abierta ? '▾' : '▸'}</span>}
+                          {ut.codigo}
+                        </td>
                         <td className="px-4 py-3 text-slate-300 whitespace-nowrap">{ut.desde} → {ut.hasta}</td>
                         <td className="px-4 py-3 text-slate-400 font-mono text-xs whitespace-nowrap">{formatHorario(ut.horario)}</td>
                         <td className="px-4 py-3 font-mono text-slate-300 text-right whitespace-nowrap">
@@ -475,9 +523,101 @@ export default function IndicadoresGlobales() {
                             label={ut.actual === 0 ? 'VACÍA' : ut.pct >= 90 ? 'LLENA' : ut.pct >= 50 ? 'ALTA' : 'BAJA'}
                           />
                         </td>
-                      </tr>
-                    )
+                      </tr>,
+                    ]
+                    if (abierta) {
+                      filas.push(
+                        <tr key={`${ut.codigo}-detalle`} className="bg-slate-900/40">
+                          <td colSpan={6} className="px-6 py-3">
+                            <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+                              <p className="text-xs text-slate-400">
+                                Envíos que traslada <span className="font-mono text-blue-300">{ut.codigo}</span>
+                                <span className="text-slate-500"> ({envios.length})</span>
+                              </p>
+                              {/* T15: desglose de maletas que carga la UT */}
+                              <p className="text-xs text-slate-400">
+                                Maletas: <span className="font-mono text-slate-200">{ut.actual.toLocaleString()}</span>
+                                <span className="text-slate-600"> / {ut.capacidad.toLocaleString()} cap.</span>
+                                <span className="text-blue-300 ml-1">({ut.pct}%)</span>
+                              </p>
+                            </div>
+                            {envios.length === 0 ? (
+                              <p className="text-xs text-slate-500">Sin envíos asignados a esta UT.</p>
+                            ) : (
+                              <table className="w-full text-xs">
+                                <thead>
+                                  <tr className="text-slate-500">
+                                    <th className="text-left py-1">Envío</th>
+                                    <th className="text-left py-1">Origen → Destino</th>
+                                    <th className="text-right py-1">Maletas</th>
+                                    <th className="text-right py-1 pl-4">% UT</th>
+                                    <th className="text-left py-1 pl-4">Tipo</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-800">
+                                  {envios.map(e => (
+                                    <tr key={e.envio} className="text-slate-300">
+                                      <td className="py-1 font-mono text-blue-300">{e.envio}</td>
+                                      <td className="py-1">{e.desde} → {e.hasta}</td>
+                                      <td className="py-1 font-mono text-right">{e.maletas.toLocaleString()}</td>
+                                      <td className="py-1 font-mono text-right pl-4 text-slate-400">
+                                        {ut.actual > 0 ? Math.round((e.maletas / ut.actual) * 100) : 0}%
+                                      </td>
+                                      <td className="py-1 pl-4 text-slate-400">{e.directa ? 'Directo' : `${e.escalas} escala(s)`}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            )}
+                          </td>
+                        </tr>,
+                      )
+                    }
+                    return filas
                   })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* T40 — Lista de envíos planificados */}
+        <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+          <div className="px-5 py-4 border-b border-slate-700 flex items-center justify-between gap-4 flex-wrap">
+            <div>
+              <h2 className="font-semibold text-white">Envíos Planificados</h2>
+              <p className="text-xs text-slate-400 mt-0.5">Cada envío con su destino, UT(s) y cantidad de maletas</p>
+            </div>
+            <span className="text-xs text-slate-400">Total: <span className="font-mono font-bold text-white">{enviosPlanificados.length}</span></span>
+          </div>
+          <div className="overflow-x-auto max-h-[460px] overflow-y-auto">
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 z-10">
+                <tr className="bg-slate-700 text-slate-400 text-xs uppercase">
+                  <th className="text-left px-4 py-3">Envío</th>
+                  <th className="text-left px-4 py-3">Origen → Destino</th>
+                  <th className="text-left px-4 py-3">UT (vuelos)</th>
+                  <th className="text-right px-4 py-3">Maletas</th>
+                  <th className="text-left px-4 py-3">Tipo</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-700/50">
+                {enviosPlanificados.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="px-4 py-10 text-center text-slate-500 text-sm">
+                      {runId ? 'Cargando envíos...' : 'Inicia una simulación para ver los envíos planificados'}
+                    </td>
+                  </tr>
+                ) : (
+                  enviosPlanificados.map((e) => (
+                    <tr key={e.envio} className="hover:bg-slate-700/20 transition-colors">
+                      <td className="px-4 py-3 font-mono font-semibold text-blue-400 text-xs">{e.envio}</td>
+                      <td className="px-4 py-3 text-slate-300 whitespace-nowrap">{e.desde} → {e.destino}</td>
+                      <td className="px-4 py-3 text-slate-400 font-mono text-xs">{e.uts.join(', ') || '—'}</td>
+                      <td className="px-4 py-3 font-mono text-slate-300 text-right">{e.maletas.toLocaleString()}</td>
+                      <td className="px-4 py-3 text-slate-400 text-xs">{e.directa ? 'Directo' : `${e.escalas} escala(s)`}</td>
+                    </tr>
+                  ))
                 )}
               </tbody>
             </table>
@@ -550,16 +690,20 @@ export default function IndicadoresGlobales() {
                   ? 'Aeropuertos del sistema — ocupación actual no disponible en este endpoint'
                   : 'Ordenado por mayor ocupación de almacén'}
               </p>
-              <p className="text-xs text-slate-500 mt-1">
-                Promedio ocupación almacenes:
-                <span className="font-mono font-semibold text-slate-300 ml-1">{promAlmacenes}%</span>
+              <div className="flex items-center gap-2 mt-1">
+                <p className="text-xs text-slate-500">
+                  Promedio ocupación almacenes:
+                  <span className="font-mono font-semibold text-slate-300 ml-1">{promAlmacenes}%</span>
+                </p>
+                {/* T60: semáforo agregado global del conjunto de almacenes */}
+                <SemaforoBadge color={semaforoAlmacenesGlobal} label={SEMAFORO_LABEL[semaforoAlmacenesGlobal]?.label ?? ''} />
                 {airports && (
                   <span
-                    className="ml-1.5 text-amber-500 cursor-help"
+                    className="text-amber-500 cursor-help text-xs"
                     title="Con datos reales del backend el valor es siempre 0% porque el endpoint /api/v1/airports no expone la ocupación actual. Se requiere un endpoint de estado de almacenes."
                   >⚠</span>
                 )}
-              </p>
+              </div>
             </div>
             <input
               type="text"

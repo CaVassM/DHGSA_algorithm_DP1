@@ -18,6 +18,13 @@ import java.util.*;
 @Component
 public class GrafoVuelos {
 
+    /**
+     * T61: tiempo mínimo de permanencia/conexión en un aeropuerto entre la
+     * llegada de un vuelo y la salida del siguiente (papeleo, traslado de
+     * maletas). No aplica en el aeropuerto de origen del envío.
+     */
+    private static final java.time.Duration PERMANENCIA_MINIMA = java.time.Duration.ofHours(1);
+
     /** Mapa de adyacencia: código ICAO → lista de vuelos salientes */
     private Map<String, List<Vuelo>> adyacencia;
 
@@ -162,10 +169,17 @@ public class GrafoVuelos {
                 return reconstruirRuta(predecesores, origenICAO, destinoICAO);
             }
 
-            for (Vuelo vuelo : obtenerVuelosSalientes(actual.icao(), cargaRequerida, actual.momento())) {
-                LocalDateTime salida = obtenerSalidaProgramada(vuelo, actual.momento());
-                LocalDateTime llegada = obtenerLlegadaProgramada(vuelo, actual.momento());
-                if (salida == null || llegada == null || llegada.isBefore(salida)) {
+            // T61: en aeropuertos intermedios (conexión) exigir la permanencia
+            // mínima entre la llegada y la siguiente salida. En el origen no aplica.
+            LocalDateTime momentoConsulta = actual.icao().equals(origenICAO)
+                    ? actual.momento()
+                    : actual.momento().plus(PERMANENCIA_MINIMA);
+
+            for (Vuelo vuelo : obtenerVuelosSalientes(actual.icao(), cargaRequerida, momentoConsulta)) {
+                LocalDateTime salida = obtenerSalidaProgramada(vuelo, momentoConsulta);
+                LocalDateTime llegada = obtenerLlegadaProgramada(vuelo, momentoConsulta);
+                if (salida == null || llegada == null || llegada.isBefore(salida)
+                        || salida.isBefore(momentoConsulta)) {
                     continue;
                 }
 

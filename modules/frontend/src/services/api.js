@@ -44,6 +44,49 @@ export async function getShipments(page = 0, size = 100, sort = null) {
   return data
 }
 
+// --- Operación día a día (REAL_TIME) ---
+
+export async function registrarEnvioDiario(request) {
+  // El backend devuelve 422 cuando rechaza (sin ruta / colapso); axios lanza,
+  // pero el cuerpo trae { aceptado:false, mensaje }. Lo devolvemos igual.
+  try {
+    const { data } = await api.post('/daily/shipments', request)
+    return data
+  } catch (err) {
+    if (err.response?.status === 422 && err.response.data) {
+      return err.response.data
+    }
+    throw err
+  }
+}
+
+export async function getEstadoDiario() {
+  const { data } = await api.get('/daily/state')
+  return data
+}
+
+export async function reiniciarDiario() {
+  const { data } = await api.post('/daily/reset')
+  return data
+}
+
+// --- Simulación de periodo en vivo (salto de algoritmo) ---
+
+export async function iniciarSimulacionEnVivo(request) {
+  const { data } = await api.post('/simulacion/live', request)
+  return data // { runId, topic, mensaje }
+}
+
+export async function cancelarSimulacionEnVivo(runId) {
+  const { data } = await api.post(`/simulacion/live/${runId}/cancel`)
+  return data
+}
+
+export async function iniciarSimulacionColapso(request) {
+  const { data } = await api.post('/simulacion/collapse', request)
+  return data // { runId, topic, mensaje }
+}
+
 // --- Admin imports ---
 
 export async function getImportStatus() {

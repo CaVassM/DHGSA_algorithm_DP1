@@ -65,6 +65,7 @@ public class PlanningRunExecutor {
     private final AirportRepository airportRepository;
     private final FlightRepository flightRepository;
     private final ShipmentRepository shipmentRepository;
+    private final org.springframework.messaging.simp.SimpMessagingTemplate messaging;
 
     @Value("${planner.defaults.epoch-hours:4}")
     private long defaultEpochHours;
@@ -114,6 +115,8 @@ public class PlanningRunExecutor {
                     .orElseThrow(() -> new IllegalStateException("Run " + runId + " desaparecido durante ejecución"));
             persistOutcome(run, outcome);
             log.info("Run {} finalizado con status {}", runId, run.getStatus());
+            // T62: empujar el estado final del run a los navegadores suscritos.
+            notificarEstadoRun(run);
         } catch (Exception ex) {
             log.error("Run async {} falló", runId, ex);
             planningRunRepository.findById(runId).ifPresent(run -> {
@@ -121,7 +124,18 @@ public class PlanningRunExecutor {
                 run.setFinishedAt(LocalDateTime.now());
                 run.setMensaje("Error: " + (ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage()));
                 planningRunRepository.save(run);
+                notificarEstadoRun(run);
             });
+        }
+    }
+
+    /** T62: publica el estado del run en /topic/run/{id} para el Dashboard. */
+    private void notificarEstadoRun(PlanningRunEntity run) {
+        try {
+            messaging.convertAndSend("/topic/run/" + run.getId(),
+                    com.tasfb2b.backend.dto.response.PlanningRunResponse.fromEntity(run));
+        } catch (Exception e) {
+            log.warn("No se pudo notificar el estado del run {} por WebSocket: {}", run.getId(), e.getMessage());
         }
     }
 
