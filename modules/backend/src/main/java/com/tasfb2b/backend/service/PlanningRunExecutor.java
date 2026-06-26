@@ -214,23 +214,33 @@ public class PlanningRunExecutor {
         run.setMensaje(op.getMensaje());
         planningRunRepository.save(run);
 
+        // Persistencia en masa: con runs grandes (decenas de miles de rutas) hacer
+        // un findByBusinessId + un save() por envío y loguear cada uno es el cuello
+        // de botella real. Se precargan shipments y flights en mapas con UNA consulta
+        // cada uno y se guardan las rutas en batch con saveAll().
+        int totalRutas = outcome.rutasPorEnvioId().size();
+        log.info("Persistiendo {} rutas del run {}", totalRutas, run.getId());
+
         Map<String, ShipmentEntity> shipmentByBusinessId = new HashMap<>();
+        for (ShipmentEntity s : shipmentRepository.findAll()) {
+            shipmentByBusinessId.put(s.getBusinessId(), s);
+        }
         Map<String, FlightEntity> flightByBusinessId = new HashMap<>();
-        log.info("Cantidad de rutas recibidas en outcome: {}", outcome.rutasPorEnvioId().size());
+        for (FlightEntity f : flightRepository.findAll()) {
+            flightByBusinessId.put(f.getBusinessId(), f);
+        }
+
+        List<RouteEntity> rutasAPersistir = new ArrayList<>(totalRutas);
+        int sinShipment = 0;
+        int legsSinFlight = 0;
         for (Map.Entry<String, RutaEnvio> entry : outcome.rutasPorEnvioId().entrySet()) {
             String envioBusinessId = entry.getKey();
             RutaEnvio ruta = entry.getValue();
-            log.info("Intentando guardar ruta para envío {}", envioBusinessId);
-              if (ruta == null) {
-                    log.warn("Ruta null para envío {}", envioBusinessId);
-                    continue;
-                }
-             
-                    
-            ShipmentEntity shipment = shipmentByBusinessId.computeIfAbsent(envioBusinessId,
-                    id -> shipmentRepository.findByBusinessId(id).orElse(null));
+            if (ruta == null) continue;
+
+            ShipmentEntity shipment = shipmentByBusinessId.get(envioBusinessId);
             if (shipment == null) {
-                log.warn("No se guardó ruta: no existe ShipmentEntity con businessId={}", envioBusinessId);
+                sinShipment++;
                 continue;
             }
 
@@ -246,21 +256,15 @@ public class PlanningRunExecutor {
                     .build();
 
             List<Vuelo> secuencia = ruta.getSecuenciaVuelos();
-            log.info("Ruta para envío {} tiene {} vuelos",envioBusinessId,secuencia == null ? 0 : secuencia.size());
             if (secuencia != null) {
                 for (int i = 0; i < secuencia.size(); i++) {
-                    Vuelo vuelo = secuencia.get(i);
-                    String fid = vuelo.getId();
-                    
+                    String fid = secuencia.get(i).getId();
                     String flightBusinessId = fid != null && fid.contains("@")
                             ? fid.substring(0, fid.indexOf("@"))
                             : fid;
-                    /*FlightEntity flightEntity = flightByBusinessId.computeIfAbsent(fid,
-                            bid -> flightRepository.findByBusinessId(bid).orElse(null));*/
-                    FlightEntity flightEntity = flightByBusinessId.computeIfAbsent(flightBusinessId,
-                            bid -> flightRepository.findByBusinessId(bid).orElse(null));
+                    FlightEntity flightEntity = flightByBusinessId.get(flightBusinessId);
                     if (flightEntity == null) {
-                        log.warn("No se guardó leg: no existe FlightEntity con businessId={}", fid);
+                        legsSinFlight++;
                         continue;
                     }
                     route.getLegs().add(RouteLegEntity.builder()
@@ -270,11 +274,12 @@ public class PlanningRunExecutor {
                             .build());
                 }
             }
-            routeRepository.save(route);
-            log.info("Ruta guardada para envío {} con {} legs",
-            envioBusinessId,
-            route.getLegs().size());
+            rutasAPersistir.add(route);
         }
+
+        routeRepository.saveAll(rutasAPersistir);
+        log.info("Run {}: {} rutas guardadas ({} sin shipment, {} legs sin flight)",
+                run.getId(), rutasAPersistir.size(), sinShipment, legsSinFlight);
     }
 
     private OptimizationAlgorithm mapAlgorithm(PlannerAlgorithm algorithm) {
