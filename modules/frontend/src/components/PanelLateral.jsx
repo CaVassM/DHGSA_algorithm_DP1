@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { SIMULACION, KPIS, LOG_EVENTOS, ATENCION_REQUERIDA } from '../data/simulacion'
 import BarraProgreso from './BarraProgreso'
 import SemaforoBadge from './SemaforoBadge'
+import PanelListas from './PanelListas'
 
 const TERMINAL_STATUSES = new Set(['COMPLETED', 'COMPLETED_WITH_PENDING_SHIPMENTS', 'FAILED'])
 
@@ -56,7 +57,7 @@ function writePersistedBool(key, val) {
 
 // ── Component ────────────────────────────────────────────────────────────────
 
-export default function PanelLateral({ run }) {
+export default function PanelLateral({ run, ocupacionPorIcao, airportFromMap, onSelectAirport, onSelectShipment }) {
   const isReal     = !!run
   const isTerminal = isReal && TERMINAL_STATUSES.has(run.status)
   const statusCfg  = isReal
@@ -135,7 +136,7 @@ export default function PanelLateral({ run }) {
   }
 
   return (
-    <aside className="w-72 shrink-0 flex flex-col bg-slate-900 border-l border-slate-700 overflow-y-auto">
+    <aside className="w-80 shrink-0 flex flex-col bg-slate-900 border-l border-slate-700 overflow-y-auto">
 
       {/* Cabecera del panel con botón de ocultar */}
       <div className="flex items-center justify-between px-4 py-2.5 border-b border-slate-700 sticky top-0 bg-slate-900 z-10">
@@ -150,6 +151,18 @@ export default function PanelLateral({ run }) {
           <span className="text-base leading-none">»</span>
         </button>
       </div>
+
+      {/* Listas operativas: almacenes / vuelos (UT) / envíos, con búsqueda,
+          orden y scroll. Es el núcleo del "panel de control" pedido por el
+          profesor. Arranca abierta porque es lo que más se va a usar. */}
+      <CollapsibleSection id="listas" title="Listas" defaultOpen={true} noPadding>
+        <PanelListas
+          ocupacionPorIcao={ocupacionPorIcao}
+          airportFromMap={airportFromMap}
+          onSelectAirport={onSelectAirport}
+          onSelectShipment={onSelectShipment}
+        />
+      </CollapsibleSection>
 
       {/* Estado de la simulación */}
       <CollapsibleSection
@@ -272,7 +285,7 @@ export default function PanelLateral({ run }) {
 
 // Sección acordeón con cabecera que alterna mostrar/ocultar su contenido.
 // El estado abierto/cerrado se persiste por `id` en localStorage.
-function CollapsibleSection({ id, title, defaultOpen = true, children }) {
+function CollapsibleSection({ id, title, defaultOpen = true, noPadding = false, children }) {
   const [open, setOpen] = useState(() => readPersistedBool(sectionKey(id), defaultOpen))
   useEffect(() => { writePersistedBool(sectionKey(id), open) }, [id, open])
 
@@ -286,7 +299,7 @@ function CollapsibleSection({ id, title, defaultOpen = true, children }) {
         <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">{title}</h3>
         <span className={`text-slate-500 text-sm shrink-0 ml-2 transition-transform ${open ? 'rotate-90' : ''}`}>›</span>
       </button>
-      {open && <div className="px-4 pb-4">{children}</div>}
+      {open && <div className={noPadding ? '' : 'px-4 pb-4'}>{children}</div>}
     </section>
   )
 }

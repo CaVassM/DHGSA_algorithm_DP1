@@ -4,6 +4,7 @@ import NavBar from '../components/NavBar'
 import PanelLateral from '../components/PanelLateral'
 import MapaMundi from '../components/MapaMundi'
 import EnviosEnVuelo from '../components/EnviosEnVuelo'
+import IndicadoresGlobalesBar from '../components/IndicadoresGlobalesBar'
 import { getPlanningRun } from '../services/api'
 import { suscribirSimulacion } from '../services/simulacionSocket'
 
@@ -17,6 +18,13 @@ export default function Dashboard() {
   const runId    = location.state?.runId ?? (stored ? Number(stored) : null)
   const [run, setRun] = useState(null)
   const [enVuelo, setEnVuelo] = useState([]) // T41: envíos actualmente en tránsito
+  const [ocupacion, setOcupacion] = useState({}) // maletas por aeropuerto (del mapa)
+  // Vinculación panel→mapa: selección de aeropuerto / envío desde las listas.
+  // El nonce fuerza la reacción aunque se reseleccione el mismo elemento.
+  const [focusAirport, setFocusAirport] = useState(null)
+  const [highlightShipment, setHighlightShipment] = useState(null)
+  // Vinculación mapa→panel: aeropuerto elegido con click en el mapa.
+  const [airportFromMap, setAirportFromMap] = useState(null)
   const intervalRef = useRef(null)
 
   // Persistir el runId para que sobreviva recargas y navegación entre páginas
@@ -64,19 +72,31 @@ export default function Dashboard() {
             runId={runId}
             runCompleted={!!(run && TERMINAL_STATUSES.has(run.status))}
             onActiveLegsChange={setEnVuelo}
+            onOcupacionChange={setOcupacion}
+            focusAirport={focusAirport}
+            highlightShipment={highlightShipment}
+            onSelectAirportFromMap={(icao) => setAirportFromMap({ icao, nonce: Date.now() })}
           />
+          {/* #7: indicadores globales (flota + almacenes) siempre visibles */}
+          <IndicadoresGlobalesBar enVuelo={enVuelo} ocupacionPorIcao={ocupacion} run={run} />
           {/* T41: lista de envíos actualmente en vuelo (sobre el mapa) */}
           <EnviosEnVuelo envios={enVuelo} />
           {/* Leyenda */}
           <div className="absolute bottom-4 left-4 z-[1000] flex gap-3 bg-slate-900/80 backdrop-blur rounded-lg px-4 py-2 border border-slate-700 shadow-lg">
             <LeyendaItem color="bg-slate-400" label="Vacío (0 maletas)" />
-            <LeyendaItem color="bg-green-500" label="Óptimo (<60%)" />
-            <LeyendaItem color="bg-amber-500" label="Riesgo (60–85%)" />
-            <LeyendaItem color="bg-red-500" label="Crítico (>85%)" />
+            <LeyendaItem color="bg-green-500" label="Baja carga (<60%)" />
+            <LeyendaItem color="bg-amber-500" label="Carga media (60–85%)" />
+            <LeyendaItem color="bg-red-500" label="Carga alta (>85%)" />
             <LeyendaItem color="bg-blue-500" label="Vuelo en tránsito" />
           </div>
         </main>
-        <PanelLateral run={run} />
+        <PanelLateral
+          run={run}
+          ocupacionPorIcao={ocupacion}
+          airportFromMap={airportFromMap}
+          onSelectAirport={(icao) => setFocusAirport({ icao, nonce: Date.now() })}
+          onSelectShipment={(id) => setHighlightShipment({ id, nonce: Date.now() })}
+        />
       </div>
     </div>
   )

@@ -45,6 +45,22 @@
   }
 }
 
+/* Fix de "tile seams": Leaflet a veces deja líneas finas (horizontales o
+   verticales) entre teselas al desplazar, muy visibles en mapas oscuros.
+   Escalar levemente cada tile elimina el hueco sub-pixel sin distorsión
+   apreciable. */
+.leaflet-tile {
+  /* Pequeño solapamiento entre teselas para tapar la costura. */
+  width: 256.5px !important;
+  height: 256.5px !important;
+}
+
+.leaflet-container {
+  /* Evita un posible borde/contorno del contenedor que se vea como línea. */
+  outline: none;
+  background: #0c1a2e;
+}
+
 /* Leaflet tooltip theme for dark dashboard */
 .tasf-tooltip {
   background: #1e293b;

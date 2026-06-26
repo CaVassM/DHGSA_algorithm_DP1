@@ -1,10 +1,24 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 
 // T41: lista de envíos actualmente en vuelo (en tránsito), sobre el mapa.
 // Recibe los "legs activos" del momento simulado (origen, destino, maletas,
 // progreso). Panel flotante y colapsable para no tapar el mapa.
+//
+// El profesor lo señaló como "distractor": con 100-150 vuelos simultáneos la
+// lista se mueve a cada rato. Por eso arranca COLAPSADO (solo muestra el
+// contador, que no genera movimiento visual) y solo despliega la lista que se
+// actualiza si el operador la abre a propósito. La preferencia se persiste.
+const LS_KEY = 'tasf_envios_vuelo_abierto'
+
+function readAbierto() {
+  try { return localStorage.getItem(LS_KEY) === '1' } catch { return false }
+}
+
 export default function EnviosEnVuelo({ envios = [] }) {
-  const [abierto, setAbierto] = useState(true)
+  const [abierto, setAbierto] = useState(readAbierto)
+  useEffect(() => {
+    try { localStorage.setItem(LS_KEY, abierto ? '1' : '0') } catch { /* ignore */ }
+  }, [abierto])
 
   return (
     <div className="absolute bottom-40 right-4 z-[1000] w-72 max-w-[80vw]">
