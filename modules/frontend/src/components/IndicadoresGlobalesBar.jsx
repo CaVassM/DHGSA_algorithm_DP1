@@ -15,8 +15,10 @@ export default function IndicadoresGlobalesBar({ enVuelo = [], ocupacionPorIcao 
   const [capFlotaTotal, setCapFlotaTotal] = useState(0)
 
   useEffect(() => {
+    let vivo = true
     getAirports(0, 500)
       .then(p => {
+        if (!vivo) return
         const cap = {}
         ;(p.content ?? []).forEach(a => { cap[a.codigoIcao] = a.capacidadAlmacen ?? 0 })
         setCapacidades(cap)
@@ -24,8 +26,9 @@ export default function IndicadoresGlobalesBar({ enVuelo = [], ocupacionPorIcao 
       .catch(() => {})
     // Capacidad total de la flota = suma de capacidad de TODOS los vuelos (P12).
     getFlights(0, 2000)
-      .then(p => setCapFlotaTotal((p.content ?? []).reduce((s, f) => s + (f.capacidad ?? 0), 0)))
+      .then(p => { if (vivo) setCapFlotaTotal((p.content ?? []).reduce((s, f) => s + (f.capacidad ?? 0), 0)) })
       .catch(() => {})
+    return () => { vivo = false }
   }, [])
 
   // Ocupación de la flota (P12): (maletas en vuelo + maletas asignadas a vuelos)

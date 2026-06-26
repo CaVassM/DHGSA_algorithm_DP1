@@ -305,14 +305,20 @@ export default function MapaMundi({
 
   useEffect(() => {
     if (!runId) return
+    let vivo = true
     getPlanningRunRoutes(runId)
       .then(list => {
+        if (!vivo) return
         const valid = list.filter(r => r.origenIcao && r.destinoIcao)
         setRoutes(valid)
+        // Inicializar el reloj SOLO si aún no hay simTime. Antes esto corría
+        // también cuando el run pasaba a completado (runCompleted cambia), y
+        // reseteaba el reproductor al inicio en plena reproducción.
         const starts = valid.map(r => r.tiempoInicio).filter(Boolean).sort()
-        if (starts.length > 0) setSimTime(new Date(starts[0]))
+        if (starts.length > 0) setSimTime(prev => prev ?? new Date(starts[0]))
       })
       .catch(() => {})
+    return () => { vivo = false }
   }, [runId, runCompleted])
 
   useEffect(() => {
@@ -619,14 +625,22 @@ export default function MapaMundi({
   // Vinculación panel→mapa: al seleccionar un aeropuerto en la lista, enfocarlo
   // en el mapa. (focusAirport = { icao, nonce } — el nonce permite re-enfocar
   // aunque se seleccione el mismo aeropuerto dos veces seguidas.)
+  //
+  // Debe reaccionar SOLO cuando cambia focusAirport (la intención del usuario),
+  // no en cada tick del play. `coords` cambia con la ocupación en cada tick, así
+  // que se lee por ref para NO ponerlo como dependencia: si estuviera, el efecto
+  // se re-ejecutaría con el focusAirport viejo y reabriría el detalle del almacén
+  // una y otra vez al darle play.
+  const coordsRef = useRef(coords)
+  useEffect(() => { coordsRef.current = coords }, [coords])
   useEffect(() => {
     if (!focusAirport?.icao || !mapInstance) return
-    const c = coords[focusAirport.icao.toUpperCase()]
+    const c = coordsRef.current[focusAirport.icao.toUpperCase()]
     if (!c) return
     mapInstance.flyTo([c.lat, c.lng], Math.max(mapInstance.getZoom(), 5), { duration: 0.8 })
     setAirportInput(focusAirport.icao.toUpperCase())
     setAlmacenSeleccionado(focusAirport.icao.toUpperCase())
-  }, [focusAirport, mapInstance, coords])
+  }, [focusAirport, mapInstance])
 
   // Vinculación panel→mapa: al seleccionar un envío en la lista, resaltar su
   // ruta en el mapa (mismo mecanismo que la búsqueda manual de envío).
