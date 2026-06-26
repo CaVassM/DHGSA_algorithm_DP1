@@ -31,6 +31,12 @@ import static org.junit.jupiter.api.Assertions.*;
  *
  * Las rutas se configuran en:
  *   src/test/resources/test-ingestion.properties
+ *
+ * DATOS: aeropuertos (estudiantes_real.txt, 30) y vuelos (planes_vuelo_real.txt,
+ * 2866) son los reales completos. Los envíos (envios_preliminar/) son una MUESTRA
+ * de los primeros 3000 por aeropuerto (~90k total); el dataset real completo son
+ * ~9.5M de envíos / 391 MB que NO se versiona. Estos tests no dependen del total:
+ * validan estructura y parseo, no cantidades exactas de envíos.
  */
 @DisplayName("Carga de datos REALES desde archivos")
 class IngestionDatosRealesTest {
