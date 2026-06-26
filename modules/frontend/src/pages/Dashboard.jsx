@@ -5,7 +5,7 @@ import PanelLateral from '../components/PanelLateral'
 import MapaMundi from '../components/MapaMundi'
 import EnviosEnVuelo from '../components/EnviosEnVuelo'
 import IndicadoresGlobalesBar from '../components/IndicadoresGlobalesBar'
-import { getPlanningRun } from '../services/api'
+import { getPlanningRun, getLatestRun } from '../services/api'
 import { suscribirSimulacion } from '../services/simulacionSocket'
 
 const TERMINAL_STATUSES = new Set(['COMPLETED', 'COMPLETED_WITH_PENDING_SHIPMENTS', 'FAILED'])
@@ -15,7 +15,13 @@ const LS_KEY = 'tasf_runId'
 export default function Dashboard() {
   const location = useLocation()
   const stored   = localStorage.getItem(LS_KEY)
-  const runId    = location.state?.runId ?? (stored ? Number(stored) : null)
+  // runId es estado para poder caer al último run terminado cuando no llega por
+  // navegación ni hay uno guardado válido (p.ej. se entra directo al mapa, o el
+  // runId guardado quedó obsoleto porque ese run se borró). Sin esto el mapa se
+  // queda sin reproductor ni rutas que animar.
+  const [runId, setRunId] = useState(
+    location.state?.runId ?? (stored ? Number(stored) : null)
+  )
   const [run, setRun] = useState(null)
   const [enVuelo, setEnVuelo] = useState([]) // T41: envíos actualmente en tránsito
   const [ocupacion, setOcupacion] = useState({}) // maletas por aeropuerto (del mapa)
@@ -32,6 +38,17 @@ export default function Dashboard() {
     if (runId != null) localStorage.setItem(LS_KEY, String(runId))
   }, [runId])
 
+  // Fallback: si no hay runId (entrada directa al mapa, o storage vacío),
+  // cargar el último run terminado para tener algo que animar.
+  useEffect(() => {
+    if (runId != null) return
+    let vivo = true
+    getLatestRun()
+      .then(latest => { if (vivo && latest?.id != null) setRunId(latest.id) })
+      .catch(() => {})
+    return () => { vivo = false }
+  }, [runId])
+
   useEffect(() => {
     if (!runId) return
 
@@ -42,8 +59,15 @@ export default function Dashboard() {
         if (TERMINAL_STATUSES.has(data.status)) {
           clearInterval(intervalRef.current)
         }
-      } catch {
-        // mantener el polling ante errores de red transitorios
+      } catch (err) {
+        // Si el run guardado ya no existe (404, p.ej. se borró), descartarlo y
+        // limpiar el storage para que el fallback cargue el último run.
+        if (err?.response?.status === 404) {
+          clearInterval(intervalRef.current)
+          localStorage.removeItem(LS_KEY)
+          setRunId(null)
+        }
+        // Otros errores (red transitoria): mantener el polling.
       }
     }
 

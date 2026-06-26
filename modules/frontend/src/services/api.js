@@ -19,6 +19,19 @@ export async function getPlanningRun(runId) {
   return data
 }
 
+// Último run terminado (COMPLETED o COMPLETED_WITH_PENDING_SHIPMENTS).
+// Sirve para que el Dashboard tenga algo que animar cuando se entra directo
+// sin pasar por la pantalla de planificación (o si el runId guardado quedó
+// obsoleto). Devuelve null si no hay ninguno.
+export async function getLatestRun() {
+  const { data } = await api.get('/planner/runs', {
+    params: { page: 0, size: 10, sort: 'id,desc' },
+  })
+  const runs = data?.content ?? []
+  const terminal = new Set(['COMPLETED', 'COMPLETED_WITH_PENDING_SHIPMENTS'])
+  return runs.find(r => terminal.has(r.status)) ?? null
+}
+
 export async function getPlanningRunRoutes(runId) {
   const { data } = await api.get(`/planner/runs/${runId}/routes`)
   console.log('[API] getPlanningRunRoutes response:', data)
