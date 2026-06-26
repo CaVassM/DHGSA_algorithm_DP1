@@ -130,13 +130,14 @@ export function getOcupacionPct(aeropuerto) {
   return Math.round((aeropuerto.almacen.actual / aeropuerto.almacen.capacidad) * 100 * 10) / 10
 }
 
-// Umbrales (en % de ocupación) del semáforo del almacén. Parametrizables:
-// ajustar estos rangos cambia el comportamiento en todo el frontend
-// (mapa, detalle de aeropuerto, barras de progreso y leyenda).
-//   ocupación <= vacio  → VACÍO  (almacén sin maletas)
-//   ocupación <  ambar  → VERDE  (óptimo)
-//   ambar <= ocupación <= rojo → ÁMBAR (riesgo)
-//   ocupación >  rojo   → ROJO   (crítico)
+// Umbrales (en % de ocupación) del semáforo de CARGA del almacén. Los términos
+// describen cuánta capacidad se está usando, sin emitir juicio de valor
+// (no es "óptimo/riesgo/crítico"). Parametrizables: ajustar estos rangos cambia
+// el comportamiento en todo el frontend (mapa, detalle, barras y leyenda).
+//   ocupación <= vacio  → VACÍO       (almacén sin maletas)
+//   ocupación <  ambar  → VERDE       (baja carga)
+//   ambar <= ocupación <= rojo → ÁMBAR (carga media)
+//   ocupación >  rojo   → ROJO        (carga alta / lleno)
 export const UMBRALES_ALMACEN = {
   vacio: 0,   // % máximo considerado VACÍO (0 maletas)
   ambar: 60,  // % a partir del cual entra en ÁMBAR

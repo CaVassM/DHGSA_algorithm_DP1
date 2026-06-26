@@ -167,8 +167,6 @@ function adaptAirport(ap) {
   }
 }
 
-const SPEED_OPTIONS = [1, 10, 30, 60, 120]
-
 function fitMapToAirports(map, airportsByCode) {
   const points = Object.values(airportsByCode)
     .filter(ap => Number.isFinite(ap.latitud) && Number.isFinite(ap.longitud))
@@ -182,7 +180,18 @@ function fitMapToAirports(map, airportsByCode) {
   }
 
   const bounds = L.latLngBounds(points)
-  map.fitBounds(bounds.pad(0.35), { padding: [24, 24], maxZoom: 5 })
+  // El profesor pidió que TODOS los aeropuertos ocupen el máximo espacio
+  // posible en el eje vertical (Montevideo/Argentina abajo ↔ Copenhague
+  // arriba), en un solo pantallazo. El eje vertical es el crítico; en el
+  // horizontal sobra espacio. Por eso usamos padding ASIMÉTRICO: poco margen
+  // vertical (los aeropuertos extremos quedan pegados a los bordes, pero con
+  // unos px para que íconos/labels no se "caigan") y más margen horizontal.
+  //   [top, left] y [bottom, right]
+  map.fitBounds(bounds, {
+    paddingTopLeft: [56, 16],
+    paddingBottomRight: [56, 16],
+    maxZoom: 6,
+  })
   const fitZoom = map.getZoom()
   map.setMinZoom(Math.max(2, fitZoom - 1))
   map.setMaxBounds(bounds.pad(1.2))
@@ -225,7 +234,15 @@ function MapViewportController({ airportsByCode, resetNonce }) {
   return null
 }
 
-export default function MapaMundi({ runId, runCompleted = false, onActiveLegsChange }) {
+export default function MapaMundi({
+  runId,
+  runCompleted = false,
+  onActiveLegsChange,
+  onOcupacionChange,
+  focusAirport,
+  highlightShipment,
+  onSelectAirportFromMap,
+}) {
   const navigate = useNavigate()
   const timerRef = useRef(null)
 
@@ -235,7 +252,10 @@ export default function MapaMundi({ runId, runCompleted = false, onActiveLegsCha
 
   const [simTime, setSimTime] = useState(null)
   const [isPlaying, setIsPlaying] = useState(false)
-  const [playSpeed, setPlaySpeed] = useState(60)
+  // Velocidad fija: el profesor pidió NO exponer selector de velocidad — la
+  // simulación corre sola (30-90 min reales para la semana completa). 60 =
+  // 1 min real ≈ 60 min simulados por tick.
+  const playSpeed = 60
 
   const [realTime, setRealTime] = useState(() => new Date())
   useEffect(() => {
@@ -262,6 +282,10 @@ export default function MapaMundi({ runId, runCompleted = false, onActiveLegsCha
   // Set de colores ocultos; si un color está en el set, se atenúan en el mapa.
   const [almacenesOcultos, setAlmacenesOcultos] = useState(() => new Set())
   const [utsOcultas, setUtsOcultas] = useState(() => new Set())
+  // Filtro por continente (multiselección): set de continentes ocultos. Al
+  // ocultar un continente, sus aeropuertos Y los vuelos hacia/desde ellos se
+  // ocultan (regla del profesor: filtrar aeropuertos oculta sus vuelos).
+  const [continentesOcultos, setContinentesOcultos] = useState(() => new Set())
 
   // T50: aeropuerto seleccionado para ver su detalle en panel (misma vista).
   const [almacenSeleccionado, setAlmacenSeleccionado] = useState(null)
@@ -281,14 +305,20 @@ export default function MapaMundi({ runId, runCompleted = false, onActiveLegsCha
 
   useEffect(() => {
     if (!runId) return
+    let vivo = true
     getPlanningRunRoutes(runId)
       .then(list => {
+        if (!vivo) return
         const valid = list.filter(r => r.origenIcao && r.destinoIcao)
         setRoutes(valid)
+        // Inicializar el reloj SOLO si aún no hay simTime. Antes esto corría
+        // también cuando el run pasaba a completado (runCompleted cambia), y
+        // reseteaba el reproductor al inicio en plena reproducción.
         const starts = valid.map(r => r.tiempoInicio).filter(Boolean).sort()
-        if (starts.length > 0) setSimTime(new Date(starts[0]))
+        if (starts.length > 0) setSimTime(prev => prev ?? new Date(starts[0]))
       })
       .catch(() => {})
+    return () => { vivo = false }
   }, [runId, runCompleted])
 
   useEffect(() => {
@@ -318,12 +348,15 @@ export default function MapaMundi({ runId, runCompleted = false, onActiveLegsCha
   }, [routes, flights])
 
   // T45/T47: tramos (pares desde-hasta) que pertenecen al envío buscado.
-  // Si hay búsqueda activa, las demás rutas se atenúan.
+  // Si hay búsqueda activa, las demás rutas se atenúan. El match es tolerante a
+  // los ceros de relleno del ID (los IDs en BD vienen como "000000028"): buscar
+  // "28", "028" o "000000028" encuentra el mismo envío.
   const tramosEnvioBuscado = useMemo(() => {
     if (!envioBuscado) return null
+    const objetivo = normalizarId(envioBuscado)
     const set = new Set()
     allLegs
-      .filter(l => String(l.shipmentId).toLowerCase() === envioBuscado.toLowerCase())
+      .filter(l => normalizarId(l.shipmentId) === objetivo)
       .forEach(l => set.add(`${l.desde}-${l.hasta}`))
     return set
   }, [envioBuscado, allLegs])
@@ -364,6 +397,18 @@ export default function MapaMundi({ runId, runCompleted = false, onActiveLegsCha
     return ocupacion
   }, [allLegs, simTime])
 
+  // Reportar la ocupación por aeropuerto al padre (Dashboard → PanelListas),
+  // para que las listas muestren el semáforo de carga real del instante.
+  // Solo emite cuando cambia (firma textual) para no entrar en bucle de renders.
+  const lastOcupRef = useRef('')
+  useEffect(() => {
+    if (!onOcupacionChange) return
+    const sig = JSON.stringify(almacenOcupacion)
+    if (sig === lastOcupRef.current) return
+    lastOcupRef.current = sig
+    onOcupacionChange(almacenOcupacion)
+  }, [almacenOcupacion, onOcupacionChange])
+
   const aeropuertosConOcupacion = useMemo(() => {
     if (Object.keys(almacenOcupacion).length === 0) return aeropuertosActivos
     const result = {}
@@ -375,6 +420,25 @@ export default function MapaMundi({ runId, runCompleted = false, onActiveLegsCha
     })
     return result
   }, [aeropuertosActivos, almacenOcupacion])
+
+  // Conjunto de ICAOs ocultos: por color de almacén filtrado o por continente
+  // filtrado. Se usa para atenuar tanto el aeropuerto como sus vuelos.
+  const icaosOcultos = useMemo(() => {
+    const set = new Set()
+    Object.values(aeropuertosConOcupacion).forEach(ap => {
+      const pct = getOcupacionPct(ap)
+      const colorOculto = almacenesOcultos.has(getSemaforoPorOcupacion(pct))
+      const contOculto = continentesOcultos.has(ap.continente)
+      if (colorOculto || contOculto) set.add(ap.codigo)
+    })
+    return set
+  }, [aeropuertosConOcupacion, almacenesOcultos, continentesOcultos])
+
+  // Lista de continentes presentes en el dataset (para el filtro).
+  const continentes = useMemo(
+    () => Array.from(new Set(Object.values(aeropuertosConOcupacion).map(ap => ap.continente).filter(Boolean))).sort(),
+    [aeropuertosConOcupacion],
+  )
 
   // T50: detalle del almacén seleccionado (entran/salen) derivado de las rutas.
   // Definido aquí (después de aeropuertosConOcupacion) para no usarlo antes de
@@ -538,6 +602,9 @@ export default function MapaMundi({ runId, runCompleted = false, onActiveLegsCha
   }
 
   // T45/T47: aplica/limpia la búsqueda de envío.
+  // P11 (hoja P&R): la BÚSQUEDA es temporal — resalta sin ocultar nada y, al
+  // terminar, se regresa al estado anterior. Por eso limpiarBusqueda() revierte
+  // por completo el resaltado (no es un filtro semi-permanente).
   function buscarEnvio() {
     setEnvioBuscado(busquedaInput.trim())
   }
@@ -545,6 +612,43 @@ export default function MapaMundi({ runId, runCompleted = false, onActiveLegsCha
     setBusquedaInput('')
     setEnvioBuscado('')
   }
+
+  // P11: poder salir de la búsqueda con Escape (gesto estándar para "volver al
+  // estado anterior"). Solo actúa si hay una búsqueda de envío activa.
+  useEffect(() => {
+    if (!envioBuscado) return
+    const onKey = (e) => { if (e.key === 'Escape') limpiarBusqueda() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [envioBuscado])
+
+  // Vinculación panel→mapa: al seleccionar un aeropuerto en la lista, enfocarlo
+  // en el mapa. (focusAirport = { icao, nonce } — el nonce permite re-enfocar
+  // aunque se seleccione el mismo aeropuerto dos veces seguidas.)
+  //
+  // Debe reaccionar SOLO cuando cambia focusAirport (la intención del usuario),
+  // no en cada tick del play. `coords` cambia con la ocupación en cada tick, así
+  // que se lee por ref para NO ponerlo como dependencia: si estuviera, el efecto
+  // se re-ejecutaría con el focusAirport viejo y reabriría el detalle del almacén
+  // una y otra vez al darle play.
+  const coordsRef = useRef(coords)
+  useEffect(() => { coordsRef.current = coords }, [coords])
+  useEffect(() => {
+    if (!focusAirport?.icao || !mapInstance) return
+    const c = coordsRef.current[focusAirport.icao.toUpperCase()]
+    if (!c) return
+    mapInstance.flyTo([c.lat, c.lng], Math.max(mapInstance.getZoom(), 5), { duration: 0.8 })
+    setAirportInput(focusAirport.icao.toUpperCase())
+    setAlmacenSeleccionado(focusAirport.icao.toUpperCase())
+  }, [focusAirport, mapInstance])
+
+  // Vinculación panel→mapa: al seleccionar un envío en la lista, resaltar su
+  // ruta en el mapa (mismo mecanismo que la búsqueda manual de envío).
+  useEffect(() => {
+    if (!highlightShipment?.id) return
+    setBusquedaInput(String(highlightShipment.id))
+    setEnvioBuscado(String(highlightShipment.id))
+  }, [highlightShipment])
 
   return (
     <div className="relative w-full h-full overflow-hidden bg-[#0c1a2e] select-none">
@@ -560,6 +664,7 @@ export default function MapaMundi({ runId, runCompleted = false, onActiveLegsCha
         <TileLayer
           attribution='&copy; OpenStreetMap contributors &copy; CARTO'
           url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+          noWrap={true}
         />
 
         {rutasLineas
@@ -575,11 +680,16 @@ export default function MapaMundi({ runId, runCompleted = false, onActiveLegsCha
             // T45/T47: si hay envío buscado, resaltar sus tramos y atenuar el resto.
             const key = `${ruta.desde}-${ruta.hasta}`
             const esDelEnvio = tramosEnvioBuscado?.has(key)
+            // Regla del profesor: si el origen o destino del tramo está filtrado
+            // (aeropuerto oculto por color/continente), atenuar también la ruta.
+            const tramoOculto = icaosOcultos.has(ruta.desde) || icaosOcultos.has(ruta.hasta)
             let pathOptions
             if (tramosEnvioBuscado) {
               pathOptions = esDelEnvio
                 ? { color: '#facc15', weight: 4, opacity: 0.95 }                 // resaltado
                 : { color: '#475569', weight: 1, opacity: 0.1, dashArray: '2 8' } // atenuado
+            } else if (tramoOculto) {
+              pathOptions = { color: '#475569', weight: 1, opacity: 0.08, dashArray: '2 8' }
             } else if (recorrida) {
               pathOptions = { color: '#475569', weight: 1, opacity: 0.18, dashArray: '2 8' }
             } else {
@@ -605,8 +715,11 @@ export default function MapaMundi({ runId, runCompleted = false, onActiveLegsCha
           const pct = dot.capacidadTotal > 0 ? (dot.maletas / dot.capacidadTotal) * 100 : 0
           const color = getPlaneColors(pct)
           // T55: filtro por semáforo de UT — atenuar aviones del color oculto.
+          // Regla del profesor: si el aeropuerto origen o destino está filtrado
+          // (por color o continente), también se oculta el vuelo asociado.
           const semUt = getPlaneSemaforo(pct)
           const utAtenuada = utsOcultas.has(semUt)
+            || icaosOcultos.has(dot.desde) || icaosOcultos.has(dot.hasta)
           const angle = getHeadingAngle(a, b)
           const planeIcon = createPlaneIcon({ fill: color.fill, stroke: color.stroke, angle, count: dot.count })
 
@@ -636,8 +749,8 @@ export default function MapaMundi({ runId, runCompleted = false, onActiveLegsCha
           const pct = getOcupacionPct(ap)
           const color = getSemaforoPorOcupacion(pct)
           const hex = SEMAFORO_COLORES[color]
-          // T54: si el color está filtrado (oculto), atenuar este almacén.
-          const atenuado = almacenesOcultos.has(color)
+          // T54: atenuar si el almacén está filtrado (por color o continente).
+          const atenuado = icaosOcultos.has(ap.codigo)
           const airportIcon = createAirportIcon({ fill: hex, atenuado })
 
           return (
@@ -648,7 +761,11 @@ export default function MapaMundi({ runId, runCompleted = false, onActiveLegsCha
               opacity={atenuado ? 0.25 : 1}
               eventHandlers={{
                 // T50: clic abre el detalle en panel de la misma vista (no navega).
-                click: () => setAlmacenSeleccionado(ap.codigo),
+                // Vinculación mapa→panel: notificar al padre el aeropuerto elegido.
+                click: () => {
+                  setAlmacenSeleccionado(ap.codigo)
+                  onSelectAirportFromMap?.(ap.codigo)
+                },
               }}
             >
               <Tooltip direction="right" offset={[8, 0]} className="tasf-tooltip" opacity={1}>
@@ -666,61 +783,37 @@ export default function MapaMundi({ runId, runCompleted = false, onActiveLegsCha
         })}
       </MapContainer>
 
-      <div className="absolute top-3 left-3 z-[1000] flex flex-col gap-2 pointer-events-none">
-
-        {/* Tarjeta: Tiempo simulado */}
-        {simTime && (
-          <div className="bg-slate-950/95 backdrop-blur border border-blue-500/25 rounded-xl overflow-hidden min-w-[220px] shadow-lg shadow-black/50">
-            <div className="flex items-center gap-2 px-3 py-2 bg-slate-800/60 border-b border-slate-700/60">
-              <svg className="w-3.5 h-3.5 text-blue-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0z" />
-              </svg>
-              <span className="text-[10px] text-slate-300 uppercase tracking-widest font-semibold">Tiempo simulado</span>
-            </div>
-            <div className="flex items-end gap-5 p-4">
-              <div>
-                <p className="text-[9px] text-slate-500 uppercase tracking-widest mb-1">Fecha</p>
-                <p className="text-sm text-slate-300 font-mono">{formatSimDateTime(simTime).split(' ')[0]}</p>
+      {/* Tiempos compactados en UNA tarjeta densa: el profesor pidió que los
+          tiempos no roben tanto espacio vertical (el mapa es lo importante),
+          pero que sigan visibles. Simulado arriba, real abajo, transcurridos
+          en una línea cada uno. */}
+      <div className="absolute top-3 left-3 z-[1000] pointer-events-none">
+        <div className="bg-slate-950/95 backdrop-blur border border-blue-500/25 rounded-lg overflow-hidden shadow-lg shadow-black/50 w-52">
+          {simTime && (
+            <div className="px-3 py-2 border-b border-slate-700/50">
+              <div className="flex items-center justify-between">
+                <span className="text-[9px] text-blue-300 uppercase tracking-widest font-semibold">Simulado</span>
+                <span className="text-[10px] text-slate-400 font-mono">{formatSimDateTime(simTime).split(' ')[0]}</span>
               </div>
-              <div>
-                <p className="text-[9px] text-slate-500 uppercase tracking-widest mb-1">Hora</p>
-                <p className="text-5xl font-bold font-mono text-white leading-none">{formatSimDateTime(simTime).split(' ')[1]}</p>
+              <div className="flex items-baseline justify-between mt-0.5">
+                <span className="text-2xl font-bold font-mono text-white leading-none">{formatSimDateTime(simTime).split(' ')[1]}</span>
+                <span className="text-[11px] font-mono text-green-400">+{formatElapsed(simStart ? simTime - simStart : null)}</span>
               </div>
             </div>
-            <div className="px-4 pt-3 pb-4 border-t border-slate-700/50">
-              <p className="text-[9px] text-slate-500 uppercase tracking-widest mb-1">Transcurrido</p>
-              <p className="text-base font-mono text-green-400">+{formatElapsed(simStart ? simTime - simStart : null)}</p>
+          )}
+          <div className="px-3 py-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[9px] text-emerald-300 uppercase tracking-widest font-semibold">Real</span>
+              <span className="text-[10px] text-slate-400 font-mono">{formatSimDateTime(realTime).split(' ')[0]}</span>
             </div>
-          </div>
-        )}
-
-        {/* Tarjeta: Hora real */}
-        <div className="bg-slate-950/90 backdrop-blur border border-emerald-500/20 rounded-xl overflow-hidden min-w-[220px] shadow-md shadow-black/40">
-          <div className="flex items-center gap-2 px-3 py-2 bg-slate-800/50 border-b border-slate-700/60">
-            <svg className="w-3.5 h-3.5 text-emerald-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0z" />
-            </svg>
-            <span className="text-[10px] text-slate-300 uppercase tracking-widest font-semibold">Hora real</span>
-          </div>
-          <div className="flex items-end gap-5 px-4 pt-3 pb-3">
-            <div>
-              <p className="text-[9px] text-slate-500 uppercase tracking-widest mb-1">Fecha</p>
-              <p className="text-sm text-slate-300 font-mono">{formatSimDateTime(realTime).split(' ')[0]}</p>
+            <div className="flex items-baseline justify-between mt-0.5">
+              <span className="text-lg font-bold font-mono text-emerald-400 leading-none">{formatRealTime(realTime)}</span>
+              <span className="text-[11px] font-mono text-emerald-400">
+                {inicioReal ? `+${formatElapsedReal(realTime - inicioReal)}` : '--:--'}
+              </span>
             </div>
-            <div>
-              <p className="text-[9px] text-slate-500 uppercase tracking-widest mb-1">Hora</p>
-              <p className="text-2xl font-bold font-mono text-emerald-400 leading-none">{formatRealTime(realTime)}</p>
-            </div>
-          </div>
-          {/* T4: tiempo real transcurrido desde que arrancó la operación */}
-          <div className="px-4 pt-2 pb-3 border-t border-slate-700/50">
-            <p className="text-[9px] text-slate-500 uppercase tracking-widest mb-1">Transcurrido real</p>
-            <p className="text-base font-mono text-emerald-400">
-              {inicioReal ? `+${formatElapsedReal(realTime - inicioReal)}` : '--:--'}
-            </p>
           </div>
         </div>
-
       </div>
 
       <div className="absolute top-3 right-3 flex flex-col gap-1 z-[1000]">
@@ -730,8 +823,9 @@ export default function MapaMundi({ runId, runCompleted = false, onActiveLegsCha
         <ZoomButton label="R" title="Restablecer vista" onClick={resetView} />
       </div>
 
-      {/* T45/T47/T49: vinculación — buscar envío (resaltar ruta) / aeropuerto (enfocar) */}
-      <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[1000] flex gap-2">
+      {/* T45/T47/T49: vinculación — buscar envío (resaltar ruta) / aeropuerto (enfocar).
+          Bajados a top-20 para dejar la franja superior a la tira de indicadores globales. */}
+      <div className="absolute top-20 left-1/2 -translate-x-1/2 z-[1000] flex gap-2">
         <div className="bg-slate-900/92 backdrop-blur border border-slate-700 rounded-lg px-2 py-1.5 flex items-center gap-1.5 shadow-lg">
           <span className="text-[10px] text-slate-400 uppercase tracking-wider hidden sm:inline">Envío</span>
           <input
@@ -762,15 +856,31 @@ export default function MapaMundi({ runId, runCompleted = false, onActiveLegsCha
         </div>
       </div>
 
+      {/* P11: banner de "modo búsqueda" — deja explícito que el resaltado es
+          TEMPORAL y cómo volver al estado anterior (botón o tecla Esc). */}
+      {envioBuscado && tramosEnvioBuscado && tramosEnvioBuscado.size > 0 && (
+        <div className="absolute top-32 left-1/2 -translate-x-1/2 z-[1000] flex items-center gap-2 bg-blue-500/15 border border-blue-500/40 text-blue-200 text-xs rounded-full px-3 py-1.5 shadow-lg">
+          <span className="text-blue-300">🔍</span>
+          <span>Búsqueda: ruta del envío <b className="font-mono text-white">{envioBuscado}</b></span>
+          <button onClick={limpiarBusqueda}
+            className="ml-1 px-2 py-0.5 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px]">
+            Volver (Esc)
+          </button>
+        </div>
+      )}
+
       {/* Aviso cuando el envío buscado no tiene ruta visible */}
       {envioBuscado && tramosEnvioBuscado && tramosEnvioBuscado.size === 0 && (
-        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-[1000] bg-amber-500/15 border border-amber-500/40 text-amber-300 text-xs rounded px-3 py-1.5">
+        <div className="absolute top-32 left-1/2 -translate-x-1/2 z-[1000] bg-amber-500/15 border border-amber-500/40 text-amber-300 text-xs rounded px-3 py-1.5">
           No se encontró ruta para el envío "{envioBuscado}".
         </div>
       )}
 
-      {/* T54/T55: filtros por semáforo (almacenes y UT) reflejados en el mapa */}
-      <div className="absolute bottom-36 left-4 z-[1000] bg-slate-900/92 backdrop-blur border border-slate-700 rounded-xl p-3 shadow-lg w-40">
+      {/* T54/T55: filtros por semáforo (almacenes y UT) reflejados en el mapa.
+          Reubicado a la derecha (bajo los botones de zoom) para despejar el
+          eje vertical: la esquina inferior-izquierda tapaba el sur de
+          Sudamérica (Argentina/Chile), que el profesor pidió mantener visible. */}
+      <div className="absolute top-32 right-3 z-[1000] bg-slate-900/92 backdrop-blur border border-slate-700 rounded-xl p-3 shadow-lg w-44 max-h-[60vh] overflow-y-auto">
         <FiltroSemaforo
           titulo="Almacenes"
           ocultos={almacenesOcultos}
@@ -782,11 +892,21 @@ export default function MapaMundi({ runId, runCompleted = false, onActiveLegsCha
           ocultos={utsOcultas}
           onToggle={(c) => setUtsOcultas(prev => toggleSet(prev, c))}
         />
+        {continentes.length > 1 && (
+          <>
+            <div className="h-px bg-slate-700 my-2" />
+            <FiltroContinente
+              continentes={continentes}
+              ocultos={continentesOcultos}
+              onToggle={(c) => setContinentesOcultos(prev => toggleSet(prev, c))}
+            />
+          </>
+        )}
       </div>
 
       {/* T50: detalle del almacén seleccionado en la MISMA vista (sin navegar) */}
       {detalleAlmacen?.ap && (
-        <div className="absolute top-3 left-1/2 -translate-x-1/2 mt-20 z-[1100] bg-slate-900/96 backdrop-blur border border-blue-500/40 rounded-xl p-4 shadow-xl w-72">
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 mt-32 z-[1100] bg-slate-900/96 backdrop-blur border border-blue-500/40 rounded-xl p-4 shadow-xl w-72">
           <div className="flex items-start justify-between mb-2">
             <div>
               <div className="font-bold text-white text-sm">{detalleAlmacen.ap.nombre ?? almacenSeleccionado}</div>
@@ -821,17 +941,7 @@ export default function MapaMundi({ runId, runCompleted = false, onActiveLegsCha
               {isPlaying ? '||' : '>'}
             </button>
 
-            <select
-              value={playSpeed}
-              onChange={e => setPlaySpeed(Number(e.target.value))}
-              className="shrink-0 bg-slate-800 border border-slate-600 text-slate-200 text-xs rounded px-2 py-1 cursor-pointer focus:outline-none focus:border-blue-500"
-            >
-              {SPEED_OPTIONS.map(v => (
-                <option key={v} value={v}>{v}x</option>
-              ))}
-            </select>
-
-<div
+            <div
               className="flex-1 bg-slate-700/80 rounded-full h-1.5 cursor-pointer"
               onClick={e => {
                 if (!simStart || !simEnd) return
@@ -856,6 +966,15 @@ export default function MapaMundi({ runId, runCompleted = false, onActiveLegsCha
   )
 }
 
+// Normaliza un ID de envío para comparar sin importar los ceros de relleno:
+// "000000028" → "28", "ABC-007" → "abc-7". Si es puramente numérico quita los
+// ceros a la izquierda; en cualquier caso compara en minúsculas y sin espacios.
+function normalizarId(id) {
+  const s = String(id ?? '').trim().toLowerCase()
+  if (/^\d+$/.test(s)) return String(parseInt(s, 10))
+  return s.replace(/\b0+(\d)/g, '$1')
+}
+
 // Alterna un color en un Set (sin mutar el original).
 function toggleSet(set, color) {
   const next = new Set(set)
@@ -867,27 +986,51 @@ function toggleSet(set, color) {
 // atenúa en el mapa las entidades de ese color.
 const SEMAFORO_FILTRO = [
   { color: 'vacio', hex: '#94a3b8', label: 'Vacío' },
-  { color: 'verde', hex: '#4ade80', label: 'Óptimo' },
-  { color: 'ambar', hex: '#fbbf24', label: 'Riesgo' },
-  { color: 'rojo',  hex: '#f87171', label: 'Crítico' },
+  { color: 'verde', hex: '#4ade80', label: 'Baja carga' },
+  { color: 'ambar', hex: '#fbbf24', label: 'Carga media' },
+  { color: 'rojo',  hex: '#f87171', label: 'Carga alta' },
 ]
+
+// Casilla (checkbox) reutilizable: marcada = visible, desmarcada = oculto.
+function FiltroCheck({ marcado, onToggle, hex, label }) {
+  return (
+    <button onClick={onToggle}
+      className={`w-full flex items-center gap-2 text-xs rounded px-1 py-0.5 transition-colors ${marcado ? 'text-slate-200' : 'text-slate-500'}`}
+      title={marcado ? 'Click para ocultar en el mapa' : 'Click para mostrar en el mapa'}>
+      <span className={`w-3.5 h-3.5 shrink-0 rounded border flex items-center justify-center text-[9px] font-bold ${
+        marcado ? 'bg-blue-600 border-blue-500 text-white' : 'bg-slate-800 border-slate-600 text-transparent'}`}>
+        ✓
+      </span>
+      {hex && <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: hex, opacity: marcado ? 1 : 0.3 }} />}
+      <span className="truncate">{label}</span>
+    </button>
+  )
+}
 
 function FiltroSemaforo({ titulo, ocultos, onToggle }) {
   return (
     <div>
       <p className="text-[10px] text-slate-400 uppercase tracking-wider mb-1.5">{titulo}</p>
-      <div className="flex flex-col gap-1">
-        {SEMAFORO_FILTRO.map(s => {
-          const activo = !ocultos.has(s.color)
-          return (
-            <button key={s.color} onClick={() => onToggle(s.color)}
-              className={`flex items-center gap-2 text-xs rounded px-1.5 py-0.5 transition-colors ${activo ? 'text-slate-200' : 'text-slate-600 line-through'}`}
-              title={activo ? 'Click para ocultar' : 'Click para mostrar'}>
-              <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: s.hex, opacity: activo ? 1 : 0.3 }} />
-              {s.label}
-            </button>
-          )
-        })}
+      <div className="flex flex-col gap-0.5">
+        {SEMAFORO_FILTRO.map(s => (
+          <FiltroCheck key={s.color} marcado={!ocultos.has(s.color)}
+            onToggle={() => onToggle(s.color)} hex={s.hex} label={s.label} />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// Filtro por continente (multiselección). Ocultar un continente atenúa sus
+// aeropuertos y los vuelos hacia/desde ellos.
+function FiltroContinente({ continentes, ocultos, onToggle }) {
+  return (
+    <div>
+      <p className="text-[10px] text-slate-400 uppercase tracking-wider mb-1.5">Continente</p>
+      <div className="flex flex-col gap-0.5">
+        {continentes.map(c => (
+          <FiltroCheck key={c} marcado={!ocultos.has(c)} onToggle={() => onToggle(c)} label={c} />
+        ))}
       </div>
     </div>
   )
