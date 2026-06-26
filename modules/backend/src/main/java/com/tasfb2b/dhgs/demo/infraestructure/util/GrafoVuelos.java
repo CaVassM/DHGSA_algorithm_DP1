@@ -20,10 +20,13 @@ public class GrafoVuelos {
 
     /**
      * T61: tiempo mínimo de permanencia/conexión en un aeropuerto entre la
-     * llegada de un vuelo y la salida del siguiente (papeleo, traslado de
-     * maletas). No aplica en el aeropuerto de origen del envío.
+     * llegada de un vuelo y la salida del siguiente (transbordo de maletas).
+     * No aplica en el aeropuerto de origen del envío. Según la hoja P&R (P6)
+     * la escala mínima es 10 min — antes estaba en 1h, lo que descartaba rutas
+     * válidas. Centralizado en {@link TiemposOperacion}.
      */
-    private static final java.time.Duration PERMANENCIA_MINIMA = java.time.Duration.ofHours(1);
+    private static final java.time.Duration PERMANENCIA_MINIMA =
+            com.tasfb2b.dhgs.demo.domain.valueobject.TiemposOperacion.ESCALA_MINIMA;
 
     /** Mapa de adyacencia: código ICAO → lista de vuelos salientes */
     private Map<String, List<Vuelo>> adyacencia;

@@ -51,27 +51,47 @@ public class RutaEnvio {
             LocalDateTime llegadaActual = obtenerLlegadaProgramada(actual,
                     i == 0 ? envio.getFechaHoraCreacion() : obtenerLlegadaProgramada(secuenciaVuelos.get(i - 1), envio.getFechaHoraCreacion()));
             LocalDateTime salidaSiguiente = obtenerSalidaProgramada(siguiente, llegadaActual);
-            if (llegadaActual != null && salidaSiguiente != null && salidaSiguiente.isBefore(llegadaActual)) {
+            // Escala mínima (P6): la salida del siguiente vuelo debe ser al menos
+            // 10 min después de la llegada (transbordo de la maleta). Antes solo
+            // se exigía salida >= llegada (0 min), aceptando escalas imposibles.
+            if (llegadaActual != null && salidaSiguiente != null
+                    && salidaSiguiente.isBefore(llegadaActual.plus(
+                            com.tasfb2b.dhgs.demo.domain.valueobject.TiemposOperacion.ESCALA_MINIMA))) {
                 return false;
             }
         }
 
         calcularTiempos();
-        // Ahora verificamos que no se haya calculado el deadline, y tambien si esque el tiempo de llegda
-        // no es luego del deadline. Toca aclarar esto.
-        return envio.getDeadline() == null || !tiempoLlegadaEstimado.isAfter(envio.getDeadline());
+        // El deadline se cumple si la maleta está RECOGIDA antes del plazo. La
+        // recogida ocurre 15 min después de aterrizar en el destino final (P6),
+        // por eso se compara llegada + RECOJO_DESTINO contra el deadline.
+        return envio.getDeadline() == null || !tiempoEntregaEstimado().isAfter(envio.getDeadline());
 
     }
 
-    // Si viola deadline
+    /**
+     * Momento en que la maleta queda efectivamente entregada al cliente:
+     * llegada al destino final + tiempo de recojo (P6).
+     */
+    public LocalDateTime tiempoEntregaEstimado() {
+        if (tiempoLlegadaEstimado == null) {
+            return null;
+        }
+        return tiempoLlegadaEstimado.plus(
+                com.tasfb2b.dhgs.demo.domain.valueobject.TiemposOperacion.RECOJO_DESTINO);
+    }
+
+    // Si viola deadline. El retraso se mide sobre el momento de ENTREGA
+    // (llegada + recojo de 15 min), coherente con esFactible().
     public long getRetraso(){
         if (envio == null || envio.getDeadline() == null || tiempoLlegadaEstimado == null) {
             return 0;
         }
-        if (!tiempoLlegadaEstimado.isAfter(envio.getDeadline())) {
+        LocalDateTime entrega = tiempoEntregaEstimado();
+        if (!entrega.isAfter(envio.getDeadline())) {
             return 0;
         }
-        return Duration.between(envio.getDeadline(), tiempoLlegadaEstimado).toMinutes();
+        return Duration.between(envio.getDeadline(), entrega).toMinutes();
 
     }
 
