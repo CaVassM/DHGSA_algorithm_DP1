@@ -139,12 +139,24 @@ public class SimulacionEnVivoService {
                 Aeropuerto d = aeropuertosByIcao.get(f.getAeropuertoDestino().getCodigoIcao());
                 if (o != null && d != null) vuelos.add(DomainMapper.flightToDomain(f, o, d));
             }
+            // Cargar SOLO los envíos de la ventana temporal de la simulación, no
+            // todos los de la BD. Con el dataset real (~9.5M envíos repartidos en
+            // meses) un findAll() reventaría la memoria; la simulación solo usa los
+            // envíos creados dentro de su horizonte. Ventana: [inicio, inicio +
+            // horizonDays] con 1 día de margen al inicio (organizarEnEpocas puede
+            // arrancar la víspera del primer envío).
+            LocalDateTime ventanaInicio = resolverVentanaInicio(params.fechaInicio());
+            LocalDateTime ventanaFin = ventanaInicio
+                    .plusDays(Math.max(1, params.horizonDays()) + 1);
             List<Envio> envios = new ArrayList<>();
-            for (ShipmentEntity s : shipmentRepository.findAll()) {
+            for (ShipmentEntity s : shipmentRepository
+                    .findByFechaHoraCreacionBetween(ventanaInicio, ventanaFin)) {
                 Aeropuerto o = aeropuertosByIcao.get(s.getAeropuertoOrigen().getCodigoIcao());
                 Aeropuerto d = aeropuertosByIcao.get(s.getAeropuertoDestino().getCodigoIcao());
                 if (o != null && d != null) envios.add(DomainMapper.shipmentToDomain(s, o, d));
             }
+            log.info("Simulación {}: cargados {} envíos en ventana [{}, {}]",
+                    runId, envios.size(), ventanaInicio, ventanaFin);
             List<Aeropuerto> aeropuertos = new ArrayList<>(aeropuertosByIcao.values());
 
             int totalEnviosOriginal = envios.size();
@@ -317,6 +329,21 @@ public class SimulacionEnVivoService {
         int mult = Math.max(1, multiplicadorTemporal);
         double segundosReales = (epochHours * 3600.0) / mult;
         return Math.round(segundosReales * 1000.0);
+    }
+
+    /**
+     * Inicio de la ventana de carga de envíos. Si la simulación trae fecha de
+     * inicio, se usa esa; si no, se infiere del envío más antiguo de la BD
+     * arrancando la víspera (igual que {@code SimuladorEpocas.resolverFechaInicio}),
+     * para no dejar envíos fuera de la línea de tiempo. Sin envíos: ahora.
+     */
+    private LocalDateTime resolverVentanaInicio(LocalDateTime fechaInicioSolicitada) {
+        if (fechaInicioSolicitada != null) {
+            return fechaInicioSolicitada;
+        }
+        return shipmentRepository.findFirstByOrderByFechaHoraCreacionAsc()
+                .map(s -> s.getFechaHoraCreacion().toLocalDate().minusDays(1).atStartOfDay())
+                .orElse(LocalDateTime.now());
     }
 
     private Map<String, Double> ocupacionDe(EpocaData epoca) {

@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.InputStream;
 import java.net.URL;
+import java.time.LocalDateTime;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -89,8 +90,9 @@ class IngestionCargaDatosTest {
         List<Aeropuerto> aeropuertos = aeropuertoParser.parsear(path);
 
         // --- Cantidad ---
+        // No se fija un número exacto: el dataset de prueba crece con el tiempo.
+        // Verificamos que la carga produjo aeropuertos, no cuántos.
         assertFalse(aeropuertos.isEmpty(), "Lista de aeropuertos no debe estar vacía");
-        assertEquals(7, aeropuertos.size(), "Debe haber exactamente 7 aeropuertos");
 
         // --- Verificar SKBO (Bogotá) en detalle ---
         Aeropuerto bogota = aeropuertos.stream()
@@ -112,10 +114,16 @@ class IngestionCargaDatosTest {
                 assertEquals(4, a.getCodigoICAO().length(),
                         "Código ICAO debe tener 4 caracteres: " + a.getCodigoICAO()));
 
-        // --- Todos son de América del Sur (prefijo S*) ---
+        // --- Todos tienen un continente asignado por el parser ---
+        // Antes se exigía que TODOS fueran "America del Sur"; el dataset ahora es
+        // multi-continente (Europa, Asia...), así que solo verificamos que el
+        // parser le asigne un continente no vacío a cada aeropuerto.
         aeropuertos.forEach(a ->
-                assertEquals("America del Sur", a.getContinente(),
-                        "Todos los aeropuertos deben ser de América del Sur: " + a.getCodigoICAO()));
+                assertNotNull(a.getContinente(),
+                        "El aeropuerto debe tener continente asignado: " + a.getCodigoICAO()));
+        aeropuertos.forEach(a ->
+                assertFalse(a.getContinente().isBlank(),
+                        "El continente no debe estar vacío: " + a.getCodigoICAO()));
 
         System.out.println("\n=== AEROPUERTOS CARGADOS (" + aeropuertos.size() + ") ===");
         aeropuertos.forEach(a -> System.out.printf(
@@ -137,8 +145,8 @@ class IngestionCargaDatosTest {
         List<Vuelo> vuelos = vueloParser.parsear(path, mapaAeropuertos);
 
         // --- Cantidad ---
+        // No se fija un número exacto: el dataset de prueba crece con el tiempo.
         assertFalse(vuelos.isEmpty(), "Lista de vuelos no debe estar vacía");
-        assertEquals(15, vuelos.size(), "Debe haber exactamente 15 vuelos");
 
         // --- Integridad de cada vuelo ---
         vuelos.forEach(v -> {
@@ -191,9 +199,9 @@ class IngestionCargaDatosTest {
             }
         }
 
-        // --- Cantidad esperada: 6 (SKBO) + 4 (SEQM) + 4 (SPIM) = 14 ---
+        // --- Cantidad ---
+        // No se fija un número exacto: el dataset de prueba crece con el tiempo.
         assertFalse(todosEnvios.isEmpty(), "Debe haber envíos cargados");
-        assertEquals(14, todosEnvios.size(), "Debe haber exactamente 14 envíos en total");
 
         // --- Integridad de cada envío ---
         todosEnvios.forEach(e -> {
@@ -204,11 +212,16 @@ class IngestionCargaDatosTest {
             assertNotNull(e.getDeadline(),              "Deadline no debe ser nulo: " + e.getId());
             assertTrue(e.getCantidadMaletas() > 0,     "Maletas deben ser > 0: " + e.getId());
             assertNotNull(e.getIdCliente(),             "ID cliente no debe ser nulo: " + e.getId());
-            // Todos en mismo continente → deadline = creación + 1 día
-            assertEquals(
-                    e.getFechaHoraCreacion().plusDays(1),
-                    e.getDeadline(),
-                    "Deadline debe ser +1 día (mismo continente): " + e.getId());
+            // Regla de negocio (Envio.calcularDeadline): mismo continente → +1 día,
+            // intercontinental → +2 días. El dataset ya es multi-continente, así que
+            // se verifica la regla según el par origen/destino de cada envío.
+            boolean mismoContinente = e.getAeropuertoOrigen()
+                    .estaMismoContinente(e.getAeropuertoDestino());
+            LocalDateTime deadlineEsperado = e.getFechaHoraCreacion()
+                    .plusDays(mismoContinente ? 1 : 2);
+            assertEquals(deadlineEsperado, e.getDeadline(),
+                    "Deadline debe ser +" + (mismoContinente ? 1 : 2) + " día(s) para "
+                            + e.getId() + " (mismoContinente=" + mismoContinente + ")");
         });
 
         // --- IDs únicos ---

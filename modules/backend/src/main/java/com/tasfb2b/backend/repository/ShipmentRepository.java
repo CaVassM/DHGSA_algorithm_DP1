@@ -16,6 +16,9 @@ public interface ShipmentRepository extends JpaRepository<ShipmentEntity, Long> 
 
     List<ShipmentEntity> findByFechaHoraCreacionBetween(LocalDateTime start, LocalDateTime end);
 
+    /** Envío más antiguo por fecha de creación; infiere el inicio de una simulación sin cargar todo. */
+    Optional<ShipmentEntity> findFirstByOrderByFechaHoraCreacionAsc();
+
     boolean existsByBusinessId(String businessId);
 
     /** Solo los businessId existentes; evita un SELECT por fila al importar en masa. */

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { startPlanningRun, getPlanningRun, getImportStatus, getShipments, importShipments, importAirports, importFlights } from '../services/api'
+import { startPlanningRun, getImportStatus, getShipments, importShipments, importAirports, importFlights } from '../services/api'
 
 const UMBRALES = [
   { indicador: 'Almacenes',    verde: '< 60%',       ambar: '60% - 85%',   rojo: '> 85%' },
@@ -16,15 +16,6 @@ const BASE_PLANNING_REQUEST = {
   populationSize:   6,
   timeLimitSeconds: 2,
   dataSetReference: 'DB',
-}
-
-const TERMINAL_STATUSES = new Set(['COMPLETED', 'COMPLETED_WITH_PENDING_SHIPMENTS', 'FAILED'])
-const SUCCESS_STATUSES = new Set(['COMPLETED', 'COMPLETED_WITH_PENDING_SHIPMENTS'])
-const POLL_INTERVAL_MS = 3000
-const POLL_MAX_ATTEMPTS = 240 // ~12 minutos
-
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms))
 }
 
 function toDateTimeLocalValue(dateTimeString) {
@@ -125,15 +116,6 @@ export default function ConfiguracionSimulacion() {
     }
   }
 
-  async function waitUntilPlanningEnds(runId) {
-    for (let attempt = 0; attempt < POLL_MAX_ATTEMPTS; attempt++) {
-      const run = await getPlanningRun(runId)
-      if (TERMINAL_STATUSES.has(run.status)) return run
-      await sleep(POLL_INTERVAL_MS)
-    }
-    throw new Error('La planificación está tardando más de lo esperado. Intenta revisar el dashboard en unos minutos.')
-  }
-
   async function handleIniciar() {
     if (!planningStart) {
       setError('Selecciona una fecha de inicio para la planificación.')
@@ -151,16 +133,15 @@ export default function ConfiguracionSimulacion() {
         ...BASE_PLANNING_REQUEST,
         planningStart: `${planningStart}:00`,
       })
-      const run = await waitUntilPlanningEnds(response.runId)
 
-      if (!SUCCESS_STATUSES.has(run.status)) {
-        throw new Error('La simulación terminó con error. Revisa logs del backend o vuelve a intentar.')
-      }
-
+      // El run corre en background (async en el backend). NO esperamos a que
+      // termine antes de entrar: con datasets grandes eso atrapa al usuario en
+      // "Planificando..." y le impide llegar al Dashboard (y a la Simulación en
+      // Vivo). Navegamos de inmediato; el Dashboard hace polling del estado del
+      // run y va animando cuando hay rutas.
       navigate('/dashboard', { state: { runId: response.runId } })
     } catch (err) {
       setError(err.response?.data?.message ?? err.message ?? 'No se pudo conectar con el servidor. Verifica que el backend esté corriendo.')
-    } finally {
       setLoading(false)
     }
   }
@@ -401,7 +382,7 @@ export default function ConfiguracionSimulacion() {
           {loading ? (
             <>
               <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-              Planificando... (esperando fin del algoritmo)
+              Iniciando... (entrando al mapa)
             </>
           ) : (
             <>
