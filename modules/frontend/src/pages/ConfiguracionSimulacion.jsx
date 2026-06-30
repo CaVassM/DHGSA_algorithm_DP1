@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { startPlanningRun, getImportStatus, getShipments, importShipments, importAirports, importFlights } from '../services/api'
+import { startPlanningRun, getPlanningRun, getImportStatus, importShipments, importAirports, importFlights } from '../services/api'
 
 const UMBRALES = [
   { indicador: 'Almacenes',    verde: '< 60%',       ambar: '60% - 85%',   rojo: '> 85%' },
@@ -18,9 +19,13 @@ const BASE_PLANNING_REQUEST = {
   dataSetReference: 'DB',
 }
 
-function toDateTimeLocalValue(dateTimeString) {
-  if (!dateTimeString) return ''
-  return String(dateTimeString).slice(0, 16)
+const TERMINAL_STATUSES = new Set(['COMPLETED', 'COMPLETED_WITH_PENDING_SHIPMENTS', 'FAILED'])
+const SUCCESS_STATUSES = new Set(['COMPLETED', 'COMPLETED_WITH_PENDING_SHIPMENTS'])
+const POLL_INTERVAL_MS = 3000
+const POLL_MAX_ATTEMPTS = 240 // ~12 minutos
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
 }
 
 export default function ConfiguracionSimulacion() {
@@ -41,37 +46,13 @@ export default function ConfiguracionSimulacion() {
   const [loading, setLoading] = useState(false)
   const [error,   setError]   = useState(null)
   const [planningStart, setPlanningStart] = useState('')
-  const [maxPlanningStart, setMaxPlanningStart] = useState('')
 
-  async function loadPlanningDateLimit() {
-    try {
-      const page = await getShipments(0, 1, 'fechaHoraCreacion,desc')
-      const latest = page?.content?.[0]?.fechaHoraCreacion
-      if (!latest) {
-        setMaxPlanningStart('')
-        setPlanningStart('')
-        return
-      }
-
-      const latestLocal = toDateTimeLocalValue(latest)
-      setMaxPlanningStart(latestLocal)
-      setPlanningStart(prev => {
-        if (!prev || prev > latestLocal) return latestLocal
-        return prev
-      })
-    } catch {
-      // Si falla esta consulta, se mantiene la validación básica por campo requerido.
-      setMaxPlanningStart('')
-    }
-  }
-
-  // Re-consulta el estado de la BD y recalcula el límite de fecha (tras cualquier importación)
+  // Re-consulta el estado de la BD tras cualquier importación.
   async function refreshStatus() {
     try {
       const s = await getImportStatus()
       setImportStatus(s)
       setStatusErr(false)
-      if (s.shipmentsCount > 0) await loadPlanningDateLimit()
     } catch {
       setStatusErr(true)
     }
@@ -85,9 +66,6 @@ export default function ConfiguracionSimulacion() {
         if (!alive) return
         setImportStatus(s)
         setStatusErr(false)
-        if (s.shipmentsCount > 0) {
-          await loadPlanningDateLimit()
-        }
       })
       .catch(() => { if (alive) setStatusErr(true) })
     return () => { alive = false }
@@ -106,9 +84,6 @@ export default function ConfiguracionSimulacion() {
       // Re-fetch para obtener el total real en BD
       const updated = await getImportStatus()
       setImportStatus(updated)
-      if (updated.shipmentsCount > 0) {
-        await loadPlanningDateLimit()
-      }
     } catch (err) {
       setImportErr(err.response?.data?.message ?? 'Error al importar los archivos.')
     } finally {
@@ -121,11 +96,6 @@ export default function ConfiguracionSimulacion() {
       setError('Selecciona una fecha de inicio para la planificación.')
       return
     }
-    if (maxPlanningStart && planningStart > maxPlanningStart) {
-      setError('La fecha de inicio no puede ser mayor que la última fecha disponible en envíos.')
-      return
-    }
-
     setLoading(true)
     setError(null)
     try {
@@ -147,7 +117,7 @@ export default function ConfiguracionSimulacion() {
   }
 
   const shipmentsReady = importStatus !== null && importStatus.shipmentsCount > 0
-  const isPlanningStartValid = Boolean(planningStart) && (!maxPlanningStart || planningStart <= maxPlanningStart)
+  const isPlanningStartValid = Boolean(planningStart)
   const canStart       = shipmentsReady && !loading && !statusErr && isPlanningStartValid
 
   return (
@@ -313,15 +283,12 @@ export default function ConfiguracionSimulacion() {
               <input
                 type="datetime-local"
                 value={planningStart}
-                max={maxPlanningStart || undefined}
                 onChange={e => setPlanningStart(e.target.value)}
                 disabled={!shipmentsReady || loading}
                 className="w-full px-3 py-2 rounded-lg bg-slate-700/60 border border-slate-600 text-slate-200 text-sm focus:outline-none focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
               />
               <p className="mt-1 text-xs text-slate-500">
-                {maxPlanningStart
-                  ? `Máximo permitido por envíos: ${maxPlanningStart.replace('T', ' ')}`
-                  : 'El límite se habilita cuando hay envíos disponibles.'}
+                Elige libremente la fecha y hora desde la que debe comenzar la simulación.
               </p>
             </div>
           </div>
