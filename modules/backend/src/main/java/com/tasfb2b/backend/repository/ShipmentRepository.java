@@ -13,6 +13,8 @@ import java.util.Optional;
 public interface ShipmentRepository extends JpaRepository<ShipmentEntity, Long> {
 
     Optional<ShipmentEntity> findByBusinessId(String businessId);
+    
+    Optional<ShipmentEntity> findByBusinessIdAndAeropuertoOrigen_Id(String businessId, Long origenId);
 
     List<ShipmentEntity> findByFechaHoraCreacionBetween(LocalDateTime start, LocalDateTime end);
 

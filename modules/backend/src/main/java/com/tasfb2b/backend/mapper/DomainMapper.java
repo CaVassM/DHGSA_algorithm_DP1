@@ -119,6 +119,7 @@ public final class DomainMapper {
 
     public static Envio shipmentToDomain(ShipmentEntity src, Aeropuerto origen, Aeropuerto destino) {
         Envio e = new Envio();
+        e.setDbId(src.getId());
         e.setId(src.getBusinessId());
         e.setAeropuertoOrigen(origen);
         e.setAeropuertoDestino(destino);

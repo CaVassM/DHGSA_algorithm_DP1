@@ -10,6 +10,7 @@ import jakarta.persistence.Index;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
+import jakarta.persistence.UniqueConstraint;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Getter;
@@ -21,9 +22,15 @@ import java.time.LocalDateTime;
 @Entity
 @Table(
         name = "envios",
+        uniqueConstraints = {
+                @UniqueConstraint(
+                        name = "uk_envios_business_origen",
+                        columnNames = {"business_id", "origen_id"}
+                )
+        },
         indexes = {
-                @Index(name = "idx_envios_business_id", columnList = "business_id", unique = true),
-                @Index(name = "idx_envios_fecha_creacion", columnList = "fecha_hora_creacion")
+                @Index(name = "idx_envios_fecha_creacion", columnList = "fecha_hora_creacion"),
+                @Index(name = "idx_envios_origen", columnList = "origen_id")
         }
 )
 @Getter

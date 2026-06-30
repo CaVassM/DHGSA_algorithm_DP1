@@ -108,6 +108,137 @@ public class OptimizationService {
     }
 
     /** Entrada data-based para datos pre-cargados (típicamente desde la BD). */
+private OptimizationOutcome procesar(List<Aeropuerto> aeropuertos,
+                                     List<Vuelo> vuelos,
+                                     List<Envio> envios,
+                                     ExecutionParams params,
+                                     OptimizationResponse response,
+                                     long inicio) {
+    OptimizationAlgorithm algoritmo = params.algoritmo() != null
+            ? params.algoritmo() : OptimizationAlgorithm.DHGS;
+
+    log.info("=== PASO 2: Organizando en épocas ===");
+    List<EpocaData> epocas = simuladorEpocas.organizarEnEpocas(
+            envios, aeropuertos,
+            params.fechaInicioSimulacion(),
+            params.duracionEpocaHoras(),
+            params.duracionSimulacionDias()
+    );
+
+    response.markTotalEpocas(epocas.size());
+
+    LocalDate inicioHorizonte = !epocas.isEmpty()
+            ? epocas.get(0).getInicio().toLocalDate()
+            : (params.fechaInicioSimulacion() != null
+                ? params.fechaInicioSimulacion().toLocalDate()
+                : envios.stream()
+                    .map(Envio::getFechaHoraCreacion)
+                    .min(LocalDateTime::compareTo)
+                    .orElseThrow()
+                    .toLocalDate()
+                    .minusDays(1));
+
+    log.info("=== PASO 3: Construyendo grafo de vuelos recurrentes ===");
+    grafoVuelos.construir(
+            aeropuertos,
+            vuelos,
+            inicioHorizonte,
+            Math.max(1, params.duracionSimulacionDias())
+    );
+
+    log.info("Grafo construido: {}", grafoVuelos);
+
+    DHGSAlgorithm dhgs = algoritmo == OptimizationAlgorithm.DHGS
+            ? new DHGSAlgorithm(constructorSoluciones, split, calculadorFitness, validador)
+            : null;
+
+    IALNSAlgorithm ialns = algoritmo == OptimizationAlgorithm.IALNS
+            ? new IALNSAlgorithm(constructorSoluciones, split, calculadorFitness, validador)
+            : null;
+
+    log.info("=== PASO 4: Procesando {} épocas ===", epocas.size());
+
+    List<Envio> pendientes = new ArrayList<>();
+    int totalAsignados = 0;
+    int totalMaletas = 0;
+
+    Map<Long, RutaDTO> rutasDTO = new LinkedHashMap<>();
+    Map<Long, RutaEnvio> rutasDominio = new LinkedHashMap<>();
+    Map<Long, Envio> enviosPorId = new HashMap<>();
+
+    for (EpocaData epoca : epocas) {
+        log.info("--- Procesando Época {} ---", epoca.getNumeroEpoca());
+
+        simuladorEpocas.prepararEpoca(epoca, pendientes);
+
+        List<Envio> enviosEpoca = epoca.getTodosLosEnvios();
+
+        if (enviosEpoca.isEmpty()) {
+            pendientes = new ArrayList<>();
+            continue;
+        }
+
+        Individuo mejor = algoritmo == OptimizationAlgorithm.IALNS
+                ? ialns.ejecutar(
+                    enviosEpoca,
+                    epoca.getNumeroEpoca(),
+                    epocas.size(),
+                    params.tamanoPoblacion(),
+                    Duration.ofSeconds(Math.max(1, params.limiteTiempoSegundos()))
+                )
+                : dhgs.ejecutar(
+                    enviosEpoca,
+                    epoca.getNumeroEpoca(),
+                    epocas.size(),
+                    params.tamanoPoblacion(),
+                    Duration.ofSeconds(Math.max(1, params.limiteTiempoSegundos()))
+                );
+
+        pendientes = simuladorEpocas.finalizarEpoca(epoca, mejor);
+
+        if (mejor != null) {
+            totalAsignados += mejor.getEnviosAsignados().size();
+
+            totalMaletas += mejor.getEnviosAsignados().keySet().stream()
+                    .mapToInt(Envio::getCantidadMaletas)
+                    .sum();
+
+            mejor.getEnviosAsignados().forEach((envio, ruta) -> {
+                if (envio.getDbId() == null) {
+                    log.warn(
+                            "No se registra ruta: Envio sin dbId. businessId={}, origen={}",
+                            envio.getId(),
+                            envio.getAeropuertoOrigen() != null
+                                    ? envio.getAeropuertoOrigen().getCodigoICAO()
+                                    : null
+                    );
+                    return;
+                }
+
+                rutasDTO.put(envio.getDbId(), RutaDTO.from(envio, ruta));
+                rutasDominio.put(envio.getDbId(), ruta);
+                enviosPorId.put(envio.getDbId(), envio);
+            });
+        }
+
+        response.addResumenEpoca(EpocaResumenDTO.from(epoca));
+    }
+
+    response.complete(
+            epocas.size(),
+            simuladorEpocas.getCostoAcumulado(),
+            totalAsignados,
+            pendientes.size(),
+            totalMaletas,
+            pendientes.isEmpty(),
+            new ArrayList<>(rutasDTO.values()),
+            "Simulación completada exitosamente con " + algoritmo
+    );
+
+    response.finish(System.currentTimeMillis() - inicio);
+
+    return new OptimizationOutcome(response, rutasDominio, enviosPorId);
+}
     public OptimizationOutcome ejecutarSobreDatos(List<Aeropuerto> aeropuertos,
                                                   List<Vuelo> vuelos,
                                                   List<Envio> envios,
@@ -125,98 +256,98 @@ public class OptimizationService {
             return new OptimizationOutcome(response, Map.of(), Map.of());
         }
     }
-
-    private OptimizationOutcome procesar(List<Aeropuerto> aeropuertos,
-                                         List<Vuelo> vuelos,
-                                         List<Envio> envios,
-                                         ExecutionParams params,
-                                         OptimizationResponse response,
-                                         long inicio) {
-        OptimizationAlgorithm algoritmo = params.algoritmo() != null
-                ? params.algoritmo() : OptimizationAlgorithm.DHGS;
-
-        log.info("=== PASO 2: Organizando en épocas ===");
-        List<EpocaData> epocas = simuladorEpocas.organizarEnEpocas(
-                envios, aeropuertos,
-                params.fechaInicioSimulacion(),
-                params.duracionEpocaHoras(),
-                params.duracionSimulacionDias());
-        response.markTotalEpocas(epocas.size());
-
-        LocalDate inicioHorizonte = !epocas.isEmpty()
-                ? epocas.get(0).getInicio().toLocalDate()
-                : (params.fechaInicioSimulacion() != null
-                    ? params.fechaInicioSimulacion().toLocalDate()
-                    : envios.stream()
-                        .map(Envio::getFechaHoraCreacion)
-                        .min(LocalDateTime::compareTo)
-                        .orElseThrow()
-                        .toLocalDate()
-                        .minusDays(1));
-
-        log.info("=== PASO 3: Construyendo grafo de vuelos recurrentes ===");
-        grafoVuelos.construir(aeropuertos, vuelos, inicioHorizonte,
-                Math.max(1, params.duracionSimulacionDias()));
-        log.info("Grafo construido: {}", grafoVuelos);
-
-        DHGSAlgorithm dhgs = algoritmo == OptimizationAlgorithm.DHGS
-                ? new DHGSAlgorithm(constructorSoluciones, split, calculadorFitness, validador) : null;
-        IALNSAlgorithm ialns = algoritmo == OptimizationAlgorithm.IALNS
-                ? new IALNSAlgorithm(constructorSoluciones, split, calculadorFitness, validador) : null;
-
-        log.info("=== PASO 4: Procesando {} épocas ===", epocas.size());
-        List<Envio> pendientes = new ArrayList<>();
-        int totalAsignados = 0;
-        int totalMaletas = 0;
-        Map<String, RutaDTO> rutasDTO = new LinkedHashMap<>();
-        Map<String, RutaEnvio> rutasDominio = new LinkedHashMap<>();
-        Map<String, Envio> enviosPorId = new HashMap<>();
-
-        for (EpocaData epoca : epocas) {
-            log.info("--- Procesando Época {} ---", epoca.getNumeroEpoca());
-            simuladorEpocas.prepararEpoca(epoca, pendientes);
-            List<Envio> enviosEpoca = epoca.getTodosLosEnvios();
-            if (enviosEpoca.isEmpty()) {
-                pendientes = new ArrayList<>();
-                continue;
-            }
-
-            Individuo mejor = algoritmo == OptimizationAlgorithm.IALNS
-                    ? ialns.ejecutar(enviosEpoca, epoca.getNumeroEpoca(), epocas.size(),
-                        params.tamanoPoblacion(),
-                        Duration.ofSeconds(Math.max(1, params.limiteTiempoSegundos())))
-                    : dhgs.ejecutar(enviosEpoca, epoca.getNumeroEpoca(), epocas.size(),
-                        params.tamanoPoblacion(),
-                        Duration.ofSeconds(Math.max(1, params.limiteTiempoSegundos())));
-
-            pendientes = simuladorEpocas.finalizarEpoca(epoca, mejor);
-
-            if (mejor != null) {
-                totalAsignados += mejor.getEnviosAsignados().size();
-                totalMaletas += mejor.getEnviosAsignados().keySet().stream()
-                        .mapToInt(Envio::getCantidadMaletas).sum();
-                mejor.getEnviosAsignados().forEach((envio, ruta) -> {
-                    rutasDTO.put(envio.getId(), RutaDTO.from(envio, ruta));
-                    rutasDominio.put(envio.getId(), ruta);
-                    enviosPorId.put(envio.getId(), envio);
-                });
-            }
-            response.addResumenEpoca(EpocaResumenDTO.from(epoca));
-        }
-
-        response.complete(
-                epocas.size(),
-                simuladorEpocas.getCostoAcumulado(),
-                totalAsignados,
-                pendientes.size(),
-                totalMaletas,
-                pendientes.isEmpty(),
-                new ArrayList<>(rutasDTO.values()),
-                "Simulación completada exitosamente con " + algoritmo
-        );
-        response.finish(System.currentTimeMillis() - inicio);
-        return new OptimizationOutcome(response, rutasDominio, enviosPorId);
-    }
+//
+//    private OptimizationOutcome procesar(List<Aeropuerto> aeropuertos,
+//                                         List<Vuelo> vuelos,
+//                                         List<Envio> envios,
+//                                         ExecutionParams params,
+//                                         OptimizationResponse response,
+//                                         long inicio) {
+//        OptimizationAlgorithm algoritmo = params.algoritmo() != null
+//                ? params.algoritmo() : OptimizationAlgorithm.DHGS;
+//
+//        log.info("=== PASO 2: Organizando en épocas ===");
+//        List<EpocaData> epocas = simuladorEpocas.organizarEnEpocas(
+//                envios, aeropuertos,
+//                params.fechaInicioSimulacion(),
+//                params.duracionEpocaHoras(),
+//                params.duracionSimulacionDias());
+//        response.markTotalEpocas(epocas.size());
+//
+//        LocalDate inicioHorizonte = !epocas.isEmpty()
+//                ? epocas.get(0).getInicio().toLocalDate()
+//                : (params.fechaInicioSimulacion() != null
+//                    ? params.fechaInicioSimulacion().toLocalDate()
+//                    : envios.stream()
+//                        .map(Envio::getFechaHoraCreacion)
+//                        .min(LocalDateTime::compareTo)
+//                        .orElseThrow()
+//                        .toLocalDate()
+//                        .minusDays(1));
+//
+//        log.info("=== PASO 3: Construyendo grafo de vuelos recurrentes ===");
+//        grafoVuelos.construir(aeropuertos, vuelos, inicioHorizonte,
+//                Math.max(1, params.duracionSimulacionDias()));
+//        log.info("Grafo construido: {}", grafoVuelos);
+//
+//        DHGSAlgorithm dhgs = algoritmo == OptimizationAlgorithm.DHGS
+//                ? new DHGSAlgorithm(constructorSoluciones, split, calculadorFitness, validador) : null;
+//        IALNSAlgorithm ialns = algoritmo == OptimizationAlgorithm.IALNS
+//                ? new IALNSAlgorithm(constructorSoluciones, split, calculadorFitness, validador) : null;
+//
+//        log.info("=== PASO 4: Procesando {} épocas ===", epocas.size());
+//        List<Envio> pendientes = new ArrayList<>();
+//        int totalAsignados = 0;
+//        int totalMaletas = 0;
+//        Map<String, RutaDTO> rutasDTO = new LinkedHashMap<>();
+//        Map<String, RutaEnvio> rutasDominio = new LinkedHashMap<>();
+//        Map<String, Envio> enviosPorId = new HashMap<>();
+//
+//        for (EpocaData epoca : epocas) {
+//            log.info("--- Procesando Época {} ---", epoca.getNumeroEpoca());
+//            simuladorEpocas.prepararEpoca(epoca, pendientes);
+//            List<Envio> enviosEpoca = epoca.getTodosLosEnvios();
+//            if (enviosEpoca.isEmpty()) {
+//                pendientes = new ArrayList<>();
+//                continue;
+//            }
+//
+//            Individuo mejor = algoritmo == OptimizationAlgorithm.IALNS
+//                    ? ialns.ejecutar(enviosEpoca, epoca.getNumeroEpoca(), epocas.size(),
+//                        params.tamanoPoblacion(),
+//                        Duration.ofSeconds(Math.max(1, params.limiteTiempoSegundos())))
+//                    : dhgs.ejecutar(enviosEpoca, epoca.getNumeroEpoca(), epocas.size(),
+//                        params.tamanoPoblacion(),
+//                        Duration.ofSeconds(Math.max(1, params.limiteTiempoSegundos())));
+//
+//            pendientes = simuladorEpocas.finalizarEpoca(epoca, mejor);
+//
+//            if (mejor != null) {
+//                totalAsignados += mejor.getEnviosAsignados().size();
+//                totalMaletas += mejor.getEnviosAsignados().keySet().stream()
+//                        .mapToInt(Envio::getCantidadMaletas).sum();
+//                mejor.getEnviosAsignados().forEach((envio, ruta) -> {
+//                    rutasDTO.put(envio.getId(), RutaDTO.from(envio, ruta));
+//                    rutasDominio.put(envio.getId(), ruta);
+//                    enviosPorId.put(envio.getId(), envio);
+//                });
+//            }
+//            response.addResumenEpoca(EpocaResumenDTO.from(epoca));
+//        }
+//
+//        response.complete(
+//                epocas.size(),
+//                simuladorEpocas.getCostoAcumulado(),
+//                totalAsignados,
+//                pendientes.size(),
+//                totalMaletas,
+//                pendientes.isEmpty(),
+//                new ArrayList<>(rutasDTO.values()),
+//                "Simulación completada exitosamente con " + algoritmo
+//        );
+//        response.finish(System.currentTimeMillis() - inicio);
+//        return new OptimizationOutcome(response, rutasDominio, enviosPorId);
+//    }
 
     public EpocaResumenDTO obtenerResumenEpoca(int numero) {
         EpocaData epoca = simuladorEpocas.obtenerEpoca(numero);

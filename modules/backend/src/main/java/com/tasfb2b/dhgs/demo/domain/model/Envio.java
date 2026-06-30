@@ -18,7 +18,9 @@ import java.util.Objects;
 @NoArgsConstructor
 @AllArgsConstructor
 public class Envio {
-    private String id;
+    
+    private Long dbId; //id de la fila de la BD
+    private String id;// business_id
     private Aeropuerto aeropuertoOrigen;
     private Aeropuerto aeropuertoDestino;
     private LocalDateTime fechaHoraCreacion;

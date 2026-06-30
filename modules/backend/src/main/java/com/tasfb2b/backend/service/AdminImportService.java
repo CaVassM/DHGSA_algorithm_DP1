@@ -129,8 +129,8 @@ public class AdminImportService {
 
         // Conjunto de businessId ya existentes: una sola consulta en vez de un
         // SELECT por fila. Decide insert vs update en memoria.
-        Set<String> existentes = new HashSet<>(shipmentRepository.findAllBusinessIds());
-
+        //Set<String> existentes = new HashSet<>(shipmentRepository.findAllBusinessIds()); (Se esta actualizando)
+        
         int parsed = 0;
         int inserted = 0;
         int updated = 0;
@@ -157,10 +157,8 @@ public class AdminImportService {
                     // Referencias ligeras (proxies) por ID: válidas tras cada clear().
                     AirportEntity origen = entityManager.getReference(AirportEntity.class, origenId);
                     AirportEntity destino = entityManager.getReference(AirportEntity.class, destinoId);
+                    ShipmentEntity e = shipmentRepository.findByBusinessIdAndAeropuertoOrigen_Id(src.getId(), origenId).orElse(null);
 
-                    if (existentes.contains(src.getId())) {
-                        // Caso minoritario en carga masiva: solo aquí cargamos la entidad.
-                        ShipmentEntity e = shipmentRepository.findByBusinessId(src.getId()).orElse(null);
                         if (e != null) {
                             e.setAeropuertoOrigen(origen);
                             e.setAeropuertoDestino(destino);
@@ -170,14 +168,33 @@ public class AdminImportService {
                             e.setDeadline(src.getDeadline() != null ? src.getDeadline() : src.calcularDeadline());
                             e.setEsMustGo(src.isEsMustGo());
                             e.setPrioridad(src.getPrioridad());
+
                             shipmentRepository.save(e);
                             updated++;
+                        } else {
+                            shipmentRepository.save(DomainMapper.shipmentToEntity(src, origen, destino));
+                            inserted++;
                         }
-                    } else {
-                        shipmentRepository.save(DomainMapper.shipmentToEntity(src, origen, destino));
-                        existentes.add(src.getId()); // evita duplicar si el id se repite en los archivos
-                        inserted++;
-                    }
+//                    if (existentes.contains(src.getId())) {
+//                        // Caso minoritario en carga masiva: solo aquí cargamos la entidad.
+//                        ShipmentEntity e = shipmentRepository.findByBusinessId(src.getId()).orElse(null);
+//                        if (e != null) {
+//                            e.setAeropuertoOrigen(origen);
+//                            e.setAeropuertoDestino(destino);
+//                            e.setFechaHoraCreacion(src.getFechaHoraCreacion());
+//                            e.setCantidadMaletas(src.getCantidadMaletas());
+//                            e.setIdCliente(src.getIdCliente());
+//                            e.setDeadline(src.getDeadline() != null ? src.getDeadline() : src.calcularDeadline());
+//                            e.setEsMustGo(src.isEsMustGo());
+//                            e.setPrioridad(src.getPrioridad());
+//                            shipmentRepository.save(e);
+//                            updated++;
+//                        }
+//                    } else {
+//                        shipmentRepository.save(DomainMapper.shipmentToEntity(src, origen, destino));
+//                        existentes.add(src.getId()); // evita duplicar si el id se repite en los archivos
+//                        inserted++;
+//                    }
 
                     if (++enLote >= BATCH_SIZE) {
                         flushAndClear();

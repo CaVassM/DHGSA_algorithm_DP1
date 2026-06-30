@@ -12,6 +12,6 @@ import java.util.Map;
  */
 public record OptimizationOutcome(
         OptimizationResponse response,
-        Map<String, RutaEnvio> rutasPorEnvioId,
-        Map<String, Envio> enviosPorId
+        Map<Long, RutaEnvio> rutasPorShipmentId,
+        Map<Long, Envio> enviosPorShipmentId
 ) {}
