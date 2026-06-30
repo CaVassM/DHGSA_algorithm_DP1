@@ -106,7 +106,13 @@ public class EnvioParser {
             return null;
         }
 
-        String id = partes[0].trim();
+        // El ID del archivo (partes[0]) se reinicia 1..N en CADA archivo de
+        // envíos (uno por aeropuerto origen), así que NO es único entre archivos.
+        // Se compone con el ICAO de origen para obtener una identidad global
+        // única (ej. "VIDP-000000001"); de lo contrario el upsert por id pisa
+        // los envíos de un aeropuerto con los del siguiente.
+        String idLocal = partes[0].trim();
+        String id = origen.getCodigoICAO() + "-" + idLocal;
         String fechaStr = partes[1].trim();        // AAAAMMDD
         String horaStr = partes[2].trim();          // HH
         String minutosStr = partes[3].trim();       // mm
