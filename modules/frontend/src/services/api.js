@@ -110,7 +110,7 @@ export async function getImportStatus() {
 export async function importShipments(files) {
   const formData = new FormData()
   files.forEach(f => formData.append('files', f))
-  const { data } = await api.post('/admin/imports/shipments', formData, { timeout: 30000 })
+  const { data } = await api.post('/admin/imports/shipments', formData, { timeout: 600000 })
   return data
 }
 

@@ -22,4 +22,13 @@ public interface FlightRepository extends JpaRepository<FlightEntity, Long> {
     /** Solo los businessId existentes; evita un SELECT por fila al importar en masa. */
     @Query("select f.businessId from FlightEntity f")
     List<String> findAllBusinessIds();
+    
+    @Query("""
+    select f
+    from FlightEntity f
+    join fetch f.aeropuertoOrigen
+    join fetch f.aeropuertoDestino
+    """)
+    List<FlightEntity> findAllWithAirports();
+    
 }

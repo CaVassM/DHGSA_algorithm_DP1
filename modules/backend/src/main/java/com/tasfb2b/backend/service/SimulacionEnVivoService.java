@@ -1,13 +1,23 @@
 package com.tasfb2b.backend.service;
 
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import com.tasfb2b.backend.domain.enums.DataSetReference;
+import com.tasfb2b.backend.domain.enums.PlannerAlgorithm;
+import com.tasfb2b.backend.domain.enums.PlanningRunStatus;
+import com.tasfb2b.backend.domain.enums.OperationalScenario;
 import com.tasfb2b.backend.domain.model.AirportEntity;
 import com.tasfb2b.backend.domain.model.FlightEntity;
+import com.tasfb2b.backend.domain.model.PlanningRunEntity;
 import com.tasfb2b.backend.domain.model.ShipmentEntity;
+import com.tasfb2b.backend.dto.request.LiveSimulationRequest;
 import com.tasfb2b.backend.dto.response.CollapseReportResponse;
 import com.tasfb2b.backend.dto.response.SimulationEventResponse;
 import com.tasfb2b.backend.mapper.DomainMapper;
 import com.tasfb2b.backend.repository.AirportRepository;
 import com.tasfb2b.backend.repository.FlightRepository;
+import com.tasfb2b.backend.repository.PlanningRunRepository;
 import com.tasfb2b.backend.repository.ShipmentRepository;
 import com.tasfb2b.dhgs.demo.algorithm.dhgs.DHGSAlgorithm;
 import com.tasfb2b.dhgs.demo.algorithm.dhgs.Individuo;
@@ -20,14 +30,14 @@ import com.tasfb2b.dhgs.demo.domain.model.Envio;
 import com.tasfb2b.dhgs.demo.domain.model.Vuelo;
 import com.tasfb2b.dhgs.demo.domain.service.EpocaData;
 import com.tasfb2b.dhgs.demo.domain.service.SimuladorEpocas;
+import com.tasfb2b.backend.service.PlanningRoutePersistenceService;
 import com.tasfb2b.dhgs.demo.infraestructure.util.AlgoritmoSPLIT;
 import com.tasfb2b.dhgs.demo.infraestructure.util.CalculadorFitness;
 import com.tasfb2b.dhgs.demo.infraestructure.util.ConstructorSolucionesIniciales;
 import com.tasfb2b.dhgs.demo.infraestructure.util.GrafoVuelos;
 import com.tasfb2b.dhgs.demo.infraestructure.util.Validador;
 import lombok.RequiredArgsConstructor;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
@@ -65,10 +75,10 @@ import java.util.concurrent.locks.ReentrantLock;
 public class SimulacionEnVivoService {
 
     private static final Logger log = LoggerFactory.getLogger(SimulacionEnVivoService.class);
-
     private final AirportRepository airportRepository;
     private final FlightRepository flightRepository;
     private final ShipmentRepository shipmentRepository;
+    private final PlanningRunRepository planningRunRepository;
     private final SimuladorEpocas simuladorEpocas;
     private final GrafoVuelos grafoVuelos;
     private final ConstructorSolucionesIniciales constructorSoluciones;
@@ -76,6 +86,18 @@ public class SimulacionEnVivoService {
     private final CalculadorFitness calculadorFitness;
     private final Validador validador;
     private final SimpMessagingTemplate messaging;
+    private final PlanningRoutePersistenceService planningRoutePersistenceService;
+
+//    private final AirportRepository airportRepository;
+//    private final FlightRepository flightRepository;
+//    private final ShipmentRepository shipmentRepository;
+//    private final SimuladorEpocas simuladorEpocas;
+//    private final GrafoVuelos grafoVuelos;
+//    private final ConstructorSolucionesIniciales constructorSoluciones;
+//    private final AlgoritmoSPLIT split;
+//    private final CalculadorFitness calculadorFitness;
+//    private final Validador validador;
+//    private final SimpMessagingTemplate messaging;
 
     /** Banderas de cancelación por runId (permite detener una simulación viva). */
     private final Map<Long, AtomicBoolean> cancelaciones = new ConcurrentHashMap<>();
@@ -103,7 +125,65 @@ public class SimulacionEnVivoService {
             int factorCarga,          // multiplica la carga original (x2, x5, x10...)
             double umbralColapso      // % de envíos sin atender que define el colapso (0-100)
     ) {}
+    
+    @Transactional
+    public Long registrarSimulacionEnVivo(LiveSimulationRequest request, boolean modoColapso) {
+        PlannerAlgorithm plannerAlgorithm = resolverPlannerAlgorithm(request.getAlgorithm());
 
+        PlanningRunEntity run = planningRunRepository.save(
+                PlanningRunEntity.builder()
+                        .algorithm(plannerAlgorithm)
+                        .scenario(modoColapso
+                            ? OperationalScenario.COLLAPSE_SIMULATION
+                            : OperationalScenario.REAL_TIME)
+                        .status(PlanningRunStatus.RUNNING)
+                        .dataSetReference(DataSetReference.DB.name())
+                        .startedAt(LocalDateTime.now())
+                        .mensaje(modoColapso
+                                ? "Simulación de colapso iniciada."
+                                : "Simulación en vivo iniciada.")
+                        .build()
+        );
+
+        return run.getId();
+    }
+    
+    public LiveParams construirLiveParams(LiveSimulationRequest request, boolean modoColapso) {
+    OptimizationAlgorithm algoritmo = resolverOptimizationAlgorithm(request.getAlgorithm());
+
+    return new LiveParams(
+            algoritmo,
+            request.getPlanningStart(),
+            request.getEpochHours(),
+            request.getHorizonDays(),
+            request.getPopulationSize(),
+            request.getTimeLimitSeconds(),
+            request.getMultiplicadorTemporal(),
+            request.isPreBuffer(),
+            modoColapso,
+            modoColapso ? Math.max(1, request.getFactorCarga()) : 1,
+            modoColapso ? request.getUmbralColapso() : 100.0
+    );
+}
+
+private PlannerAlgorithm resolverPlannerAlgorithm(String rawAlgorithm) {
+    if ("IALNS".equalsIgnoreCase(rawAlgorithm)
+            || "IALNS_SA".equalsIgnoreCase(rawAlgorithm)) {
+        return PlannerAlgorithm.IALNS_SA;
+    }
+
+    return PlannerAlgorithm.DHGS;
+}
+
+private OptimizationAlgorithm resolverOptimizationAlgorithm(String rawAlgorithm) {
+    if ("IALNS".equalsIgnoreCase(rawAlgorithm)
+            || "IALNS_SA".equalsIgnoreCase(rawAlgorithm)) {
+        return OptimizationAlgorithm.IALNS;
+    }
+
+    return OptimizationAlgorithm.DHGS;
+}
+    
     public void cancelar(Long runId) {
         AtomicBoolean flag = cancelaciones.get(runId);
         if (flag != null) flag.set(true);
@@ -114,7 +194,7 @@ public class SimulacionEnVivoService {
      * épocas y las procesa con ritmo controlado emitiendo por WebSocket.
      */
     @Async("planningExecutor")
-    @Transactional(readOnly = true)
+    //@Transactional(readOnly = true)
     public void iniciar(Long runId, LiveParams params) {
         AtomicBoolean cancelado = new AtomicBoolean(false);
         cancelaciones.put(runId, cancelado);
@@ -134,11 +214,16 @@ public class SimulacionEnVivoService {
                 throw new IllegalStateException("No hay aeropuertos en la BD.");
             }
             List<Vuelo> vuelos = new ArrayList<>();
-            for (FlightEntity f : flightRepository.findAll()) {
+            for (FlightEntity f : flightRepository.findAllWithAirports()) {
                 Aeropuerto o = aeropuertosByIcao.get(f.getAeropuertoOrigen().getCodigoIcao());
                 Aeropuerto d = aeropuertosByIcao.get(f.getAeropuertoDestino().getCodigoIcao());
                 if (o != null && d != null) vuelos.add(DomainMapper.flightToDomain(f, o, d));
             }
+//            for (FlightEntity f : flightRepository.findAll()) {
+//                Aeropuerto o = aeropuertosByIcao.get(f.getAeropuertoOrigen().getCodigoIcao());
+//                Aeropuerto d = aeropuertosByIcao.get(f.getAeropuertoDestino().getCodigoIcao());
+//                if (o != null && d != null) vuelos.add(DomainMapper.flightToDomain(f, o, d));
+//            }
             // Cargar SOLO los envíos de la ventana temporal de la simulación, no
             // todos los de la BD. Con el dataset real (~9.5M envíos repartidos en
             // meses) un findAll() reventaría la memoria; la simulación solo usa los
@@ -150,11 +235,18 @@ public class SimulacionEnVivoService {
                     .plusDays(Math.max(1, params.horizonDays()) + 1);
             List<Envio> envios = new ArrayList<>();
             for (ShipmentEntity s : shipmentRepository
-                    .findByFechaHoraCreacionBetween(ventanaInicio, ventanaFin)) {
+                    .findByFechaHoraCreacionBetweenWithAirports(ventanaInicio, ventanaFin)) {
                 Aeropuerto o = aeropuertosByIcao.get(s.getAeropuertoOrigen().getCodigoIcao());
                 Aeropuerto d = aeropuertosByIcao.get(s.getAeropuertoDestino().getCodigoIcao());
                 if (o != null && d != null) envios.add(DomainMapper.shipmentToDomain(s, o, d));
             }
+//            for (ShipmentEntity s : shipmentRepository
+//                    .findByFechaHoraCreacionBetween(ventanaInicio, ventanaFin)) {
+//                Aeropuerto o = aeropuertosByIcao.get(s.getAeropuertoOrigen().getCodigoIcao());
+//                Aeropuerto d = aeropuertosByIcao.get(s.getAeropuertoDestino().getCodigoIcao());
+//                if (o != null && d != null) envios.add(DomainMapper.shipmentToDomain(s, o, d));
+//            }
+            
             log.info("Simulación {}: cargados {} envíos en ventana [{}, {}]",
                     runId, envios.size(), ventanaInicio, ventanaFin);
             List<Aeropuerto> aeropuertos = new ArrayList<>(aeropuertosByIcao.values());
@@ -201,7 +293,12 @@ public class SimulacionEnVivoService {
                     .mensaje(String.format("Simulación iniciada: %d épocas, multiplicador x%d (%d ms/época).",
                             epocas.size(), params.multiplicadorTemporal(), pausaMsPorEpoca))
                     .build());
-
+            
+            actualizarRunMensaje(
+                    runId,
+                    "Simulación iniciada: " + epocas.size() + " épocas."
+            );
+            
             // --- Loop de épocas contra el reloj ---
             List<Envio> pendientes = new ArrayList<>();
             int totalAsignados = 0;
@@ -210,13 +307,34 @@ public class SimulacionEnVivoService {
 
             for (EpocaData epoca : epocas) {
                 if (cancelado.get()) {
+                    String mensaje = "Simulación cancelada por el usuario.";
+
                     emitir(topic, SimulationEventResponse.builder()
-                            .tipo("FIN").runId(runId).mensaje("Simulación cancelada por el usuario.")
+                            .tipo("FIN").runId(runId)
+                            .mensaje(mensaje)
                             .totalAsignadosAcumulado(totalAsignados)
                             .costoAcumulado(simuladorEpocas.getCostoAcumulado())
                             .build());
+
+                    finalizarRun(
+                            runId,
+                            PlanningRunStatus.FAILED,
+                            mensaje,
+                            totalAsignados,
+                            pendientes.size(),
+                            simuladorEpocas.getCostoAcumulado()
+                    );
+
                     return;
                 }
+//                if (cancelado.get()) {
+//                    emitir(topic, SimulationEventResponse.builder()
+//                            .tipo("FIN").runId(runId).mensaje("Simulación cancelada por el usuario.")
+//                            .totalAsignadosAcumulado(totalAsignados)
+//                            .costoAcumulado(simuladorEpocas.getCostoAcumulado())
+//                            .build());
+//                    return;
+//                }
 
                 simuladorEpocas.prepararEpoca(epoca, pendientes);
                 List<Envio> enviosEpoca = epoca.getTodosLosEnvios();
@@ -234,8 +352,15 @@ public class SimulacionEnVivoService {
                 pendientes = simuladorEpocas.finalizarEpoca(epoca, mejor);
 
                 List<RutaDTO> rutas = new ArrayList<>();
-                if (mejor != null) {
+                if (mejor != null && mejor.getEnviosAsignados() != null && !mejor.getEnviosAsignados().isEmpty()) {
                     totalAsignados += mejor.getEnviosAsignados().size();
+
+                    planningRoutePersistenceService.guardarRutasDeEpoca(
+                            runId,
+                            epoca.getNumeroEpoca(),
+                            mejor
+                    );
+
                     mejor.getEnviosAsignados().forEach((envio, ruta) ->
                             rutas.add(RutaDTO.from(envio, ruta)));
                 }
@@ -257,7 +382,16 @@ public class SimulacionEnVivoService {
                         .totalAsignadosAcumulado(totalAsignados)
                         .costoAcumulado(simuladorEpocas.getCostoAcumulado())
                         .build());
-
+                
+                actualizarRunProgreso(
+                        runId,
+                        epoca.getNumeroEpoca(),
+                        epocas.size(),
+                        totalAsignados,
+                        pendientes.size(),
+                        simuladorEpocas.getCostoAcumulado()
+                );
+                
                 // --- Detección de colapso ---
                 if (params.modoColapso()) {
                     boolean almacenSaturado = ultimaOcupacion.values().stream()
@@ -284,6 +418,15 @@ public class SimulacionEnVivoService {
                                 .reporteColapso(reporte)
                                 .mensaje("⚠ COLAPSO detectado: " + reporte.getMotivo())
                                 .build());
+                        
+                        finalizarRun(
+                                runId,
+                                PlanningRunStatus.COMPLETED_WITH_PENDING_SHIPMENTS,
+                                "COLAPSO detectado: " + reporte.getMotivo(),
+                                totalAsignados,
+                                pendientes.size(),
+                                simuladorEpocas.getCostoAcumulado()
+                        );
                         return;
                     }
                 }
@@ -306,13 +449,43 @@ public class SimulacionEnVivoService {
                         totalAsignados, pendientes.size(), ultimaOcupacion));
             }
             emitir(topic, fin.build());
+            
+            PlanningRunStatus statusFinal = pendientes.isEmpty()
+            ? PlanningRunStatus.COMPLETED
+            : PlanningRunStatus.COMPLETED_WITH_PENDING_SHIPMENTS;
+
+            finalizarRun(
+                    runId,
+                    statusFinal,
+                    String.format("Simulación finalizada: %d asignados, %d pendientes.",
+                            totalAsignados, pendientes.size()),
+                    totalAsignados,
+                    pendientes.size(),
+                    simuladorEpocas.getCostoAcumulado()
+            );
 
         } catch (Exception ex) {
+            
             log.error("Simulación en vivo {} falló", runId, ex);
+            
+            String mensaje = "Error: "
+                    + (ex.getMessage() == null
+                    ? ex.getClass().getSimpleName()
+                    : ex.getMessage());
+
             emitir(topic, SimulationEventResponse.builder()
                     .tipo("ERROR").runId(runId)
-                    .mensaje("Error: " + (ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage()))
+                    .mensaje(mensaje)
                     .build());
+
+            finalizarRun(
+                    runId,
+                    PlanningRunStatus.FAILED,
+                    mensaje,
+                    0,
+                    0,
+                    0.0
+            );
         } finally {
             cancelaciones.remove(runId);
             simulacionLock.unlock();
@@ -417,5 +590,48 @@ public class SimulacionEnVivoService {
             }
             restante -= paso;
         }
+    }
+    
+    private void actualizarRunMensaje(Long runId, String mensaje) {
+        planningRunRepository.findById(runId).ifPresent(run -> {
+            run.setMensaje(mensaje);
+            planningRunRepository.save(run);
+        });
+    }
+
+    private void actualizarRunProgreso(
+            Long runId,
+            int epocaActual,
+            int totalEpocas,
+            int totalAsignados,
+            int pendientes,
+            double costoAcumulado
+    ) {
+        planningRunRepository.findById(runId).ifPresent(run -> {
+            run.setMensaje("Procesando época " + epocaActual + " de " + totalEpocas);
+            run.setTotalEnviosAsignados(totalAsignados);
+            run.setTotalEnviosNoAsignados(pendientes);
+            run.setCostoTotal(costoAcumulado);
+            planningRunRepository.save(run);
+        });
+    }
+
+    private void finalizarRun(
+            Long runId,
+            PlanningRunStatus status,
+            String mensaje,
+            int totalAsignados,
+            int pendientes,
+            double costoAcumulado
+    ) {
+        planningRunRepository.findById(runId).ifPresent(run -> {
+            run.setStatus(status);
+            run.setFinishedAt(LocalDateTime.now());
+            run.setMensaje(mensaje);
+            run.setTotalEnviosAsignados(totalAsignados);
+            run.setTotalEnviosNoAsignados(pendientes);
+            run.setCostoTotal(costoAcumulado);
+            planningRunRepository.save(run);
+        });
     }
 }

@@ -32,7 +32,13 @@ export default function Dashboard() {
   // Vinculación mapa→panel: aeropuerto elegido con click en el mapa.
   const [airportFromMap, setAirportFromMap] = useState(null)
   const intervalRef = useRef(null)
-
+  //agregado esta seccion para la simulacion en vivo 
+  const [eventoSimulacion, setEventoSimulacion] = useState(null)
+  const [rutasEnVivo, setRutasEnVivo] = useState([])
+  const [routesRefreshKey, setRoutesRefreshKey] = useState(0)
+  const [simulacionEnVivo, setSimulacionEnVivo] = useState(
+    location.state?.live ?? false
+  )
   // Persistir el runId para que sobreviva recargas y navegación entre páginas
   useEffect(() => {
     if (runId != null) localStorage.setItem(LS_KEY, String(runId))
@@ -86,15 +92,87 @@ export default function Dashboard() {
     return disconnect
   }, [runId])
 
+  //
+
+  useEffect(() => {
+  if (!runId) return
+
+    const topic = location.state?.topic ?? `/topic/simulacion/${runId}`
+    
+    console.log('Suscribiendo dashboard a:', topic)
+    const disconnect = suscribirSimulacion(topic, (ev) => {
+    if (!ev) return
+
+    console.log('Evento simulacion dashboard:', ev)
+
+    if (ev.tipo === 'INICIO') {
+      setSimulacionEnVivo(true)
+    }
+
+    if (ev.tipo === 'EPOCA') {
+      setSimulacionEnVivo(true)
+      setEventoSimulacion(ev)
+      //setRutasEnVivo(ev.rutas ?? [])
+      //setRutasEnVivo(prev => [...prev, ...(ev.rutas ?? [])])
+      setTimeout(() => {
+        setRoutesRefreshKey(v => v + 1)
+      }, 500)
+      if (ev.ocupacionAlmacenes) {
+        setOcupacion(ev.ocupacionAlmacenes)
+      }
+    }
+
+    if (ev.tipo === 'FIN') {
+      setSimulacionEnVivo(false)
+      setEventoSimulacion(ev)
+    }
+
+    if (ev.tipo === 'ERROR') {
+      setSimulacionEnVivo(false)
+      console.error(ev.mensaje)
+    }
+  })
+
+  return disconnect
+}, [runId, location.state?.topic])
+
   return (
     <div className="h-screen flex flex-col bg-[#0f172a] overflow-hidden">
       <NavBar />
       <div className="flex flex-1 overflow-hidden">
         {/* Mapa */}
         <main className="flex-1 relative overflow-hidden p-1">
+          {/* <MapaMundi
+            runId={runId}
+            runCompleted={!!(run && TERMINAL_STATUSES.has(run.status))}
+            onActiveLegsChange={setEnVuelo}
+            onOcupacionChange={setOcupacion}
+            focusAirport={focusAirport}
+            highlightShipment={highlightShipment}
+            onSelectAirportFromMap={(icao) => setAirportFromMap({ icao, nonce: Date.now() })}
+          /> */}
+          {eventoSimulacion?.tipo === 'EPOCA' && (
+            <div className="absolute top-4 left-4 z-[1200] bg-slate-900/90 border border-blue-500/40 rounded-xl px-4 py-3 shadow-lg">
+              <div className="text-xs text-blue-300 uppercase tracking-wider">
+                Simulación en vivo
+              </div>
+              <div className="text-white font-semibold">
+                Época {eventoSimulacion.numeroEpoca} / {eventoSimulacion.totalEpocas}
+              </div>
+              <div className="text-xs text-slate-400">
+                Reloj: {String(eventoSimulacion.relojSimulado ?? '').replace('T', ' ').slice(0, 16)}
+              </div>
+              <div className="text-xs text-green-400">
+                Asignados: {eventoSimulacion.totalAsignadosAcumulado ?? 0}
+              </div>
+            </div>
+          )}
           <MapaMundi
             runId={runId}
             runCompleted={!!(run && TERMINAL_STATUSES.has(run.status))}
+            liveMode={simulacionEnVivo}
+            liveEvent={eventoSimulacion}
+            routesRefreshKey={routesRefreshKey}
             onActiveLegsChange={setEnVuelo}
             onOcupacionChange={setOcupacion}
             focusAirport={focusAirport}

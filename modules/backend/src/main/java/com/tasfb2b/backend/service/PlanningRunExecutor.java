@@ -196,114 +196,114 @@ public class PlanningRunExecutor {
                 new ArrayList<>(aeropuertosByIcao.values()), vuelos, envios, params);
     }
 
-private void persistOutcome(PlanningRunEntity run, OptimizationOutcome outcome) {
-    OptimizationResponse op = outcome.response();
+    private void persistOutcome(PlanningRunEntity run, OptimizationOutcome outcome) {
+        OptimizationResponse op = outcome.response();
 
-    boolean failed = !op.isSimulacionCompleta()
-            && outcome.rutasPorShipmentId().isEmpty();
+        boolean failed = !op.isSimulacionCompleta()
+                && outcome.rutasPorShipmentId().isEmpty();
 
-    PlanningRunStatus status = failed
-            ? PlanningRunStatus.FAILED
-            : (op.isSimulacionCompleta()
-                ? PlanningRunStatus.COMPLETED
-                : PlanningRunStatus.COMPLETED_WITH_PENDING_SHIPMENTS);
+        PlanningRunStatus status = failed
+                ? PlanningRunStatus.FAILED
+                : (op.isSimulacionCompleta()
+                    ? PlanningRunStatus.COMPLETED
+                    : PlanningRunStatus.COMPLETED_WITH_PENDING_SHIPMENTS);
 
-    run.setStatus(status);
-    run.setFinishedAt(LocalDateTime.now());
-    run.setCostoTotal(op.getCostoTotal());
-    run.setTotalEnviosAsignados(op.getTotalEnviosAsignados());
-    run.setTotalEnviosNoAsignados(op.getTotalEnviosNoAsignados());
-    run.setTotalMaletasDespachadas(op.getTotalMaletasDespachadas());
-    run.setMensaje(op.getMensaje());
+        run.setStatus(status);
+        run.setFinishedAt(LocalDateTime.now());
+        run.setCostoTotal(op.getCostoTotal());
+        run.setTotalEnviosAsignados(op.getTotalEnviosAsignados());
+        run.setTotalEnviosNoAsignados(op.getTotalEnviosNoAsignados());
+        run.setTotalMaletasDespachadas(op.getTotalMaletasDespachadas());
+        run.setMensaje(op.getMensaje());
 
-    planningRunRepository.save(run);
+        planningRunRepository.save(run);
 
-    Map<Long, ShipmentEntity> shipmentById = new HashMap<>();
-    Map<String, FlightEntity> flightByBusinessId = new HashMap<>();
+        Map<Long, ShipmentEntity> shipmentById = new HashMap<>();
+        Map<String, FlightEntity> flightByBusinessId = new HashMap<>();
 
-    log.info("Cantidad de rutas recibidas en outcome: {}", outcome.rutasPorShipmentId().size());
+        log.info("Cantidad de rutas recibidas en outcome: {}", outcome.rutasPorShipmentId().size());
 
-    for (Map.Entry<Long, RutaEnvio> entry : outcome.rutasPorShipmentId().entrySet()) {
-        Long shipmentId = entry.getKey();
-        RutaEnvio ruta = entry.getValue();
+        for (Map.Entry<Long, RutaEnvio> entry : outcome.rutasPorShipmentId().entrySet()) {
+            Long shipmentId = entry.getKey();
+            RutaEnvio ruta = entry.getValue();
 
-        log.info("Intentando guardar ruta para shipmentId {}", shipmentId);
+            log.info("Intentando guardar ruta para shipmentId {}", shipmentId);
 
-        if (shipmentId == null) {
-            log.warn("No se guardó ruta: shipmentId null");
-            continue;
-        }
-
-        if (ruta == null) {
-            log.warn("Ruta null para shipmentId {}", shipmentId);
-            continue;
-        }
-
-        ShipmentEntity shipment = shipmentById.computeIfAbsent(
-                shipmentId,
-                id -> shipmentRepository.findById(id).orElse(null)
-        );
-
-        if (shipment == null) {
-            log.warn("No se guardó ruta: no existe ShipmentEntity con id={}", shipmentId);
-            continue;
-        }
-
-        RouteEntity route = RouteEntity.builder()
-                .planningRun(run)
-                .shipment(shipment)
-                .tiempoInicio(ruta.getTiempoInicio())
-                .tiempoLlegadaEstimado(ruta.getTiempoLlegadaEstimado())
-                .distanciaTotal(ruta.getDistanciaTotal())
-                .esDirecta(ruta.isEsDirecta())
-                .escalas(ruta.getEscalas())
-                .legs(new ArrayList<>())
-                .build();
-
-        List<Vuelo> secuencia = ruta.getSecuenciaVuelos();
-
-        log.info(
-                "Ruta para shipmentId {} tiene {} vuelos",
-                shipmentId,
-                secuencia == null ? 0 : secuencia.size()
-        );
-
-        if (secuencia != null) {
-            for (int i = 0; i < secuencia.size(); i++) {
-                Vuelo vuelo = secuencia.get(i);
-                String fid = vuelo.getId();
-
-                String flightBusinessId = fid != null && fid.contains("@")
-                        ? fid.substring(0, fid.indexOf("@"))
-                        : fid;
-
-                FlightEntity flightEntity = flightByBusinessId.computeIfAbsent(
-                        flightBusinessId,
-                        bid -> flightRepository.findByBusinessId(bid).orElse(null)
-                );
-
-                if (flightEntity == null) {
-                    log.warn("No se guardó leg: no existe FlightEntity con businessId={}", fid);
-                    continue;
-                }
-
-                route.getLegs().add(RouteLegEntity.builder()
-                        .route(route)
-                        .flight(flightEntity)
-                        .legOrder(i)
-                        .build());
+            if (shipmentId == null) {
+                log.warn("No se guardó ruta: shipmentId null");
+                continue;
             }
+
+            if (ruta == null) {
+                log.warn("Ruta null para shipmentId {}", shipmentId);
+                continue;
+            }
+
+            ShipmentEntity shipment = shipmentById.computeIfAbsent(
+                    shipmentId,
+                    id -> shipmentRepository.findById(id).orElse(null)
+            );
+
+            if (shipment == null) {
+                log.warn("No se guardó ruta: no existe ShipmentEntity con id={}", shipmentId);
+                continue;
+            }
+
+            RouteEntity route = RouteEntity.builder()
+                    .planningRun(run)
+                    .shipment(shipment)
+                    .tiempoInicio(ruta.getTiempoInicio())
+                    .tiempoLlegadaEstimado(ruta.getTiempoLlegadaEstimado())
+                    .distanciaTotal(ruta.getDistanciaTotal())
+                    .esDirecta(ruta.isEsDirecta())
+                    .escalas(ruta.getEscalas())
+                    .legs(new ArrayList<>())
+                    .build();
+
+            List<Vuelo> secuencia = ruta.getSecuenciaVuelos();
+
+            log.info(
+                    "Ruta para shipmentId {} tiene {} vuelos",
+                    shipmentId,
+                    secuencia == null ? 0 : secuencia.size()
+            );
+
+            if (secuencia != null) {
+                for (int i = 0; i < secuencia.size(); i++) {
+                    Vuelo vuelo = secuencia.get(i);
+                    String fid = vuelo.getId();
+
+                    String flightBusinessId = fid != null && fid.contains("@")
+                            ? fid.substring(0, fid.indexOf("@"))
+                            : fid;
+
+                    FlightEntity flightEntity = flightByBusinessId.computeIfAbsent(
+                            flightBusinessId,
+                            bid -> flightRepository.findByBusinessId(bid).orElse(null)
+                    );
+
+                    if (flightEntity == null) {
+                        log.warn("No se guardó leg: no existe FlightEntity con businessId={}", fid);
+                        continue;
+                    }
+
+                    route.getLegs().add(RouteLegEntity.builder()
+                            .route(route)
+                            .flight(flightEntity)
+                            .legOrder(i)
+                            .build());
+                }
+            }
+
+            routeRepository.save(route);
+
+            log.info(
+                    "Ruta guardada para shipmentId {} con {} legs",
+                    shipmentId,
+                    route.getLegs().size()
+            );
         }
-
-        routeRepository.save(route);
-
-        log.info(
-                "Ruta guardada para shipmentId {} con {} legs",
-                shipmentId,
-                route.getLegs().size()
-        );
-    }
-}    
+    }    
     
     
 //    private void persistOutcome(PlanningRunEntity run, OptimizationOutcome outcome) {

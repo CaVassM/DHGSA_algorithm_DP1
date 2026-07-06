@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { startPlanningRun, getImportStatus, getShipments, importShipments, importAirports, importFlights,getPlanningRun } from '../services/api'
+import { startPlanningRun, getImportStatus, getShipments, importShipments, importAirports, importFlights,getPlanningRun, iniciarSimulacionEnVivo} from '../services/api'
 //import { startPlanningRun, getPlanningRun, getImportStatus, importShipments, importAirports, importFlights } from '../services/api'
 
 const UMBRALES = [
@@ -96,6 +96,44 @@ export default function ConfiguracionSimulacion() {
       setError('Selecciona una fecha de inicio para la planificación.')
       return
     }
+
+    setLoading(true)
+    setError(null)
+
+    try {
+      const { runId, topic } = await iniciarSimulacionEnVivo({
+        algorithm: 'IALNS_SA',
+        planningStart: `${planningStart}:00`,
+        epochHours: 4,
+        horizonDays: 1,
+        populationSize: 6,
+        timeLimitSeconds: 2,
+        multiplicadorTemporal: 120,
+      })
+
+      localStorage.setItem('tasf_runId', String(runId))
+
+      navigate('/dashboard', {
+        state: {
+          runId,
+          live: true,
+          topic,
+        },
+      })
+    } catch (err) {
+      setError(
+        err.response?.data?.message ??
+        err.message ??
+        'No se pudo iniciar la simulación en vivo.'
+      )
+      setLoading(false)
+    }
+  }
+/*   async function handleIniciar() {
+    if (!planningStart) {
+      setError('Selecciona una fecha de inicio para la planificación.')
+      return
+    }
     setLoading(true)
     setError(null)
     try {
@@ -114,7 +152,7 @@ export default function ConfiguracionSimulacion() {
       setError(err.response?.data?.message ?? err.message ?? 'No se pudo conectar con el servidor. Verifica que el backend esté corriendo.')
       setLoading(false)
     }
-  }
+  } */
 
   const shipmentsReady = importStatus !== null && importStatus.shipmentsCount > 0
   const isPlanningStartValid = Boolean(planningStart)

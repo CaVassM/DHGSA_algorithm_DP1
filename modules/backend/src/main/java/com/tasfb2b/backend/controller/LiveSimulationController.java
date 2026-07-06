@@ -28,69 +28,55 @@ import java.util.concurrent.atomic.AtomicLong;
 @RequiredArgsConstructor
 @Tag(name = "Simulación en vivo",
         description = "Simulación de periodo animada con salto de algoritmo; progreso vía WebSocket.")
+
 public class LiveSimulationController {
 
     private final SimulacionEnVivoService simulacionEnVivoService;
-    private final AtomicLong secuencia = new AtomicLong(System.currentTimeMillis());
 
     @PostMapping("/live")
-    @Operation(summary = "Arrancar una simulación de periodo en vivo",
-            description = "Devuelve runId y el topic WebSocket donde se emite el progreso por época.")
-    public ResponseEntity<Map<String, Object>> iniciar(@Valid @RequestBody LiveSimulationRequest request) {
-        Long runId = secuencia.incrementAndGet();
+    @Operation(
+            summary = "Arrancar una simulación de periodo en vivo",
+            description = "Crea un PlanningRun en BD y devuelve el runId y el topic WebSocket donde se emite el progreso por época."
+    )
+    public ResponseEntity<Map<String, Object>> iniciar(
+            @Valid @RequestBody LiveSimulationRequest request
+    ) {
+        Long runId = simulacionEnVivoService.registrarSimulacionEnVivo(request, false);
+        SimulacionEnVivoService.LiveParams params =
+                simulacionEnVivoService.construirLiveParams(request, false);
 
-        OptimizationAlgorithm algoritmo = "IALNS".equalsIgnoreCase(request.getAlgorithm())
-                ? OptimizationAlgorithm.IALNS : OptimizationAlgorithm.DHGS;
-
-        LiveParams params = new LiveParams(
-                algoritmo,
-                request.getPlanningStart(),
-                request.getEpochHours(),
-                request.getHorizonDays(),
-                request.getPopulationSize(),
-                request.getTimeLimitSeconds(),
-                request.getMultiplicadorTemporal(),
-                request.isPreBuffer(),
-                false, 1, 100.0   // modo normal: sin colapso
-        );
-
+        // Importante: esta llamada sale desde el controller hacia el bean proxied,
+        // por eso @Async sí se ejecuta correctamente.
         simulacionEnVivoService.iniciar(runId, params);
 
         return ResponseEntity.accepted().body(Map.of(
                 "runId", runId,
                 "topic", "/topic/simulacion/" + runId,
+                "statusTopic", "/topic/simulacion/" + runId,
+                "statusUrl", "/api/v1/planner/runs/" + runId,
                 "mensaje", "Simulación en vivo iniciada. Suscríbete al topic para recibir el progreso."
         ));
     }
 
     @PostMapping("/collapse")
-    @Operation(summary = "Arrancar una simulación de colapso (COLLAPSE_SIMULATION)",
-            description = "Multiplica la carga por factorCarga y simula hasta saturar el sistema; "
-                    + "emite un evento COLAPSO con el reporte cuando se detecta.")
-    public ResponseEntity<Map<String, Object>> iniciarColapso(@Valid @RequestBody LiveSimulationRequest request) {
-        Long runId = secuencia.incrementAndGet();
-        OptimizationAlgorithm algoritmo = "IALNS".equalsIgnoreCase(request.getAlgorithm())
-                ? OptimizationAlgorithm.IALNS : OptimizationAlgorithm.DHGS;
-
-        LiveParams params = new LiveParams(
-                algoritmo,
-                request.getPlanningStart(),
-                request.getEpochHours(),
-                request.getHorizonDays(),
-                request.getPopulationSize(),
-                request.getTimeLimitSeconds(),
-                request.getMultiplicadorTemporal(),
-                request.isPreBuffer(),
-                true,
-                Math.max(1, request.getFactorCarga()),
-                request.getUmbralColapso()
-        );
+    @Operation(
+            summary = "Arrancar una simulación de colapso (COLLAPSE_SIMULATION)",
+            description = "Multiplica la carga por factorCarga y simula hasta saturar el sistema."
+    )
+    public ResponseEntity<Map<String, Object>> iniciarColapso(
+            @Valid @RequestBody LiveSimulationRequest request
+    ) {
+        Long runId = simulacionEnVivoService.registrarSimulacionEnVivo(request, true);
+        SimulacionEnVivoService.LiveParams params =
+                simulacionEnVivoService.construirLiveParams(request, true);
 
         simulacionEnVivoService.iniciar(runId, params);
 
         return ResponseEntity.accepted().body(Map.of(
                 "runId", runId,
                 "topic", "/topic/simulacion/" + runId,
+                "statusTopic", "/topic/simulacion/" + runId,
+                "statusUrl", "/api/v1/planner/runs/" + runId,
                 "mensaje", "Simulación de colapso iniciada. Suscríbete al topic para recibir el progreso."
         ));
     }
@@ -99,6 +85,84 @@ public class LiveSimulationController {
     @Operation(summary = "Cancelar una simulación en vivo en curso")
     public ResponseEntity<Map<String, Object>> cancelar(@PathVariable Long runId) {
         simulacionEnVivoService.cancelar(runId);
-        return ResponseEntity.ok(Map.of("runId", runId, "mensaje", "Cancelación solicitada."));
+
+        return ResponseEntity.ok(Map.of(
+                "runId", runId,
+                "mensaje", "Cancelación solicitada."
+        ));
     }
 }
+//public class LiveSimulationController {
+//
+//    private final SimulacionEnVivoService simulacionEnVivoService;
+//    private final AtomicLong secuencia = new AtomicLong(System.currentTimeMillis());
+//
+//    @PostMapping("/live")
+//    @Operation(summary = "Arrancar una simulación de periodo en vivo",
+//            description = "Devuelve runId y el topic WebSocket donde se emite el progreso por época.")
+//    public ResponseEntity<Map<String, Object>> iniciar(@Valid @RequestBody LiveSimulationRequest request) {
+//        Long runId = secuencia.incrementAndGet();
+//
+//        OptimizationAlgorithm algoritmo = "IALNS".equalsIgnoreCase(request.getAlgorithm())
+//                ? OptimizationAlgorithm.IALNS : OptimizationAlgorithm.DHGS;
+//
+//        LiveParams params = new LiveParams(
+//                algoritmo,
+//                request.getPlanningStart(),
+//                request.getEpochHours(),
+//                request.getHorizonDays(),
+//                request.getPopulationSize(),
+//                request.getTimeLimitSeconds(),
+//                request.getMultiplicadorTemporal(),
+//                request.isPreBuffer(),
+//                false, 1, 100.0   // modo normal: sin colapso
+//        );
+//
+//        simulacionEnVivoService.iniciar(runId, params);
+//
+//        return ResponseEntity.accepted().body(Map.of(
+//                "runId", runId,
+//                "topic", "/topic/simulacion/" + runId,
+//                "mensaje", "Simulación en vivo iniciada. Suscríbete al topic para recibir el progreso."
+//        ));
+//    }
+//
+//    @PostMapping("/collapse")
+//    @Operation(summary = "Arrancar una simulación de colapso (COLLAPSE_SIMULATION)",
+//            description = "Multiplica la carga por factorCarga y simula hasta saturar el sistema; "
+//                    + "emite un evento COLAPSO con el reporte cuando se detecta.")
+//    public ResponseEntity<Map<String, Object>> iniciarColapso(@Valid @RequestBody LiveSimulationRequest request) {
+//        Long runId = secuencia.incrementAndGet();
+//        OptimizationAlgorithm algoritmo = "IALNS".equalsIgnoreCase(request.getAlgorithm())
+//                ? OptimizationAlgorithm.IALNS : OptimizationAlgorithm.DHGS;
+//
+//        LiveParams params = new LiveParams(
+//                algoritmo,
+//                request.getPlanningStart(),
+//                request.getEpochHours(),
+//                request.getHorizonDays(),
+//                request.getPopulationSize(),
+//                request.getTimeLimitSeconds(),
+//                request.getMultiplicadorTemporal(),
+//                request.isPreBuffer(),
+//                true,
+//                Math.max(1, request.getFactorCarga()),
+//                request.getUmbralColapso()
+//        );
+//
+//        simulacionEnVivoService.iniciar(runId, params);
+//
+//        return ResponseEntity.accepted().body(Map.of(
+//                "runId", runId,
+//                "topic", "/topic/simulacion/" + runId,
+//                "mensaje", "Simulación de colapso iniciada. Suscríbete al topic para recibir el progreso."
+//        ));
+//    }
+//
+//    @PostMapping("/live/{runId}/cancel")
+//    @Operation(summary = "Cancelar una simulación en vivo en curso")
+//    public ResponseEntity<Map<String, Object>> cancelar(@PathVariable Long runId) {
+//        simulacionEnVivoService.cancelar(runId);
+//        return ResponseEntity.ok(Map.of("runId", runId, "mensaje", "Cancelación solicitada."));
+//    }
+//}

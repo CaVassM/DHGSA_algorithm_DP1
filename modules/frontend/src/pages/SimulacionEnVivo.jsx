@@ -1,3 +1,4 @@
+import { useNavigate } from 'react-router-dom'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import NavBar from '../components/NavBar'
 import { iniciarSimulacionEnVivo, cancelarSimulacionEnVivo } from '../services/api'
@@ -16,7 +17,10 @@ function colorOcup(pct) {
 
 const MULTIPLICADORES = [60, 120, 240, 480]
 
+
+
 export default function SimulacionEnVivo() {
+  const navigate = useNavigate()
   const [estado, setEstado] = useState('idle') // idle | corriendo | fin | error
   const [multiplicador, setMultiplicador] = useState(240)
   const [algoritmo, setAlgoritmo] = useState('DHGS')
@@ -33,6 +37,39 @@ export default function SimulacionEnVivo() {
   useEffect(() => () => { disconnectRef.current?.() }, [])
 
   const arrancar = useCallback(async () => {
+    setEstado('corriendo')
+    setEvento(null)
+    setEventos([])
+    setMensaje(null)
+
+    try {
+      const { runId, topic } = await iniciarSimulacionEnVivo({
+        algorithm: algoritmo,
+        planningStart: planningStart ? `${planningStart}:00` : null,
+        epochHours: 4,
+        horizonDays,
+        populationSize: 4,
+        timeLimitSeconds: 1,
+        multiplicadorTemporal: multiplicador,
+      })
+
+      setRunId(runId)
+      localStorage.setItem('tasf_runId', String(runId))
+
+      navigate('/dashboard', {
+        state: {
+          runId,
+          live: true,
+          topic,
+        },
+      })
+    } catch {
+      setMensaje('No se pudo iniciar la simulación. ¿Backend arriba y datos cargados?')
+      setEstado('error')
+  }
+}, [algoritmo, planningStart, horizonDays, multiplicador, navigate])
+
+/*   const arrancar = useCallback(async () => {
     setEstado('corriendo'); setEvento(null); setEventos([]); setMensaje(null)
     try {
       const { runId, topic } = await iniciarSimulacionEnVivo({
@@ -61,7 +98,7 @@ export default function SimulacionEnVivo() {
       setMensaje('No se pudo iniciar la simulación. ¿Backend arriba y datos cargados?')
       setEstado('error')
     }
-  }, [algoritmo, planningStart, horizonDays, multiplicador])
+  }, [algoritmo, planningStart, horizonDays, multiplicador]) */
 
   const cancelar = useCallback(async () => {
     if (runId) { try { await cancelarSimulacionEnVivo(runId) } catch { /* noop */ } }

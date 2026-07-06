@@ -43,6 +43,7 @@ services:
     volumes:
       - ./modules/backend/src/test/resources/datos:/app/src/test/resources/datos
     environment:
+      JAVA_TOOL_OPTIONS: "-Xms512m -Xmx4g -XX:+UseG1GC"
       PLANNER_DATASETS_DEMO_AEROPUERTOS: ${PLANNER_DATASETS_DEMO_AEROPUERTOS:-/app/src/test/resources/datos/estudiantes.txt}
       PLANNER_DATASETS_DEMO_VUELOS: ${PLANNER_DATASETS_DEMO_VUELOS:-/app/src/test/resources/datos/planes_vuelo.txt}
       PLANNER_DATASETS_DEMO_ENVIOS_DIR: ${PLANNER_DATASETS_DEMO_ENVIOS_DIR:-/app/src/test/resources/datos/envios_preliminar_test}

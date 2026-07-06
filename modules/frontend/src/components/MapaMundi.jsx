@@ -234,9 +234,79 @@ function MapViewportController({ airportsByCode, resetNonce }) {
   return null
 }
 
+//se agrega esto nuevo
+function adaptLiveRouteToMapRoute(route) {
+  if (!route) return null
+
+  return {
+    origenIcao:
+      route.origenIcao ??
+      route.originIcao ??
+      route.origen ??
+      route.origin,
+
+    destinoIcao:
+      route.destinoIcao ??
+      route.destinationIcao ??
+      route.destino ??
+      route.destination,
+
+    tiempoInicio:
+      route.tiempoInicio ??
+      route.startTime ??
+      route.inicio,
+
+    tiempoLlegadaEstimado:
+      route.tiempoLlegadaEstimado ??
+      route.estimatedArrivalTime ??
+      route.llegadaEstimada ??
+      route.fin,
+
+    distanciaTotal:
+      route.distanciaTotal ??
+      route.totalDistance,
+
+    esDirecta:
+      route.esDirecta ??
+      route.directa ??
+      route.direct,
+
+    escalas:
+      route.escalas ??
+      route.stops ??
+      0,
+
+    shipmentBusinessId:
+      route.shipmentBusinessId ??
+      route.envioId ??
+      route.shipmentId ??
+      route.idEnvio,
+
+    cantidadMaletas:
+      route.cantidadMaletas ??
+      route.totalBags ??
+      route.maletas ??
+      0,
+
+    flightBusinessIds:
+      route.flightBusinessIds ??
+      route.vuelos?.map(v => {
+        const id = v.businessId ?? v.id
+        return id && String(id).includes('@')
+          ? String(id).substring(0, String(id).indexOf('@'))
+          : id
+      }) ??
+      route.legs?.map(l => l.flightBusinessId ?? l.flightId ?? l.businessId).filter(Boolean) ??
+      [],
+  }
+} 
+
 export default function MapaMundi({
   runId,
   runCompleted = false,
+  liveMode = false,
+  liveEvent = null,
+  routesRefreshKey = 0,
   onActiveLegsChange,
   onOcupacionChange,
   focusAirport,
@@ -248,6 +318,7 @@ export default function MapaMundi({
 
   const [airports, setAirports] = useState(null)
   const [routes, setRoutes] = useState(null)
+  const [persistedRoutes, setPersistedRoutes] = useState(null)
   const [flights, setFlights] = useState([])
 
   const [simTime, setSimTime] = useState(null)
@@ -303,7 +374,7 @@ export default function MapaMundi({
       .catch(() => {})
   }, [])
 
-  useEffect(() => {
+/*   useEffect(() => {
     if (!runId) return
     let vivo = true
     getPlanningRunRoutes(runId)
@@ -319,7 +390,50 @@ export default function MapaMundi({
       })
       .catch(() => {})
     return () => { vivo = false }
-  }, [runId, runCompleted])
+  }, [runId, runCompleted]) */
+  useEffect(() => {
+    if (!runId) return
+    let vivo = true
+
+    getPlanningRunRoutes(runId)
+      .then(list => {
+        if (!vivo) return
+
+        const valid = (list ?? []).filter(r => r.origenIcao && r.destinoIcao)
+
+        setRoutes(valid)
+
+        const starts = valid.map(r => r.tiempoInicio).filter(Boolean).sort()
+        if (starts.length > 0) {
+          setSimTime(prev => prev ?? new Date(starts[0]))
+        }
+      })
+      .catch(() => {})
+
+    return () => { vivo = false }
+}, [runId, runCompleted, routesRefreshKey])
+
+/*   const routes = useMemo(() => {
+    if (liveMode && liveRoutes && liveRoutes.length > 0) {
+      return liveRoutes
+        .map(adaptLiveRouteToMapRoute)
+        .filter(r => r && r.origenIcao && r.destinoIcao)
+    }
+
+    return persistedRoutes
+  }, [liveMode, liveRoutes, persistedRoutes]) */
+
+  useEffect(() => {
+    if (!liveMode || !liveEvent?.relojSimulado) return
+
+    const t = new Date(liveEvent.relojSimulado)
+
+    if (!Number.isNaN(t.getTime())) {
+      setSimTime(t)
+      setIsPlaying(false)
+    }
+  }, [liveMode, liveEvent])
+
 
   useEffect(() => {
     getFlights(0, 500)
@@ -649,6 +763,17 @@ export default function MapaMundi({
     setBusquedaInput(String(highlightShipment.id))
     setEnvioBuscado(String(highlightShipment.id))
   }, [highlightShipment])
+
+  useEffect(() => {
+    if (!liveMode || !liveEvent?.relojSimulado) return
+
+    const t = new Date(liveEvent.relojSimulado)
+
+    if (!Number.isNaN(t.getTime())) {
+      setSimTime(t)
+      setIsPlaying(false)
+    }
+  }, [liveMode, liveEvent])
 
   return (
     <div className="relative w-full h-full overflow-hidden bg-[#0c1a2e] select-none">
