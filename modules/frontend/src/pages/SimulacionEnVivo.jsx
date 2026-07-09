@@ -23,7 +23,7 @@ export default function SimulacionEnVivo() {
   const navigate = useNavigate()
   const [estado, setEstado] = useState('idle') // idle | corriendo | fin | error
   const [multiplicador, setMultiplicador] = useState(240)
-  const [algoritmo, setAlgoritmo] = useState('DHGS')
+  const [algoritmo, setAlgoritmo] = useState('IALNS')
   const [planningStart, setPlanningStart] = useState('2026-01-02T00:00')
   const [horizonDays, setHorizonDays] = useState(2)
 
@@ -43,10 +43,23 @@ export default function SimulacionEnVivo() {
     setMensaje(null)
 
     try {
+      // El backend procesa UNA simulación en vivo a la vez (lock). Si ya hay una
+      // corriendo (de un intento anterior), la nueva se quedaría encolada sin
+      // arrancar nunca. Por eso cancelamos primero la anterior para que libere el
+      // lock y damos un respiro breve para que el backend la suelte.
+      const previo = localStorage.getItem('tasf_runId')
+      if (previo) {
+        try {
+          await cancelarSimulacionEnVivo(previo)
+          await new Promise(r => setTimeout(r, 600))
+        } catch { /* si ya no existe o falló, seguimos igual */ }
+      }
+
+      const epochHours = 4
       const { runId, topic } = await iniciarSimulacionEnVivo({
         algorithm: algoritmo,
         planningStart: planningStart ? `${planningStart}:00` : null,
-        epochHours: 4,
+        epochHours,
         horizonDays,
         populationSize: 4,
         timeLimitSeconds: 1,
@@ -61,6 +74,11 @@ export default function SimulacionEnVivo() {
           runId,
           live: true,
           topic,
+          // El mapa necesita estos para sincronizar la velocidad de reproducción
+          // con el ritmo real del backend (una época dura epochHours/multiplicador
+          // horas reales). Sin ellos animaría a una velocidad fija arbitraria.
+          multiplicador,
+          epochHours,
         },
       })
     } catch {
@@ -123,7 +141,6 @@ export default function SimulacionEnVivo() {
             <label className="block text-xs text-slate-400 mb-1.5">Algoritmo</label>
             <select value={algoritmo} onChange={e => setAlgoritmo(e.target.value)} disabled={estado === 'corriendo'}
               className="w-full mb-3 px-3 py-2 rounded-lg bg-slate-700/60 border border-slate-600 text-sm focus:outline-none focus:border-blue-500 disabled:opacity-50">
-              <option value="DHGS">DHGS (genético)</option>
               <option value="IALNS">IALNS (ALNS + SA)</option>
             </select>
 

@@ -19,6 +19,12 @@ import {
 } from '../data/aeropuertos'
 import { getAirports, getFlights, getPlanningRunRoutes } from '../services/api'
 
+// Respiro entre bloques (ms): al terminar los vuelos de una época y llegar la
+// siguiente, la reproducción espera este instante antes de reanudar, para que la
+// transición entre épocas se perciba (petición explícita: pausa "natural" de
+// unos segundos entre bloques).
+const RESPIRO_MS = 3000
+
 // Returns the next Date at HH:mm that is strictly after `afterDate`.
 function getNextDeparture(horaSalida, afterDate) {
   const [h, m] = horaSalida.split(':').map(Number)
@@ -306,6 +312,8 @@ export default function MapaMundi({
   runCompleted = false,
   liveMode = false,
   liveEvent = null,
+  multiplicador = 240,
+  epochHours = 4,
   routesRefreshKey = 0,
   onActiveLegsChange,
   onOcupacionChange,
@@ -323,10 +331,24 @@ export default function MapaMundi({
 
   const [simTime, setSimTime] = useState(null)
   const [isPlaying, setIsPlaying] = useState(false)
-  // Velocidad fija: el profesor pidió NO exponer selector de velocidad — la
-  // simulación corre sola (30-90 min reales para la semana completa). 60 =
-  // 1 min real ≈ 60 min simulados por tick.
-  const playSpeed = 60
+  // Velocidad de reproducción (minutos simulados avanzados por tick de 1s).
+  //
+  // En modo NO-live (run terminado): fija, la semana corre sola.
+  //
+  // En modo LIVE: DINÁMICA. El backend tarda un tiempo VARIABLE en resolver y
+  // mandar cada época (IALNS + persistencia), casi siempre más de lo que el front
+  // tardaría a velocidad fija → la animación terminaba antes y la barra se quedaba
+  // estática y luego saltaba. Para evitarlo medimos el tiempo real que tardó en
+  // llegar la última época y ajustamos la velocidad para que la animación de la
+  // época actual dure aprox eso: barra continua, sin saltos ni esperas.
+  // livePlaySpeed = (min simulados por época) / (segundos reales objetivo), porque
+  // el tick es de 1s. Arranca con una estimación desde el multiplicador y se va
+  // recalibrando con cada época que llega.
+  const estimacionInicial = Math.max(1, (multiplicador / 60))
+  const [livePlaySpeed, setLivePlaySpeed] = useState(estimacionInicial)
+  const playSpeed = liveMode ? livePlaySpeed : 60
+  // Marca de tiempo real (ms) en que llegó la última época, para medir el intervalo.
+  const ultimaEpocaLlegadaRef = useRef(null)
 
   const [realTime, setRealTime] = useState(() => new Date())
   useEffect(() => {
@@ -423,15 +445,119 @@ export default function MapaMundi({
     return persistedRoutes
   }, [liveMode, liveRoutes, persistedRoutes]) */
 
+  // --- Reproducción en vivo: seguir el ritmo del backend ---
+  //
+  // Techo simulado: hasta dónde puede avanzar la animación. Es el fin de la
+  // ÚLTIMA época recibida. El loop de play nunca pasa de aquí; cuando lo alcanza
+  // y aún no llegó la siguiente época, se queda esperando (respiro entre bloques).
+  // Es ESTADO (no ref) a propósito: el loop de reproducción depende de él, y al
+  // ser estado su cambio re-arma el loop de forma fiable (con un ref el arranque
+  // quedaba a merced de un re-render externo — por eso "solo arrancaba al mover
+  // el cursor").
+  const [liveCeiling, setLiveCeiling] = useState(null)
+  // Ventana e índice de la época en curso, para medir el progreso por ÉPOCAS en
+  // modo vivo (ver simProgress). En vivo NO sirve medir el progreso contra un
+  // simEnd derivado de las rutas persistidas: ese fin se aleja cada vez que llega
+  // una época nueva, así que la barra parecía estancada. El progreso por épocas
+  // (completas + fracción del reloj dentro de la actual) sí avanza monótono.
+  const [liveEpocaInfo, setLiveEpocaInfo] = useState(null) // { num, total, inicio, fin }
+  // Nº de la última época ya "consumida" para arrancar/reanudar la reproducción.
+  const lastLiveEpochRef = useRef(0)
+  // Timeout del "respiro" entre bloques, para poder cancelarlo si el componente
+  // se desmonta o arranca otra simulación antes de que dispare.
+  const respiroTimeoutRef = useRef(null)
+  // El usuario pausó a propósito: mientras esté activo, el auto-reanudar (respiro
+  // al llegar una época nueva) NO debe volver a poner play. Sin esto, pausar y
+  // que llegue una época te "re-pausaba"/"re-arrancaba" peleando con tu intención.
+  const pausaManualRef = useRef(false)
+
+  // Nueva simulación (cambia el runId): reiniciar TODO el seguimiento en vivo. Sin
+  // esto, al arrancar una segunda simulación el Dashboard se reusa (misma ruta) y
+  // el reloj/estado de la corrida anterior quedaba pegado → la nueva no animaba.
   useEffect(() => {
-    if (!liveMode || !liveEvent?.relojSimulado) return
-
-    const t = new Date(liveEvent.relojSimulado)
-
-    if (!Number.isNaN(t.getTime())) {
-      setSimTime(t)
-      setIsPlaying(false)
+    setLiveCeiling(null)
+    setLiveEpocaInfo(null)
+    lastLiveEpochRef.current = 0
+    setSimTime(null)
+    setIsPlaying(false)
+    pausaManualRef.current = false
+    ultimaEpocaLlegadaRef.current = null
+    setLivePlaySpeed(estimacionInicial)
+    if (respiroTimeoutRef.current) window.clearTimeout(respiroTimeoutRef.current)
+    return () => {
+      if (respiroTimeoutRef.current) window.clearTimeout(respiroTimeoutRef.current)
     }
+  }, [runId])
+
+  useEffect(() => {
+    if (!liveMode || liveEvent?.tipo !== 'EPOCA') return
+    const numEpoca = liveEvent.numeroEpoca ?? 0
+    if (numEpoca === lastLiveEpochRef.current) return // ya procesada
+    lastLiveEpochRef.current = numEpoca
+
+    const inicio = liveEvent.inicioEpoca ? new Date(liveEvent.inicioEpoca) : null
+    const fin = liveEvent.finEpoca
+      ? new Date(liveEvent.finEpoca)
+      : (liveEvent.relojSimulado ? new Date(liveEvent.relojSimulado) : null)
+
+    // Nuevo techo: hasta el fin de esta época puede avanzar la animación.
+    if (fin && !Number.isNaN(fin.getTime())) setLiveCeiling(fin)
+
+    // --- Ajuste dinámico de velocidad ---
+    // Medimos cuánto tardó (real) en llegar esta época desde la anterior. Ese es
+    // el ritmo real del backend. Ajustamos la velocidad para que la animación de
+    // la SIGUIENTE ventana dure aprox lo mismo → la barra sube continua en vez de
+    // terminar antes y quedarse estática esperando el salto.
+    const ahora = Date.now()
+    if (inicio && fin && fin > inicio && ultimaEpocaLlegadaRef.current != null) {
+      const intervaloRealMs = ahora - ultimaEpocaLlegadaRef.current
+      const minutosSimEpoca = (fin - inicio) / 60000 // ms simulados → min
+      // Descartar intervalos anómalos: si el usuario cambió de pestaña, el navegador
+      // congela los timers y este intervalo sale enorme (minutos). Recalibrar con
+      // ese dato basura hundía la velocidad a ~0 y la simulación parecía pausada.
+      // Solo recalibramos con intervalos "normales" (0.5s a 3min).
+      const INTERVALO_MAX_MS = 180000
+      if (intervaloRealMs > 500 && intervaloRealMs < INTERVALO_MAX_MS && minutosSimEpoca > 0) {
+        const intervaloSeg = (intervaloRealMs / 1000) * 0.95
+        const nuevaVel = minutosSimEpoca / intervaloSeg // min simulados por tick de 1s
+        // Suavizado (media móvil) + clamp a un rango sano para que ni un intervalo
+        // atípico ni un cálculo raro dejen la velocidad demasiado lenta o rápida.
+        setLivePlaySpeed(prev => {
+          const mezcla = prev * 0.4 + nuevaVel * 0.6
+          return Math.min(240, Math.max(1, mezcla))
+        })
+      }
+    }
+    ultimaEpocaLlegadaRef.current = ahora
+
+    // Ventana de la época en curso, para el progreso por épocas de la barra.
+    setLiveEpocaInfo({
+      num: numEpoca,
+      total: liveEvent.totalEpocas ?? 0,
+      inicio: inicio && !Number.isNaN(inicio.getTime()) ? inicio : null,
+      fin: fin && !Number.isNaN(fin.getTime()) ? fin : null,
+    })
+
+    // Primera época: posicionar el reloj al INICIO (no al fin — así la época se
+    // ANIMA de principio a fin en vez de saltar) y arrancar solo, sin play manual.
+    if (numEpoca <= 1) {
+      if (inicio && !Number.isNaN(inicio.getTime())) setSimTime(inicio)
+      setIsPlaying(true)
+      return
+    }
+
+    // Épocas siguientes: NO saltar el reloj. Si la reproducción estaba en pausa
+    // porque terminó los vuelos de la época anterior y esperaba, reanudar tras un
+    // breve respiro. Pero si el usuario pausó A PROPÓSITO, respetarlo: no reanudar.
+    setIsPlaying(prev => {
+      if (prev) return prev
+      if (pausaManualRef.current) return prev // el usuario quiere estar en pausa
+      if (respiroTimeoutRef.current) window.clearTimeout(respiroTimeoutRef.current)
+      respiroTimeoutRef.current = window.setTimeout(() => {
+        if (!pausaManualRef.current) setIsPlaying(true)
+      }, RESPIRO_MS)
+      return prev
+    })
   }, [liveMode, liveEvent])
 
 
@@ -660,28 +786,73 @@ export default function MapaMundi({
     onActiveLegsChange(enVueloPayload)
   }, [enVueloPayload, onActiveLegsChange])
 
-  const simProgress = simStart && simEnd && simTime
-    ? Math.min(1, Math.max(0, (simTime - simStart) / (simEnd - simStart)))
-    : 0
+  // Progreso de la barra. En vivo se mide por ÉPOCAS (monótono y estable): épocas
+  // ya completadas + la fracción del reloj dentro de la época en curso, sobre el
+  // total. Así la barra avanza pareja desde el arranque en vez de parecer
+  // estancada porque el simEnd (fin de rutas) se aleja al llegar cada época.
+  // Fuera de vivo se mide por tiempo simulado contra el fin global de las rutas.
+  const simProgress = (() => {
+    if (liveMode && liveEpocaInfo && liveEpocaInfo.total > 0) {
+      // En vivo: (épocas YA terminadas + fracción de la actual) / total. Con la
+      // época 1 recién llegando, terminadas = 0, así que la barra ARRANCA EN 0% y
+      // sube conforme el reloj recorre la ventana de la época; al completar la
+      // época N la barra vale N/total.
+      const { num, total, inicio, fin } = liveEpocaInfo
+      let fraccion = 1 // si no hay ventana, contamos la época como completa
+      if (inicio && fin && simTime && fin > inicio) {
+        fraccion = Math.min(1, Math.max(0, (simTime - inicio) / (fin - inicio)))
+      }
+      return Math.min(1, Math.max(0, ((num - 1) + fraccion) / total))
+    }
+    return simStart && simEnd && simTime
+      ? Math.min(1, Math.max(0, (simTime - simStart) / (simEnd - simStart)))
+      : 0
+  })()
 
   useEffect(() => {
     clearInterval(timerRef.current)
-    if (!isPlaying || !simEnd) return
+    // En vivo el tope efectivo es el fin de la ÚLTIMA época recibida (techo), no
+    // el fin global de las rutas persistidas: no queremos animar más allá de lo
+    // que el backend ya resolvió. Fuera de vivo, el tope es simEnd.
+    const limite = liveMode ? liveCeiling : simEnd
+    if (!isPlaying || !limite) return
 
+    // Avanzamos el reloj según el tiempo REAL transcurrido entre ticks, no un
+    // paso fijo. Así, si el navegador ralentiza los timers (cambiar de pestaña),
+    // no se acumulan ticks que luego disparan un "avance rápido" de golpe.
+    let ultimoTickMs = Date.now()
     timerRef.current = setInterval(() => {
+      const ahoraMs = Date.now()
+      // Delta real en segundos, CAPADO a 2s: si el tick se retrasó mucho (pestaña
+      // en background), no saltamos el reloj — avanzamos lo normal y seguimos.
+      const deltaSeg = Math.min(2, (ahoraMs - ultimoTickMs) / 1000)
+      ultimoTickMs = ahoraMs
       setSimTime(t => {
+        // Primer tick tras arrancar: si simTime aún no está fijado, no avanzamos
+        // (esperamos a que la primera época lo posicione). Evita quedarse colgado.
         if (!t) return t
-        const next = new Date(t.getTime() + playSpeed * 60 * 1000)
-        if (next >= simEnd) {
+        // playSpeed = min simulados por segundo real → escalamos por el delta real.
+        const next = new Date(t.getTime() + playSpeed * 60 * 1000 * deltaSeg)
+        if (next >= limite) {
+          // Alcanzado el fin de lo disponible.
+          if (liveMode) {
+            // En vivo NO apagamos el play: simplemente clavamos el reloj en el
+            // techo y esperamos a que la siguiente época lo suba (entonces el
+            // reloj vuelve a avanzar SOLO). Si aquí hiciéramos setIsPlaying(false),
+            // al darle play manual el loop volvería a toparse con el techo y se
+            // re-pausaría al instante — justo el bug de "despauso y se pausa solo".
+            return new Date(limite)
+          }
+          // Fuera de vivo, el techo (simEnd) SÍ es el final de la reproducción.
           setIsPlaying(false)
-          return new Date(simEnd)
+          return new Date(limite)
         }
         return next
       })
     }, 1000)
 
     return () => clearInterval(timerRef.current)
-  }, [isPlaying, playSpeed, simEnd])
+  }, [isPlaying, playSpeed, simEnd, liveMode, liveCeiling])
 
   const coords = useMemo(() => {
     const c = {}
@@ -764,17 +935,6 @@ export default function MapaMundi({
     setEnvioBuscado(String(highlightShipment.id))
   }, [highlightShipment])
 
-  useEffect(() => {
-    if (!liveMode || !liveEvent?.relojSimulado) return
-
-    const t = new Date(liveEvent.relojSimulado)
-
-    if (!Number.isNaN(t.getTime())) {
-      setSimTime(t)
-      setIsPlaying(false)
-    }
-  }, [liveMode, liveEvent])
-
   return (
     <div className="relative w-full h-full overflow-hidden bg-[#0c1a2e] select-none">
       <MapContainer
@@ -835,8 +995,31 @@ export default function MapaMundi({
           if (!a || !b) return null
 
           const t = dot.progreso
-          const lat = a.lat + (b.lat - a.lat) * t
-          const lng = a.lng + (b.lng - a.lng) * t
+          // El avión debe ir SOBRE la línea de ruta. La Polyline de Leaflet se
+          // dibuja recta en PÍXELES de pantalla (proyección), mientras que
+          // interpolar en grados lat/lng se curva al proyectar a Mercator → el
+          // avión se salía de su ruta. Interpolamos en el mismo espacio que dibuja
+          // la línea: proyectamos ambos extremos a puntos de capa, interpolamos
+          // ahí y desproyectamos. Así el avión queda clavado sobre la Polyline.
+          // Posición por defecto: interpolación lineal en grados.
+          let lat = a.lat + (b.lat - a.lat) * t
+          let lng = a.lng + (b.lng - a.lng) * t
+          // Ángulo por defecto en grados; si hay mapa, del vector en pantalla.
+          let angle = getHeadingAngle(a, b)
+          // Interpolar en el espacio proyectado hace que el avión vaya SOBRE la
+          // línea recta que dibuja Leaflet (que es recta en píxeles, no en grados).
+          if (mapInstance) {
+            const pa = mapInstance.latLngToLayerPoint([a.lat, a.lng])
+            const pb = mapInstance.latLngToLayerPoint([b.lat, b.lng])
+            const p = mapInstance.layerPointToLatLng([
+              pa.x + (pb.x - pa.x) * t,
+              pa.y + (pb.y - pa.y) * t,
+            ])
+            lat = p.lat
+            lng = p.lng
+            // atan2 con Y de pantalla (crece hacia abajo), sin invertir dy.
+            angle = Math.atan2(pb.y - pa.y, pb.x - pa.x) * (180 / Math.PI)
+          }
           const pct = dot.capacidadTotal > 0 ? (dot.maletas / dot.capacidadTotal) * 100 : 0
           const color = getPlaneColors(pct)
           // T55: filtro por semáforo de UT — atenuar aviones del color oculto.
@@ -845,7 +1028,6 @@ export default function MapaMundi({
           const semUt = getPlaneSemaforo(pct)
           const utAtenuada = utsOcultas.has(semUt)
             || icaosOcultos.has(dot.desde) || icaosOcultos.has(dot.hasta)
-          const angle = getHeadingAngle(a, b)
           const planeIcon = createPlaneIcon({ fill: color.fill, stroke: color.stroke, angle, count: dot.count })
 
           return (
@@ -1059,7 +1241,13 @@ export default function MapaMundi({
         <div className="absolute bottom-14 left-4 right-4 z-[1000]">
           <div className="bg-slate-900/92 backdrop-blur border border-slate-700 rounded-xl px-4 py-2.5 flex items-center gap-3">
             <button
-              onClick={() => setIsPlaying(p => !p)}
+              onClick={() => setIsPlaying(p => {
+                const next = !p
+                // Registrar la intención del usuario: al pausar, marcar pausa
+                // manual (el auto-respiro no debe reanudar). Al dar play, limpiarla.
+                pausaManualRef.current = !next
+                return next
+              })}
               className="w-8 h-8 shrink-0 flex items-center justify-center rounded-lg bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white font-bold transition-colors"
               title={isPlaying ? 'Pausar' : 'Reproducir'}
             >
@@ -1067,9 +1255,11 @@ export default function MapaMundi({
             </button>
 
             <div
-              className="flex-1 bg-slate-700/80 rounded-full h-1.5 cursor-pointer"
+              className={`flex-1 bg-slate-700/80 rounded-full h-1.5 ${liveMode ? 'cursor-default' : 'cursor-pointer'}`}
               onClick={e => {
-                if (!simStart || !simEnd) return
+                // En vivo el reloj lo marca el backend (progreso por épocas): no
+                // permitimos saltar a un punto arbitrario, rompería la sincronía.
+                if (liveMode || !simStart || !simEnd) return
                 const rect = e.currentTarget.getBoundingClientRect()
                 const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
                 setSimTime(new Date(simStart.getTime() + ratio * (simEnd - simStart)))

@@ -114,8 +114,14 @@
   height: 30px;
   display: grid;
   place-items: center;
-  transform: rotate(var(--plane-rotation));
   filter: drop-shadow(0 3px 6px rgba(2, 6, 23, 0.7));
+}
+
+/* La rotación se aplica SOLO al avión (SVG), no al contenedor: si rotáramos el
+   contenedor, el badge del número giraría con él y se vería invertido cuando el
+   avión apunta hacia la izquierda/abajo. */
+.tasf-plane-icon > svg {
+  transform: rotate(var(--plane-rotation));
 }
 
 .tasf-plane-badge {

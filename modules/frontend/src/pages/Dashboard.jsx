@@ -39,6 +39,26 @@ export default function Dashboard() {
   const [simulacionEnVivo, setSimulacionEnVivo] = useState(
     location.state?.live ?? false
   )
+  // Ritmo de la simulación en vivo: el mapa deriva de aquí la velocidad de
+  // reproducción para que cada época dure lo mismo que tarda el backend en
+  // mandar la siguiente. Vienen de la pantalla de configuración por navegación.
+  const multiplicador = location.state?.multiplicador ?? 240
+  const epochHours = location.state?.epochHours ?? 4
+  // Re-navegación a /dashboard con un runId nuevo (p.ej. arrancar una SEGUNDA
+  // simulación en vivo): el componente puede seguir montado, así que el useState
+  // inicial NO se re-evalúa. Sin esto, la segunda simulación no tomaba el nuevo
+  // runId y el mapa se quedaba con la corrida anterior (no animaba). Sincronizamos
+  // runId y el flag de "en vivo" cada vez que cambia el state de navegación.
+  const navRunId = location.state?.runId
+  const navLive = location.state?.live
+  useEffect(() => {
+    if (navRunId == null) return
+    setRunId(navRunId)
+    setSimulacionEnVivo(navLive ?? false)
+    // Nueva corrida: limpiar el último evento para no arrastrar el de la anterior.
+    setEventoSimulacion(null)
+  }, [navRunId, navLive])
+
   // Persistir el runId para que sobreviva recargas y navegación entre páginas
   useEffect(() => {
     if (runId != null) localStorage.setItem(LS_KEY, String(runId))
@@ -151,16 +171,17 @@ export default function Dashboard() {
             highlightShipment={highlightShipment}
             onSelectAirportFromMap={(icao) => setAirportFromMap({ icao, nonce: Date.now() })}
           /> */}
+          {/* Cartel de época: reubicado DEBAJO del reloj del mapa (que vive en
+              top-3 left-3) para no taparlo. Ya no repetimos el reloj simulado
+              aquí — ese dato lo da la tarjeta de tiempos del mapa; este cartel
+              solo aporta lo que el mapa no muestra: nº de época y asignados. */}
           {eventoSimulacion?.tipo === 'EPOCA' && (
-            <div className="absolute top-4 left-4 z-[1200] bg-slate-900/90 border border-blue-500/40 rounded-xl px-4 py-3 shadow-lg">
-              <div className="text-xs text-blue-300 uppercase tracking-wider">
+            <div className="absolute top-40 left-3 z-[1000] w-52 bg-slate-900/90 border border-blue-500/40 rounded-xl px-3 py-2 shadow-lg">
+              <div className="text-[10px] text-blue-300 uppercase tracking-widest font-semibold">
                 Simulación en vivo
               </div>
-              <div className="text-white font-semibold">
+              <div className="text-white font-semibold text-sm">
                 Época {eventoSimulacion.numeroEpoca} / {eventoSimulacion.totalEpocas}
-              </div>
-              <div className="text-xs text-slate-400">
-                Reloj: {String(eventoSimulacion.relojSimulado ?? '').replace('T', ' ').slice(0, 16)}
               </div>
               <div className="text-xs text-green-400">
                 Asignados: {eventoSimulacion.totalAsignadosAcumulado ?? 0}
@@ -172,6 +193,8 @@ export default function Dashboard() {
             runCompleted={!!(run && TERMINAL_STATUSES.has(run.status))}
             liveMode={simulacionEnVivo}
             liveEvent={eventoSimulacion}
+            multiplicador={multiplicador}
+            epochHours={epochHours}
             routesRefreshKey={routesRefreshKey}
             onActiveLegsChange={setEnVuelo}
             onOcupacionChange={setOcupacion}
