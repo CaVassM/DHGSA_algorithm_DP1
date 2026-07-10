@@ -197,6 +197,19 @@ private OptimizationAlgorithm resolverOptimizationAlgorithm(String rawAlgorithm)
     //@Transactional(readOnly = true)
     public void iniciar(Long runId, LiveParams params) {
         AtomicBoolean cancelado = new AtomicBoolean(false);
+        // Cancelar cualquier simulación anterior que siga viva. Sin esto, como el
+        // lock serializa las corridas y cada una dura minutos, una simulación
+        // nueva quedaba encolada detrás de la vieja: no arrancaba, no emitía
+        // INICIO y en el front "no pasaba nada". Al marcar las previas como
+        // canceladas, su loop de épocas (que trocea la espera) las libera pronto
+        // y esta toma el lock enseguida.
+        for (Map.Entry<Long, AtomicBoolean> e : cancelaciones.entrySet()) {
+            if (!e.getKey().equals(runId)) {
+                e.getValue().set(true);
+                log.info("Simulación {}: cancelando simulación previa {} para tomar su turno.",
+                        runId, e.getKey());
+            }
+        }
         cancelaciones.put(runId, cancelado);
         String topic = "/topic/simulacion/" + runId;
         // Una simulación a la vez: protege el estado mutable de los singletons.

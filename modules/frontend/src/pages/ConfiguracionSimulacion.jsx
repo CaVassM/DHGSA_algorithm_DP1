@@ -46,6 +46,7 @@ export default function ConfiguracionSimulacion() {
   const [loading, setLoading] = useState(false)
   const [error,   setError]   = useState(null)
   const [planningStart, setPlanningStart] = useState('')
+  const [horizonDays,   setHorizonDays]   = useState(5)
 
   // Re-consulta el estado de la BD tras cualquier importación.
   async function refreshStatus() {
@@ -101,14 +102,21 @@ export default function ConfiguracionSimulacion() {
     setError(null)
 
     try {
+      // multiplicadorTemporal: cuánto se comprime el tiempo. Cada época = 4h
+      // reales, que en pantalla duran (4h·3600)/multiplicador segundos. Con 480
+      // → ~30s por época (antes 120 → 2 min, demasiada espera y sensación de
+      // "congelado"). NO es un requisito de negocio, solo el ritmo de la
+      // animación.
+      const multiplicadorTemporal = 480
+      const epochHours = 4
       const { runId, topic } = await iniciarSimulacionEnVivo({
         algorithm: 'IALNS_SA',
         planningStart: `${planningStart}:00`,
-        epochHours: 4,
-        horizonDays: 1,
+        epochHours,
+        horizonDays,
         populationSize: 6,
         timeLimitSeconds: 2,
-        multiplicadorTemporal: 120,
+        multiplicadorTemporal,
       })
 
       localStorage.setItem('tasf_runId', String(runId))
@@ -118,6 +126,11 @@ export default function ConfiguracionSimulacion() {
           runId,
           live: true,
           topic,
+          // Pasar el ritmo al mapa para que reproduzca a la MISMA velocidad que
+          // emite el backend. Sin esto el Dashboard usaba su default (240) que no
+          // coincidía con el multiplicador real → mapa y backend desincronizados.
+          multiplicador: multiplicadorTemporal,
+          epochHours,
         },
       })
     } catch (err) {
@@ -311,7 +324,7 @@ export default function ConfiguracionSimulacion() {
           <div className="p-6 border-b border-slate-700">
             <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-4">Parámetros de Simulación</h2>
             <div className="grid grid-cols-2 gap-4">
-              <ParamCard label="Periodo a simular"     value="5 días"          icon="📅" />
+              <ParamCard label="Periodo a simular"     value={`${horizonDays} día${horizonDays === 1 ? '' : 's'}`} icon="📅" />
               <ParamCard label="Algoritmo planificador" value="Genético (AG)"  icon="🧬" />
               <ParamCard label="Duración estimada"      value="~60 minutos"    icon="⏱"  />
               <ParamCard label="Carga inicial"           value="20,485 maletas" icon="🧳" />
@@ -327,6 +340,44 @@ export default function ConfiguracionSimulacion() {
               />
               <p className="mt-1 text-xs text-slate-500">
                 Elige libremente la fecha y hora desde la que debe comenzar la simulación.
+              </p>
+            </div>
+
+            {/* Horizonte de días a simular */}
+            <div className="mt-4">
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="block text-xs text-slate-400">Días a simular (horizonte)</label>
+                <span className="text-sm font-semibold text-blue-400 font-mono">
+                  {horizonDays} día{horizonDays === 1 ? '' : 's'}
+                </span>
+              </div>
+              <div className="flex items-center gap-3">
+                <input
+                  type="range"
+                  min="1"
+                  max="14"
+                  value={horizonDays}
+                  onChange={e => setHorizonDays(Number(e.target.value))}
+                  disabled={!shipmentsReady || loading}
+                  className="flex-1 accent-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                />
+                <input
+                  type="number"
+                  min="1"
+                  max="14"
+                  value={horizonDays}
+                  onChange={e => {
+                    const v = Number(e.target.value)
+                    if (Number.isNaN(v)) return
+                    setHorizonDays(Math.min(14, Math.max(1, v)))
+                  }}
+                  disabled={!shipmentsReady || loading}
+                  className="w-16 px-2 py-1.5 rounded-lg bg-slate-700/60 border border-slate-600 text-slate-200 text-sm text-center focus:outline-none focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                />
+              </div>
+              <p className="mt-1 text-xs text-slate-500">
+                Cuántos días de operación optimiza la simulación. Más días = más realista, pero más
+                pesado (carga más envíos y corre más épocas). Sube de a poco: 1 → 3 → 7.
               </p>
             </div>
           </div>
@@ -392,7 +443,7 @@ export default function ConfiguracionSimulacion() {
           ) : (
             <>
               <span className="text-lg">▶</span>
-              Iniciar Simulación de 5 Días
+              Iniciar Simulación de {horizonDays} Día{horizonDays === 1 ? '' : 's'}
             </>
           )}
         </button>
