@@ -51,6 +51,8 @@ const ORDEN_ENVIOS = {
   id:        { label: 'ID (A-Z)',          cmp: byStr('businessId') },
 }
 
+
+
 function flightPct(f) {
   const cap = Number(f.capacidad ?? 0)
   if (cap <= 0) return 0
@@ -65,7 +67,8 @@ function fmtFecha(iso) {
   return `${p(d.getDate())}/${p(d.getMonth() + 1)} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
-export default function PanelListas({ ocupacionPorIcao = {}, airportFromMap, onSelectAirport, onSelectShipment }) {
+export default function PanelListas({runId,enVuelo=[], enviosOperativos = {planificados: [],enVuelo: [],entregados4h: [],},ocupacionPorIcao = {}, airportFromMap, onSelectAirport, onSelectShipment }) {
+  
   const [tab, setTab] = useState('almacenes')
   const [busqueda, setBusqueda] = useState('')
   const [orden, setOrden] = useState({ almacenes: 'icao', vuelos: 'salida', envios: 'deadline' })
@@ -74,6 +77,17 @@ export default function PanelListas({ ocupacionPorIcao = {}, airportFromMap, onS
   const [flights, setFlights] = useState([])
   const [shipments, setShipments] = useState([])
   const [cargando, setCargando] = useState(true)
+
+  const [estadoEnvio, setEstadoEnvio] = useState('planificados')
+  const cargaActualPorVuelo = useMemo(() => {
+    const resultado = {}
+    enVuelo.forEach(envio => {
+    const vueloId = envio.flightBusinessId
+    if (!vueloId) return
+
+    resultado[vueloId] =  (resultado[vueloId] ?? 0) + Number(envio.maletas ?? 0)})
+    return resultado
+  }, [enVuelo])
 
   useEffect(() => {
     let vivo = true
@@ -109,6 +123,20 @@ export default function PanelListas({ ocupacionPorIcao = {}, airportFromMap, onS
 
   const q = busqueda.trim().toLowerCase()
 
+  const fuenteEnvios = useMemo(() => {
+
+    if (estadoEnvio === 'enVuelo') {
+      return enviosOperativos.enVuelo ?? []
+    }
+
+    if (estadoEnvio === 'entregados4h') {
+      return enviosOperativos.entregados4h ?? []
+    }
+
+    return enviosOperativos.planificados ?? []
+
+  }, [enviosOperativos, estadoEnvio])
+
   const almacenesView = useMemo(() => {
     const conCarga = airports.map(ap => {
       const actual = ocupacionPorIcao[ap.codigoIcao] ?? 0
@@ -125,7 +153,7 @@ export default function PanelListas({ ocupacionPorIcao = {}, airportFromMap, onS
     return [...filtrado].sort(ORDEN_ALMACENES[orden.almacenes].cmp)
   }, [airports, ocupacionPorIcao, q, orden.almacenes])
 
-  const vuelosView = useMemo(() => {
+/*   const vuelosView = useMemo(() => {
     const conPct = flights.map(f => ({ ...f, _pct: flightPct(f), _sem: getSemaforoPorOcupacion(flightPct(f)) }))
     const filtrado = q
       ? conPct.filter(f =>
@@ -134,9 +162,44 @@ export default function PanelListas({ ocupacionPorIcao = {}, airportFromMap, onS
           f.destinoIcao?.toLowerCase().includes(q))
       : conPct
     return [...filtrado].sort(ORDEN_VUELOS[orden.vuelos].cmp)
-  }, [flights, q, orden.vuelos])
+  }, [flights, q, orden.vuelos]) */
 
-  const enviosView = useMemo(() => {
+  const vuelosView = useMemo(() => {
+  const conOcupacion = flights.map(f => {
+    const capacidad = Number(f.capacidad ?? 0)
+    const cargaActual = Number(cargaActualPorVuelo[f.businessId] ?? 0)
+
+    const pct = capacidad > 0
+      ? Math.round((cargaActual / capacidad) * 1000) / 10
+      : 0
+
+    return {
+      ...f,
+      _actual: cargaActual,
+      _pct: pct,
+      _sem: getSemaforoPorOcupacion(pct),
+    }
+  })
+
+  const filtrado = q
+    ? conOcupacion.filter(f => {
+        const codigo = String(f.businessId ?? '').toLowerCase()
+        const origen = String(f.origenIcao ?? '').toLowerCase()
+        const destino = String(f.destinoIcao ?? '').toLowerCase()
+        const tramo = `${origen}-${destino}`
+
+        return (
+          codigo.includes(q) ||
+          origen.includes(q) ||
+          destino.includes(q) ||
+          tramo.includes(q)
+        )
+      })
+    : conOcupacion
+
+  return [...filtrado].sort(ORDEN_VUELOS[orden.vuelos].cmp)
+}, [flights, cargaActualPorVuelo, q, orden.vuelos])
+/*   const enviosView = useMemo(() => {
     // Match tolerante a los ceros de relleno del ID: "28" encuentra "000000028".
     const qNorm = normalizarId(q)
     const filtrado = q
@@ -148,8 +211,47 @@ export default function PanelListas({ ocupacionPorIcao = {}, airportFromMap, onS
           s.idCliente?.toLowerCase().includes(q))
       : shipments
     return [...filtrado].sort(ORDEN_ENVIOS[orden.envios].cmp)
-  }, [shipments, q, orden.envios])
+  }, [shipments, q, orden.envios]) */
 
+  const enviosView = useMemo(() => {
+    const qNorm = normalizarId(q)
+
+    const filtrado = q
+      ? fuenteEnvios.filter(envio => {
+          const envioId = String(
+            envio.shipmentId ?? envio.businessId ?? ''
+          ).toLowerCase()
+
+          const ut = String(
+            envio.flightBusinessId ?? ''
+          ).toLowerCase()
+
+          const origen = String(
+            envio.origenIcao ?? envio.desde ?? ''
+          ).toLowerCase()
+
+          const destino = String(
+            envio.destinoIcao ?? envio.hasta ?? ''
+          ).toLowerCase()
+
+          const tramo = `${origen}-${destino}`
+
+          return (
+            envioId.includes(q) ||
+            normalizarId(envioId) === qNorm ||
+            ut.includes(q) ||
+            origen.includes(q) ||
+            destino.includes(q) ||
+            tramo.includes(q)
+          )
+        })
+      : fuenteEnvios
+
+    return [...filtrado].sort(
+      ORDEN_ENVIOS[orden.envios].cmp
+    )
+  }, [fuenteEnvios, q, orden.envios])
+  
   const ordenActual = { almacenes: ORDEN_ALMACENES, vuelos: ORDEN_VUELOS, envios: ORDEN_ENVIOS }[tab]
   const conteo = { almacenes: almacenesView.length, vuelos: vuelosView.length, envios: enviosView.length }[tab]
 
@@ -190,7 +292,48 @@ export default function PanelListas({ ocupacionPorIcao = {}, airportFromMap, onS
             <option key={k} value={k}>{v.label}</option>
           ))}
         </select>
-      </div>
+      </div>{tab === 'envios' && (
+
+        <div className="grid grid-cols-3 gap-1 px-2 pb-2">
+
+          <button
+            onClick={() => setEstadoEnvio('planificados')}
+            className={`rounded px-1 py-1.5 text-[10px] ${
+              estadoEnvio === 'planificados'
+                ? 'bg-blue-600 text-white'
+                : 'bg-slate-800 text-slate-400'
+            }`}
+          >
+            Planificados
+          </button>
+
+
+          <button
+            onClick={() => setEstadoEnvio('enVuelo')}
+            className={`rounded px-1 py-1.5 text-[10px] ${
+              estadoEnvio === 'enVuelo'
+                ? 'bg-blue-600 text-white'
+                : 'bg-slate-800 text-slate-400'
+            }`}
+          >
+            En vuelo
+          </button>
+
+
+          <button
+            onClick={() => setEstadoEnvio('entregados4h')}
+            className={`rounded px-1 py-1.5 text-[10px] ${
+              estadoEnvio === 'entregados4h'
+                ? 'bg-blue-600 text-white'
+                : 'bg-slate-800 text-slate-400'
+            }`}
+          >
+            Entregados
+          </button>
+
+        </div>
+
+      )}
 
       <div className="px-2 pb-1 text-[10px] text-slate-500">{conteo} resultado{conteo === 1 ? '' : 's'}</div>
 
@@ -235,7 +378,174 @@ export default function PanelListas({ ocupacionPorIcao = {}, airportFromMap, onS
             </div>
           ))
         ) : (
-          enviosView.map(s => (
+          enviosView.map((envio, index) => {
+            const envioId =
+              envio.shipmentId ??
+              envio.businessId
+
+            const origen =
+              envio.origenIcao ??
+              envio.desde
+
+            const destino =
+              envio.destinoIcao ??
+              envio.hasta
+
+            return (
+              <button
+                key={`${envioId}-${envio.flightBusinessId}-${index}`}
+                onClick={() =>
+                  onSelectShipment?.(envioId)
+                }
+                className="
+                  w-full
+                  text-left
+                  px-3
+                  py-2
+                  hover:bg-slate-800/60
+                  transition-colors
+                "
+              >
+                {/* ID + maletas */}
+                <div className="
+                  flex
+                  items-center
+                  justify-between
+                  gap-2
+                ">
+
+                  <span className="
+                    font-mono
+                    text-sm
+                    text-blue-300
+                  ">
+
+                    {envioId}
+
+                  </span>
+
+
+                  <span className="
+                    font-mono
+                    text-xs
+                    text-slate-300
+                  ">
+
+                    {envio.cantidadMaletas ?? 0} mal.
+
+                  </span>
+
+                </div>
+
+
+                {/* Origen → destino + UT */}
+
+                <div className="
+                  flex
+                  items-center
+                  justify-between
+                  mt-1
+                  gap-2
+                ">
+
+                  <span className="
+                    text-xs
+                    text-slate-300
+                  ">
+
+                    {origen} → {destino}
+
+                  </span>
+
+
+                  <span className="
+                    text-[10px]
+                    text-amber-300
+                    font-mono
+                  ">
+
+                    UT: {envio.flightBusinessId ?? 'Sin asignar'}
+
+                  </span>
+
+                </div>
+
+
+                {/* Horarios */}
+
+                <div className="
+                  flex
+                  items-center
+                  justify-between
+                  mt-1
+                  text-[10px]
+                  text-slate-500
+                ">
+
+                  <span>
+
+                    Sale: {
+                      envio.salida
+                        ? fmtFecha(envio.salida)
+                        : '—'
+                    }
+
+                  </span>
+
+
+                  <span>
+
+                    Llega: {
+                      envio.llegada
+                        ? fmtFecha(envio.llegada)
+                        : '—'
+                    }
+
+                  </span>
+
+                </div>
+
+
+                {/* Progreso solo si está en vuelo */}
+
+                {estadoEnvio === 'enVuelo' && (
+
+                  <div className="
+                    mt-2
+                    h-1
+                    rounded
+                    bg-slate-700
+                    overflow-hidden
+                  ">
+
+                    <div
+
+                      className="
+                        h-full
+                        bg-blue-500
+                      "
+
+                      style={{
+                        width: `${
+                          Math.min(
+                            100,
+                            (envio.progreso ?? 0) * 100
+                          )
+                        }%`
+                      }}
+
+                    />
+
+                  </div>
+
+                )}
+
+              </button>
+
+            )
+
+          })
+/*           enviosView.map(s => (
             <button
               key={s.businessId}
               onClick={() => onSelectShipment?.(s.businessId)}
@@ -251,7 +561,7 @@ export default function PanelListas({ ocupacionPorIcao = {}, airportFromMap, onS
               </div>
               <div className="text-[11px] text-slate-500 mt-0.5">Deadline: {fmtFecha(s.deadline)}</div>
             </button>
-          ))
+          )) */
         )}
       </div>
     </div>

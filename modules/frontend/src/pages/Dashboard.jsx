@@ -39,6 +39,11 @@ export default function Dashboard() {
   const [simulacionEnVivo, setSimulacionEnVivo] = useState(
     location.state?.live ?? false
   )
+  const [enviosOperativos, setEnviosOperativos] = useState({
+    planificados: [],
+    enVuelo: [],
+    entregados4h: [],
+  })
   // Ritmo de la simulación en vivo: el mapa deriva de aquí la velocidad de
   // reproducción para que cada época dure lo mismo que tarda el backend en
   // mandar la siguiente. Vienen de la pantalla de configuración por navegación.
@@ -198,6 +203,7 @@ export default function Dashboard() {
             routesRefreshKey={routesRefreshKey}
             onActiveLegsChange={setEnVuelo}
             onOcupacionChange={setOcupacion}
+            onOperationalShipmentsChange={setEnviosOperativos}
             focusAirport={focusAirport}
             highlightShipment={highlightShipment}
             onSelectAirportFromMap={(icao) => setAirportFromMap({ icao, nonce: Date.now() })}
@@ -216,11 +222,18 @@ export default function Dashboard() {
           </div>
         </main>
         <PanelLateral
-          run={run}
-          ocupacionPorIcao={ocupacion}
-          airportFromMap={airportFromMap}
-          onSelectAirport={(icao) => setFocusAirport({ icao, nonce: Date.now() })}
-          onSelectShipment={(id) => setHighlightShipment({ id, nonce: Date.now() })}
+            run={run}
+            runId={runId}
+            enVuelo={enVuelo}
+            ocupacionPorIcao={ocupacion}
+            airportFromMap={airportFromMap}
+            enviosOperativos={enviosOperativos}
+            onSelectAirport={(icao) =>
+              setFocusAirport({ icao, nonce: Date.now() })
+            }
+            onSelectShipment={(id) =>
+              setHighlightShipment({ id, nonce: Date.now() })
+            }
         />
       </div>
     </div>

@@ -44,6 +44,7 @@ function buildRouteLegs(route, flightMap) {
     const llegada = new Date(salida.getTime() + flight.duracionMinutos * 60 * 1000)
     cursor = llegada
     return [{
+      flightBusinessId: fid,
       shipmentId: route.shipmentBusinessId,
       cantidadMaletas: route.cantidadMaletas ?? 0,
       desde: flight.origenIcao,
@@ -317,6 +318,7 @@ export default function MapaMundi({
   routesRefreshKey = 0,
   onActiveLegsChange,
   onOcupacionChange,
+  onOperationalShipmentsChange,
   focusAirport,
   highlightShipment,
   onSelectAirportFromMap,
@@ -742,7 +744,75 @@ export default function MapaMundi({
         .filter(leg => leg.salida <= simTime && simTime <= leg.llegada)
         .map(leg => ({ ...leg, progreso: (simTime - leg.salida) / (leg.llegada - leg.salida) }))
     : []
+  
+  const enviosOperativos = useMemo(() => {
+    if (!simTime) {
+      return {
+        planificados: [],
+        enVuelo: [],
+        entregados4h: [],
+      }
+    }
 
+    const convertir = (leg, estado) => ({
+      shipmentId: leg.shipmentId,
+      flightBusinessId: leg.flightBusinessId,
+      origenIcao: leg.desde,
+      destinoIcao: leg.hasta,
+      cantidadMaletas: leg.cantidadMaletas ?? 0,
+      salida: leg.salida,
+      llegada: leg.llegada,
+      progreso: leg.progreso ?? 0,
+      estado,
+    })
+
+    // Tramos cuya salida todavía no ocurrió.
+    const planificados = allLegs
+      .filter(leg => leg.salida > simTime)
+      .map(leg => convertir(leg, 'PLANIFICADO'))
+
+    // Tramos activos en este instante.
+    const enVuelo = activeLegs.map(leg =>
+      convertir(leg, 'EN_VUELO')
+    )
+
+    /*
+    * Para considerar un envío como entregado usamos solamente
+    * el último tramo de su ruta. Una escala intermedia no cuenta
+    * como entrega final.
+    */
+    const ultimoTramoPorEnvio = new Map()
+
+    allLegs.forEach(leg => {
+      const anterior = ultimoTramoPorEnvio.get(leg.shipmentId)
+
+      if (!anterior || leg.llegada > anterior.llegada) {
+        ultimoTramoPorEnvio.set(leg.shipmentId, leg)
+      }
+    })
+
+    const cuatroHorasAntes = new Date(
+      simTime.getTime() - 4 * 60 * 60 * 1000
+    )
+
+    const entregados4h = Array.from(ultimoTramoPorEnvio.values())
+      .filter(leg =>
+        leg.llegada <= simTime &&
+        leg.llegada >= cuatroHorasAntes
+      )
+      .map(leg => convertir(leg, 'ENTREGADO'))
+
+    return {
+      planificados,
+      enVuelo,
+      entregados4h,
+    }
+  }, [allLegs, activeLegs, simTime])    
+  
+  useEffect(() => {
+    onOperationalShipmentsChange?.(enviosOperativos)
+  }, [enviosOperativos, onOperationalShipmentsChange])
+  
   const activeDotMap = {}
   activeLegs.forEach(leg => {
     const key = `${leg.desde}-${leg.hasta}`
@@ -767,6 +837,7 @@ export default function MapaMundi({
   // (comparando una firma estable) para no entrar en bucle de renders.
   const enVueloPayload = useMemo(
     () => activeLegs.map(l => ({
+      flightBusinessId: l.flightBusinessId,
       shipmentId: l.shipmentId,
       desde: l.desde,
       hasta: l.hasta,
