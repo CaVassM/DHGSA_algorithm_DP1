@@ -813,22 +813,31 @@ export default function MapaMundi({
     onOperationalShipmentsChange?.(enviosOperativos)
   }, [enviosOperativos, onOperationalShipmentsChange])
   
+  // Cada vuelo FÍSICO es su propio avión en el mapa. La clave es el vuelo
+  // (flightBusinessId + hora exacta de salida), no el par origen-destino: dos
+  // vuelos distintos entre los mismos aeropuertos (horarios distintos) deben
+  // verse como dos aviones separados, cada uno en su propio punto de la ruta.
+  // Envíos que SÍ comparten el mismo vuelo físico (mismo id + misma salida)
+  // siguen fusionándose en un solo ícono con el badge de conteo.
   const activeDotMap = {}
   activeLegs.forEach(leg => {
-    const key = `${leg.desde}-${leg.hasta}`
+    const key = `${leg.flightBusinessId}@${leg.salida.getTime()}`
     if (!activeDotMap[key]) {
       activeDotMap[key] = {
+        key,
+        flightBusinessId: leg.flightBusinessId,
         desde: leg.desde,
         hasta: leg.hasta,
         progreso: leg.progreso,
         count: 0,
         maletas: 0,
-        capacidadTotal: 0,
+        // Capacidad del vuelo físico: es una sola (la del avión), no se suma
+        // por cada envío que viaja en él.
+        capacidadTotal: leg.capacidadVuelo ?? 0,
       }
     }
     activeDotMap[key].count += 1
     activeDotMap[key].maletas += leg.cantidadMaletas
-    activeDotMap[key].capacidadTotal += leg.capacidadVuelo ?? 0
   })
   const activeDots = Object.values(activeDotMap)
 
@@ -1103,7 +1112,7 @@ export default function MapaMundi({
 
           return (
             <Marker
-              key={`${dot.desde}-${dot.hasta}`}
+              key={dot.key}
               opacity={utAtenuada ? 0.2 : 1}
               position={[lat, lng]}
               icon={planeIcon}
