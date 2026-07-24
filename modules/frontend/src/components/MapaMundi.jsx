@@ -133,8 +133,17 @@ function createPlaneIcon({ fill, stroke, angle, count }) {
 
 // T6: ícono de aeropuerto (en vez de un círculo). El color del semáforo va en
 // el relleno; el borde blanco lo mantiene legible sobre el mapa oscuro.
+// Cacheado por (fill, atenuado): sin esto, MapaMundi se re-renderiza cada
+// segundo (reloj en vivo) y cada render creaba un ícono nuevo, forzando a
+// Leaflet a reemplazar el DOM del marcador. El navegador no dispara
+// "mouseout" cuando el elemento bajo el cursor se reemplaza, así que el
+// tooltip de hover quedaba pegado abierto aunque el mouse ya no estuviera ahí.
+const airportIconCache = new Map()
 function createAirportIcon({ fill, atenuado = false }) {
-  return L.divIcon({
+  const cacheKey = `${fill}|${atenuado}`
+  const cached = airportIconCache.get(cacheKey)
+  if (cached) return cached
+  const icon = L.divIcon({
     className: 'tasf-airport-icon-wrapper',
     html: `
       <div class="tasf-airport-icon" style="--ap-fill:${fill};opacity:${atenuado ? 0.3 : 1};">
@@ -148,6 +157,8 @@ function createAirportIcon({ fill, atenuado = false }) {
     iconSize: [24, 24],
     iconAnchor: [12, 12],
   })
+  airportIconCache.set(cacheKey, icon)
+  return icon
 }
 
 function fallbackPctToLatLng(ap) {
@@ -381,6 +392,8 @@ export default function MapaMundi({
   // ocultar un continente, sus aeropuertos Y los vuelos hacia/desde ellos se
   // ocultan (regla del profesor: filtrar aeropuertos oculta sus vuelos).
   const [continentesOcultos, setContinentesOcultos] = useState(() => new Set())
+  // Panel de filtros colapsable: cerrado por defecto para no tapar el mapa.
+  const [filtrosAbiertos, setFiltrosAbiertos] = useState(false)
 
   // T50: aeropuerto seleccionado para ver su detalle en panel (misma vista).
   const [almacenSeleccionado, setAlmacenSeleccionado] = useState(null)
@@ -1162,7 +1175,7 @@ export default function MapaMundi({
                   <div className="text-slate-400 mb-1">{ap.ciudad} - {ap.continente}</div>
                   <div className="text-slate-300">Ocupacion: <span className="font-semibold text-green-300">{ap.almacen.actual.toLocaleString()}/{ap.almacen.capacidad.toLocaleString()}</span></div>
                   <div className="text-slate-300">Riesgo: <span className="text-amber-300">{ap.maletasEnRiesgo}</span></div>
-                  <div className="text-blue-300 mt-1">Hover + click para ver detalles {'->'}</div>
+                  <div className="text-blue-300 mt-1">Mantén el cursor y haz clic para ver detalles {'->'}</div>
                 </div>
               </Tooltip>
             </Marker>
@@ -1264,30 +1277,42 @@ export default function MapaMundi({
       )}
 
       {/* T54/T55: filtros por semáforo (almacenes y UT) reflejados en el mapa.
-          Reubicado a la derecha (bajo los botones de zoom) para despejar el
-          eje vertical: la esquina inferior-izquierda tapaba el sur de
-          Sudamérica (Argentina/Chile), que el profesor pidió mantener visible. */}
-      <div className="absolute top-32 right-3 z-[1000] bg-slate-900/92 backdrop-blur border border-slate-700 rounded-xl p-3 shadow-lg w-44 max-h-[60vh] overflow-y-auto">
-        <FiltroSemaforo
-          titulo="Almacenes"
-          ocultos={almacenesOcultos}
-          onToggle={(c) => setAlmacenesOcultos(prev => toggleSet(prev, c))}
-        />
-        <div className="h-px bg-slate-700 my-2" />
-        <FiltroSemaforo
-          titulo="UT (aviones)"
-          ocultos={utsOcultas}
-          onToggle={(c) => setUtsOcultas(prev => toggleSet(prev, c))}
-        />
-        {continentes.length > 1 && (
-          <>
-            <div className="h-px bg-slate-700 my-2" />
-            <FiltroContinente
-              continentes={continentes}
-              ocultos={continentesOcultos}
-              onToggle={(c) => setContinentesOcultos(prev => toggleSet(prev, c))}
+          En la columna izquierda, debajo del reloj/cartel de época, para no
+          chocar con "Envíos en vuelo" (columna derecha, crece hacia arriba).
+          NO va en la esquina inferior-izquierda: ahí tapa el sur de
+          Sudamérica (Argentina/Chile), que el profesor pidió mantener visible;
+          por eso el tope de altura queda acotado para no llegar a esa esquina. */}
+      <div className="absolute top-72 left-3 z-[1000] bg-slate-900/92 backdrop-blur border border-slate-700 rounded-xl shadow-lg w-44">
+        <button
+          onClick={() => setFiltrosAbiertos(a => !a)}
+          className="w-full px-3 py-2 text-xs font-semibold text-slate-300 hover:text-white transition-colors text-left"
+        >
+          {filtrosAbiertos ? 'Filtros ▴' : 'Filtros ▾'}
+        </button>
+        {filtrosAbiertos && (
+          <div className="px-3 pb-3 max-h-64 overflow-y-auto">
+            <FiltroSemaforo
+              titulo="Almacenes"
+              ocultos={almacenesOcultos}
+              onToggle={(c) => setAlmacenesOcultos(prev => toggleSet(prev, c))}
             />
-          </>
+            <div className="h-px bg-slate-700 my-2" />
+            <FiltroSemaforo
+              titulo="UT (aviones)"
+              ocultos={utsOcultas}
+              onToggle={(c) => setUtsOcultas(prev => toggleSet(prev, c))}
+            />
+            {continentes.length > 1 && (
+              <>
+                <div className="h-px bg-slate-700 my-2" />
+                <FiltroContinente
+                  continentes={continentes}
+                  ocultos={continentesOcultos}
+                  onToggle={(c) => setContinentesOcultos(prev => toggleSet(prev, c))}
+                />
+              </>
+            )}
+          </div>
         )}
       </div>
 
@@ -1391,7 +1416,7 @@ function FiltroCheck({ marcado, onToggle, hex, label }) {
   return (
     <button onClick={onToggle}
       className={`w-full flex items-center gap-2 text-xs rounded px-1 py-0.5 transition-colors ${marcado ? 'text-slate-200' : 'text-slate-500'}`}
-      title={marcado ? 'Click para ocultar en el mapa' : 'Click para mostrar en el mapa'}>
+      title={marcado ? 'Haz clic para ocultar en el mapa' : 'Haz clic para mostrar en el mapa'}>
       <span className={`w-3.5 h-3.5 shrink-0 rounded border flex items-center justify-center text-[9px] font-bold ${
         marcado ? 'bg-blue-600 border-blue-500 text-white' : 'bg-slate-800 border-slate-600 text-transparent'}`}>
         ✓
