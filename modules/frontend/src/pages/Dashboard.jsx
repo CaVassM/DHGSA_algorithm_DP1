@@ -31,6 +31,9 @@ export default function Dashboard() {
   const [highlightShipment, setHighlightShipment] = useState(null)
   // Vinculación mapa→panel: aeropuerto elegido con click en el mapa.
   const [airportFromMap, setAirportFromMap] = useState(null)
+  // F07/F08: vinculación bidireccional de unidades de transporte (aviones).
+  const [focusFlight, setFocusFlight] = useState(null)
+  const [flightFromMap, setFlightFromMap] = useState(null)
   const intervalRef = useRef(null)
   //agregado esta seccion para la simulacion en vivo 
   const [eventoSimulacion, setEventoSimulacion] = useState(null)
@@ -39,6 +42,11 @@ export default function Dashboard() {
   const [simulacionEnVivo, setSimulacionEnVivo] = useState(
     location.state?.live ?? false
   )
+  const [enviosOperativos, setEnviosOperativos] = useState({
+    planificados: [],
+    enVuelo: [],
+    entregados4h: [],
+  })
   // Ritmo de la simulación en vivo: el mapa deriva de aquí la velocidad de
   // reproducción para que cada época dure lo mismo que tarda el backend en
   // mandar la siguiente. Vienen de la pantalla de configuración por navegación.
@@ -198,9 +206,12 @@ export default function Dashboard() {
             routesRefreshKey={routesRefreshKey}
             onActiveLegsChange={setEnVuelo}
             onOcupacionChange={setOcupacion}
+            onOperationalShipmentsChange={setEnviosOperativos}
             focusAirport={focusAirport}
             highlightShipment={highlightShipment}
             onSelectAirportFromMap={(icao) => setAirportFromMap({ icao, nonce: Date.now() })}
+            focusFlight={focusFlight}
+            onSelectFlightFromMap={(id) => setFlightFromMap({ id, nonce: Date.now() })}
           />
           {/* #7: indicadores globales (flota + almacenes) siempre visibles */}
           <IndicadoresGlobalesBar enVuelo={enVuelo} ocupacionPorIcao={ocupacion} run={run} />
@@ -216,11 +227,20 @@ export default function Dashboard() {
           </div>
         </main>
         <PanelLateral
-          run={run}
-          ocupacionPorIcao={ocupacion}
-          airportFromMap={airportFromMap}
-          onSelectAirport={(icao) => setFocusAirport({ icao, nonce: Date.now() })}
-          onSelectShipment={(id) => setHighlightShipment({ id, nonce: Date.now() })}
+            run={run}
+            runId={runId}
+            enVuelo={enVuelo}
+            ocupacionPorIcao={ocupacion}
+            airportFromMap={airportFromMap}
+            flightFromMap={flightFromMap}
+            onSelectFlight={(id) => setFocusFlight({ id, nonce: Date.now() })}
+            enviosOperativos={enviosOperativos}
+            onSelectAirport={(icao) =>
+              setFocusAirport({ icao, nonce: Date.now() })
+            }
+            onSelectShipment={(id) =>
+              setHighlightShipment({ id, nonce: Date.now() })
+            }
         />
       </div>
     </div>
