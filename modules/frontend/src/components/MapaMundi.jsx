@@ -18,6 +18,7 @@ import {
   UMBRALES_ALMACEN,
 } from '../data/aeropuertos'
 import { getAirports, getFlights, getPlanningRunRoutes } from '../services/api'
+import { buildRouteLegs, RECOJO_DESTINO_MS } from '../services/rutaTramos'
 
 // Respiro entre bloques (ms): al terminar los vuelos de una época y llegar la
 // siguiente, la reproducción espera este instante antes de reanudar, para que la
@@ -25,36 +26,9 @@ import { getAirports, getFlights, getPlanningRunRoutes } from '../services/api'
 // unos segundos entre bloques).
 const RESPIRO_MS = 3000
 
-// Returns the next Date at HH:mm that is strictly after `afterDate`.
-function getNextDeparture(horaSalida, afterDate) {
-  const [h, m] = horaSalida.split(':').map(Number)
-  const d = new Date(afterDate)
-  d.setHours(h, m, 0, 0)
-  if (d <= afterDate) d.setDate(d.getDate() + 1)
-  return d
-}
-
-// Reconstructs per-leg { desde, hasta, salida: Date, llegada: Date, ... }
-function buildRouteLegs(route, flightMap) {
-  let cursor = new Date(route.tiempoInicio)
-  return (route.flightBusinessIds ?? []).flatMap(fid => {
-    const flight = flightMap.get(fid)
-    if (!flight) return []
-    const salida = getNextDeparture(flight.horaSalida, cursor)
-    const llegada = new Date(salida.getTime() + flight.duracionMinutos * 60 * 1000)
-    cursor = llegada
-    return [{
-      flightBusinessId: fid,
-      shipmentId: route.shipmentBusinessId,
-      cantidadMaletas: route.cantidadMaletas ?? 0,
-      desde: flight.origenIcao,
-      hasta: flight.destinoIcao,
-      salida,
-      llegada,
-      capacidadVuelo: flight.capacidad ?? 0,
-    }]
-  })
-}
+// G05: la reconstrucción de tramos (y con ella la permanencia mínima de la
+// maleta en cada escala) vive en services/rutaTramos.js — es lógica pura y así
+// se puede probar aislada del mapa.
 
 function formatSimDateTime(date) {
   if (!date) return '-'
@@ -648,6 +622,24 @@ export default function MapaMundi({
       .filter(l => normalizarId(l.shipmentId) === objetivo)
       .forEach(l => set.add(`${l.desde}-${l.hasta}`))
     return set
+  }, [envioBuscado, allLegs])
+
+  // G05: plan de viaje del envío buscado, tramo a tramo, con el tiempo que la
+  // maleta permanece en tierra en cada escala. Hace verificable a simple vista
+  // que ninguna conexión baja de la permanencia mínima (10 min).
+  const planEnvioBuscado = useMemo(() => {
+    if (!envioBuscado) return null
+    const objetivo = normalizarId(envioBuscado)
+    const legs = allLegs
+      .filter(l => normalizarId(l.shipmentId) === objetivo)
+      .sort((a, b) => a.salida - b.salida)
+    if (legs.length === 0) return null
+    return {
+      legs,
+      maletas: legs[0].cantidadMaletas ?? 0,
+      // Entrega efectiva = aterrizaje del último tramo + recojo en destino.
+      entrega: new Date(legs[legs.length - 1].llegada.getTime() + RECOJO_DESTINO_MS),
+    }
   }, [envioBuscado, allLegs])
 
   const almacenOcupacion = useMemo(() => {
@@ -1413,6 +1405,50 @@ export default function MapaMundi({
       {envioBuscado && tramosEnvioBuscado && tramosEnvioBuscado.size === 0 && (
         <div className="absolute top-32 left-1/2 -translate-x-1/2 z-[1000] bg-amber-500/15 border border-amber-500/40 text-amber-300 text-xs rounded px-3 py-1.5">
           No se encontró ruta para el envío "{envioBuscado}".
+        </div>
+      )}
+
+      {/* G05: plan de viaje del envío buscado. Muestra cada tramo y, entre
+          tramos, cuánto permanece la maleta en el almacén de la escala; si
+          bajara del mínimo se marcaría en rojo. */}
+      {planEnvioBuscado && (
+        <div className="absolute top-44 left-1/2 -translate-x-1/2 z-[1000] bg-slate-900/95 backdrop-blur border border-slate-700 rounded-xl shadow-xl px-4 py-3 w-[26rem] max-h-72 overflow-y-auto">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[11px] font-semibold text-slate-300 uppercase tracking-wider">
+              Plan de viaje · {planEnvioBuscado.maletas} maletas
+            </span>
+            <span className="text-[10px] text-slate-500">permanencia mín. 10 min</span>
+          </div>
+
+          <ol className="space-y-1">
+            {planEnvioBuscado.legs.map((leg, i) => (
+              <li key={`${leg.flightBusinessId}-${i}`}>
+                {i > 0 && (
+                  <div className={`flex items-center gap-1.5 text-[11px] pl-2 py-0.5 ${
+                    leg.esperaMin >= 10 ? 'text-slate-400' : 'text-red-400'
+                  }`}>
+                    <span>⏱</span>
+                    <span>
+                      escala en <b className="font-mono text-slate-300">{leg.desde}</b>:{' '}
+                      {formatElapsed(leg.esperaMin * 60000)}
+                    </span>
+                    <span>{leg.esperaMin >= 10 ? '✓' : '✕ bajo el mínimo'}</span>
+                  </div>
+                )}
+                <div className="flex items-center justify-between gap-2 text-xs bg-slate-800/60 rounded px-2 py-1.5">
+                  <span className="font-mono text-slate-200">{leg.desde} → {leg.hasta}</span>
+                  <span className="font-mono text-slate-400 text-[11px]">
+                    {formatSimDateTime(leg.salida).slice(5)} → {formatSimDateTime(leg.llegada).slice(5)}
+                  </span>
+                </div>
+              </li>
+            ))}
+          </ol>
+
+          <div className="mt-2 pt-2 border-t border-slate-700 flex justify-between text-[11px]">
+            <span className="text-slate-400">Entrega al cliente (+15 min recojo)</span>
+            <span className="font-mono text-green-400">{formatSimDateTime(planEnvioBuscado.entrega)}</span>
+          </div>
         </div>
       )}
 

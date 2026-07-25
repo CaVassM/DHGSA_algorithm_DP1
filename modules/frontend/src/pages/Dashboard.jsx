@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { useLocation } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import NavBar from '../components/NavBar'
 import PanelLateral from '../components/PanelLateral'
 import MapaMundi from '../components/MapaMundi'
@@ -14,6 +14,7 @@ const LS_KEY = 'tasf_runId'
 
 export default function Dashboard() {
   const location = useLocation()
+  const navigate = useNavigate()
   const stored   = localStorage.getItem(LS_KEY)
   // runId es estado para poder caer al último run terminado cuando no llega por
   // navegación ni hay uno guardado válido (p.ej. se entra directo al mapa, o el
@@ -194,6 +195,27 @@ export default function Dashboard() {
               <div className="text-xs text-green-400">
                 Asignados: {eventoSimulacion.totalAsignadosAcumulado ?? 0}
               </div>
+            </div>
+          )}
+
+          {/* G08: al terminar la simulación del periodo, se ofrece de una vez el
+              reporte de la última planificación estable. Antes había que saber
+              que existía la pestaña "Reporte"; ahora el cierre del escenario
+              lleva al reporte sin buscarlo. */}
+          {eventoSimulacion?.tipo === 'FIN' && (
+            <div className="absolute top-40 left-3 z-[1000] w-64 bg-slate-900/95 border border-green-500/40 rounded-xl px-3 py-2.5 shadow-lg">
+              <div className="text-[10px] text-green-300 uppercase tracking-widest font-semibold">
+                Simulación de periodo finalizada
+              </div>
+              <div className="text-xs text-slate-300 mt-1 mb-2">
+                {eventoSimulacion.mensaje ?? 'Planificación estable alcanzada.'}
+              </div>
+              <button
+                onClick={() => navigate('/reporte')}
+                className="w-full py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium transition-colors"
+              >
+                Ver reporte de planificación
+              </button>
             </div>
           )}
           <MapaMundi

@@ -1,6 +1,10 @@
 import { Client } from '@stomp/stompjs'
+import { WS_URL } from './backendUrl'
 
-const WS_URL = 'ws://localhost:8080/ws'
+// G06: el endpoint WebSocket se resuelve igual que la API REST (mismo host que
+// sirvió la página), para que varios visualizadores en distintos dispositivos
+// se suscriban al mismo planificador. El topic es de broadcast, así que todos
+// reciben el mismo avance de la simulación sin estorbarse.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Cliente STOMP ÚNICO y compartido.
