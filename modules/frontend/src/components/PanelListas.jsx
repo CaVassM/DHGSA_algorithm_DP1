@@ -100,6 +100,15 @@ export default function PanelListas({runId,enVuelo=[], enviosOperativos = {plani
   // idénticos a simple vista).
   const [envioResaltado, setEnvioResaltado] = useState(null)
 
+  // Solo un elemento puede estar resaltado a la vez. Al elegir un envío se
+  // suelta el resaltado de la unidad de transporte (y viceversa), para que el
+  // mapa y el panel no muestren dos selecciones en ámbar simultáneas.
+  const resaltarEnvio = (envioId) => {
+    setEnvioResaltado(envioId)
+    onSelectFlight?.(null)
+    onSelectShipment?.(envioId)
+  }
+
   // E18/E21/E23: envíos asociados a cada almacén, separados en los que ENTRAN
   // (el aeropuerto es destino del tramo) y los que SALEN (es origen). Se toman
   // de los envíos planificados y en vuelo, que es la información operativa que
@@ -520,14 +529,14 @@ export default function PanelListas({runId,enVuelo=[], enviosOperativos = {plani
                     color="text-green-400"
                     envios={flujo.entran}
                     envioResaltado={envioResaltado}
-                    onSelectShipment={(id) => { setEnvioResaltado(id); onSelectShipment?.(id) }}
+                    onSelectShipment={resaltarEnvio}
                   />
                   <ListaFlujo
                     titulo={`Salen (${flujo.salen.length} envíos · ${maletasSalen} maletas)`}
                     color="text-amber-400"
                     envios={flujo.salen}
                     envioResaltado={envioResaltado}
-                    onSelectShipment={(id) => { setEnvioResaltado(id); onSelectShipment?.(id) }}
+                    onSelectShipment={resaltarEnvio}
                   />
                 </div>
               )}
@@ -546,13 +555,19 @@ export default function PanelListas({runId,enVuelo=[], enviosOperativos = {plani
                 onClick={() => {
                   const abrir = !abierto
                   setVueloAbierto(abrir ? f.businessId : null)
+                  // Solo un elemento resaltado a la vez.
+                  setEnvioResaltado(null)
                   // F07: al seleccionar la UT en el panel, enfocarla en el mapa.
                   // Al cerrarla se envía null para quitar el resaltado y poder
                   // elegir otra libremente.
                   onSelectFlight?.(abrir ? f.businessId : null)
                 }}
                 className={`w-full text-left px-3 py-2 transition-colors ${
-                  abierto ? 'bg-slate-800/80 border-l-2 border-amber-400' : 'hover:bg-slate-800/60'}`}
+                  // El borde ámbar marca "resaltado en el mapa"; si el
+                  // resaltado pasó a un envío, el vuelo queda solo desplegado.
+                  abierto
+                    ? (envioResaltado ? 'bg-slate-800/80' : 'bg-slate-800/80 border-l-2 border-amber-400')
+                    : 'hover:bg-slate-800/60'}`}
               >
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-xs text-slate-200 flex items-center gap-1.5">
@@ -594,10 +609,7 @@ export default function PanelListas({runId,enVuelo=[], enviosOperativos = {plani
                         return (
                           <li key={`${envioId}-${i}`}>
                             <button
-                              onClick={() => {
-                                setEnvioResaltado(envioId)
-                                onSelectShipment?.(envioId)
-                              }}
+                              onClick={() => resaltarEnvio(envioId)}
                               className={`w-full text-left rounded px-2 py-1.5 transition-colors ${
                                 marcado
                                   ? 'bg-amber-500/20 border-l-2 border-amber-400'
@@ -641,10 +653,7 @@ export default function PanelListas({runId,enVuelo=[], enviosOperativos = {plani
             return (
               <button
                 key={`${envioId}-${envio.flightBusinessId}-${index}`}
-                onClick={() => {
-                  setEnvioResaltado(envioId)
-                  onSelectShipment?.(envioId)
-                }}
+                onClick={() => resaltarEnvio(envioId)}
                 className={`w-full text-left px-3 py-2 transition-colors ${
                   envioResaltado === envioId
                     ? 'bg-amber-500/15 border-l-2 border-amber-400'

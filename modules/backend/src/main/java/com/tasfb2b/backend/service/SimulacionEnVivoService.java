@@ -355,6 +355,13 @@ private OptimizationAlgorithm resolverOptimizationAlgorithm(String rawAlgorithm)
 //                    return;
 //                }
 
+                // C29: el ritmo de la simulación se mide desde que arranca el
+                // ciclo de la época, no desde que termina de calcularla. Así el
+                // tiempo de planificación se descuenta de la pausa y la
+                // reproducción avanza a intervalos parejos, sin los saltos que
+                // producía esperar la pausa completa DESPUÉS del cómputo.
+                long inicioCicloMs = System.currentTimeMillis();
+
                 simuladorEpocas.prepararEpoca(epoca, pendientes);
                 List<Envio> enviosEpoca = epoca.getTodosLosEnvios();
 
@@ -453,7 +460,22 @@ private OptimizationAlgorithm resolverOptimizationAlgorithm(String rawAlgorithm)
                     }
                 }
 
-                dormir(pausaMsPorEpoca, cancelado);
+                // C29: el ritmo lo marca el ciclo completo (planificar + pausa),
+                // no la pausa sola. Si planificar ya consumió el tiempo de la
+                // época no se espera nada más: antes se sumaba la pausa íntegra
+                // al cómputo y la reproducción se quedaba congelada.
+                //
+                // El coste de planificar varía mucho con la carga de la época
+                // (unos segundos con pocos envíos, más de un minuto con miles),
+                // así que sin este descuento la cadencia era irregular y el mapa
+                // alternaba avances rápidos con parones largos.
+                long computoMs = System.currentTimeMillis() - inicioCicloMs;
+                long esperaMs = Math.max(0, pausaMsPorEpoca - computoMs);
+                if (computoMs > pausaMsPorEpoca) {
+                    log.debug("Época {} tardó {} ms en planificar, por encima del ritmo objetivo de {} ms",
+                            epoca.getNumeroEpoca(), computoMs, pausaMsPorEpoca);
+                }
+                dormir(esperaMs, cancelado);
             }
 
             // Fin sin colapso (o simulación normal de periodo)

@@ -404,6 +404,7 @@ export default function MapaMundi({
   // F07: vuelo resaltado tras seleccionarlo en el panel.
   const [vueloResaltado, setVueloResaltado] = useState(null)
 
+
   // C27: vuelos SIN carga que la simulación despachó, informados por el backend
   // en cada época (`vuelosEpoca` con maletas = 0). Se acumulan por época para
   // poder pintarlos en gris cuando el reloj pasa por su ventana de vuelo.
@@ -935,7 +936,9 @@ export default function MapaMundi({
 
   const activeDots = [...Object.values(activeDotMap), ...vuelosVaciosEnAire]
 
-  // F07: tramo del vuelo resaltado desde el panel, para pintar su ruta.
+  // F07: tramo del vuelo resaltado desde el panel, para pintar su ruta. Si el
+  // avión ya aterrizó deja de existir en `activeDots` y el resaltado se
+  // descarta solo, en vez de dejar un tramo amarillo huérfano en el mapa.
   const tramoVueloResaltado = useMemo(() => {
     if (!vueloResaltado) return null
     const dot = activeDots.find(d => d.flightBusinessId === vueloResaltado)
@@ -1112,6 +1115,9 @@ export default function MapaMundi({
     if (!highlightShipment?.id) return
     setBusquedaInput(String(highlightShipment.id))
     setEnvioBuscado(String(highlightShipment.id))
+    // Solo puede haber un resaltado activo: al enfocar un envío se descarta el
+    // de la unidad de transporte, o quedarían dos rutas en amarillo a la vez.
+    setVueloResaltado(null)
   }, [highlightShipment])
 
   // F07: vinculación panel→mapa para unidades de transporte. Al elegir un vuelo
@@ -1121,6 +1127,9 @@ export default function MapaMundi({
     // id null = se cerró la selección en el panel: quitar el resaltado.
     if (!focusFlight.id) { setVueloResaltado(null); return }
     setVueloResaltado(String(focusFlight.id))
+    // Excluyente con el resaltado de envío (ver highlightShipment).
+    setEnvioBuscado('')
+    setBusquedaInput('')
     const dot = activeDots.find(d => d.flightBusinessId === focusFlight.id)
     if (!dot || !mapInstance) return
     const a = coords[dot.desde]
@@ -1174,9 +1183,12 @@ export default function MapaMundi({
             if (esTramoVueloResaltado) {
               pathOptions = { color: '#facc15', weight: 3, opacity: 0.95 }
             } else if (tramosEnvioBuscado) {
+              // Al resaltar un envío el resto se atenúa, pero sigue visible:
+              // borrarlas del todo dejaba el mapa vacío y se perdía el contexto
+              // de la operación alrededor de la ruta buscada.
               pathOptions = esDelEnvio
-                ? { color: '#facc15', weight: 4, opacity: 0.95 }                 // resaltado
-                : { color: '#475569', weight: 1, opacity: 0.1, dashArray: '2 8' } // atenuado
+                ? { color: '#facc15', weight: 4, opacity: 0.95 }                    // resaltado
+                : { color: '#3b82f6', weight: 1, opacity: 0.22, dashArray: '4 8' }  // contexto
             } else if (tramoOculto) {
               pathOptions = { color: '#475569', weight: 1, opacity: 0.08, dashArray: '2 8' }
             } else if (recorrida) {
