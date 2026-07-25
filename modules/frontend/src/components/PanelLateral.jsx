@@ -57,7 +57,7 @@ function writePersistedBool(key, val) {
 
 // ── Component ────────────────────────────────────────────────────────────────
 
-export default function PanelLateral({ run,runId,enVuelo=[],enviosOperativos, ocupacionPorIcao, airportFromMap, onSelectAirport, onSelectShipment }) {
+export default function PanelLateral({ run,runId,enVuelo=[],enviosOperativos, ocupacionPorIcao, airportFromMap, flightFromMap, onSelectAirport, onSelectShipment, onSelectFlight }) {
   const isReal     = !!run
   const isTerminal = isReal && TERMINAL_STATUSES.has(run.status)
   const statusCfg  = isReal
@@ -162,8 +162,10 @@ export default function PanelLateral({ run,runId,enVuelo=[],enviosOperativos, oc
           ocupacionPorIcao={ocupacionPorIcao}
           enviosOperativos={enviosOperativos}
           airportFromMap={airportFromMap}
+          flightFromMap={flightFromMap}
           onSelectAirport={onSelectAirport}
           onSelectShipment={onSelectShipment}
+          onSelectFlight={onSelectFlight}
         />
       </CollapsibleSection>
 

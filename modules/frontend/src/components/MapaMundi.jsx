@@ -333,6 +333,9 @@ export default function MapaMundi({
   focusAirport,
   highlightShipment,
   onSelectAirportFromMap,
+  // F07/F08: vinculación bidireccional de unidades de transporte (aviones).
+  focusFlight,
+  onSelectFlightFromMap,
 }) {
   const navigate = useNavigate()
   const timerRef = useRef(null)
@@ -397,6 +400,14 @@ export default function MapaMundi({
 
   // T50: aeropuerto seleccionado para ver su detalle en panel (misma vista).
   const [almacenSeleccionado, setAlmacenSeleccionado] = useState(null)
+
+  // F07: vuelo resaltado tras seleccionarlo en el panel.
+  const [vueloResaltado, setVueloResaltado] = useState(null)
+
+  // C27: vuelos SIN carga que la simulación despachó, informados por el backend
+  // en cada época (`vuelosEpoca` con maletas = 0). Se acumulan por época para
+  // poder pintarlos en gris cuando el reloj pasa por su ventana de vuelo.
+  const [vuelosVaciosBackend, setVuelosVaciosBackend] = useState([])
 
   useEffect(() => {
     getAirports()
@@ -545,6 +556,28 @@ export default function MapaMundi({
     }
     ultimaEpocaLlegadaRef.current = ahora
 
+    // C27: quedarse con los vuelos que la simulación despachó VACÍOS en esta
+    // época. Los que llevan carga ya se dibujan a partir de las rutas, así que
+    // aquí solo interesan los de 0 maletas.
+    if (Array.isArray(liveEvent.vuelosEpoca)) {
+      const vacios = liveEvent.vuelosEpoca
+        .filter(v => (v.maletas ?? 0) === 0 && v.salida && v.llegada)
+        .map(v => ({
+          key: `${v.businessId}@${v.salida}`,
+          flightBusinessId: v.businessId,
+          desde: v.origenIcao,
+          hasta: v.destinoIcao,
+          salida: new Date(v.salida),
+          llegada: new Date(v.llegada),
+          capacidadTotal: v.capacidad ?? 0,
+        }))
+      setVuelosVaciosBackend(prev => {
+        const porClave = new Map(prev.map(v => [v.key, v]))
+        vacios.forEach(v => porClave.set(v.key, v))
+        return Array.from(porClave.values())
+      })
+    }
+
     // Ventana de la época en curso, para el progreso por épocas de la barra.
     setLiveEpocaInfo({
       num: numEpoca,
@@ -689,6 +722,18 @@ export default function MapaMundi({
     return set
   }, [aeropuertosConOcupacion, almacenesOcultos, continentesOcultos])
 
+  // Coordenadas por ICAO. Declarado aquí (y no más abajo) porque el cálculo de
+  // los vuelos vacíos en el aire lo necesita antes de renderizar.
+  const coords = useMemo(() => {
+    const c = {}
+    Object.values(aeropuertosConOcupacion).forEach(ap => {
+      if (Number.isFinite(ap.latitud) && Number.isFinite(ap.longitud)) {
+        c[ap.codigo] = { lat: ap.latitud, lng: ap.longitud }
+      }
+    })
+    return c
+  }, [aeropuertosConOcupacion])
+
   // Lista de continentes presentes en el dataset (para el filtro).
   const continentes = useMemo(
     () => Array.from(new Set(Object.values(aeropuertosConOcupacion).map(ap => ap.continente).filter(Boolean))).sort(),
@@ -752,11 +797,13 @@ export default function MapaMundi({
     return ts.length > 0 ? new Date(ts[ts.length - 1]) : null
   }, [routes])
 
-  const activeLegs = simTime
-    ? allLegs
-        .filter(leg => leg.salida <= simTime && simTime <= leg.llegada)
-        .map(leg => ({ ...leg, progreso: (simTime - leg.salida) / (leg.llegada - leg.salida) }))
-    : []
+  const activeLegs = useMemo(() => (
+    simTime
+      ? allLegs
+          .filter(leg => leg.salida <= simTime && simTime <= leg.llegada)
+          .map(leg => ({ ...leg, progreso: (simTime - leg.salida) / (leg.llegada - leg.salida) }))
+      : []
+  ), [allLegs, simTime])
   
   const enviosOperativos = useMemo(() => {
     if (!simTime) {
@@ -832,27 +879,76 @@ export default function MapaMundi({
   // verse como dos aviones separados, cada uno en su propio punto de la ruta.
   // Envíos que SÍ comparten el mismo vuelo físico (mismo id + misma salida)
   // siguen fusionándose en un solo ícono con el badge de conteo.
-  const activeDotMap = {}
-  activeLegs.forEach(leg => {
-    const key = `${leg.flightBusinessId}@${leg.salida.getTime()}`
-    if (!activeDotMap[key]) {
-      activeDotMap[key] = {
-        key,
-        flightBusinessId: leg.flightBusinessId,
-        desde: leg.desde,
-        hasta: leg.hasta,
-        progreso: leg.progreso,
+  const activeDotMap = useMemo(() => {
+    const map = {}
+    activeLegs.forEach(leg => {
+      const key = `${leg.flightBusinessId}@${leg.salida.getTime()}`
+      if (!map[key]) {
+        map[key] = {
+          key,
+          flightBusinessId: leg.flightBusinessId,
+          desde: leg.desde,
+          hasta: leg.hasta,
+          progreso: leg.progreso,
+          count: 0,
+          maletas: 0,
+          // Capacidad del vuelo físico: es una sola (la del avión), no se suma
+          // por cada envío que viaja en él.
+          capacidadTotal: leg.capacidadVuelo ?? 0,
+        }
+      }
+      map[key].count += 1
+      map[key].maletas += leg.cantidadMaletas
+    })
+    return map
+  }, [activeLegs])
+  // C27: los aviones VACÍOS también deben verse. `activeDotMap` se arma desde
+  // los envíos planificados, así que un vuelo sin carga asignada nunca llegaba
+  // a dibujarse y el filtro "Vacío" no mostraba nada. Aquí completamos con los
+  // vuelos del catálogo que están en el aire en el instante simulado y no
+  // transportan ningún envío: se pintan en gris (semáforo vacío) con 0 maletas.
+  // C27: aviones VACÍOS que están en el aire en el instante simulado. Salen de
+  // los vuelos que el backend informó con 0 maletas (`vuelosEpoca`), nunca de
+  // inventar ocurrencias del catálogo en el front: si un tramo tiene demanda el
+  // planificador le asigna carga, así que un gris sobre una ruta con envíos
+  // sería una contradicción.
+  const vuelosVaciosEnAire = useMemo(() => {
+    if (!simTime) return []
+    // Solo se pintan sobre tramos que ya tienen su línea dibujada: un avión sin
+    // trayectoria visible confunde más de lo que aporta.
+    const tramosConLinea = new Set(rutasLineas.map(r => `${r.desde}-${r.hasta}`))
+    return vuelosVaciosBackend
+      .filter(v => v.salida <= simTime && simTime <= v.llegada
+        && coords[v.desde] && coords[v.hasta]
+        && tramosConLinea.has(`${v.desde}-${v.hasta}`))
+      .map(v => ({
+        key: v.key,
+        flightBusinessId: v.flightBusinessId,
+        desde: v.desde,
+        hasta: v.hasta,
+        progreso: (simTime - v.salida) / (v.llegada - v.salida),
         count: 0,
         maletas: 0,
-        // Capacidad del vuelo físico: es una sola (la del avión), no se suma
-        // por cada envío que viaja en él.
-        capacidadTotal: leg.capacidadVuelo ?? 0,
-      }
-    }
-    activeDotMap[key].count += 1
-    activeDotMap[key].maletas += leg.cantidadMaletas
-  })
-  const activeDots = Object.values(activeDotMap)
+        capacidadTotal: v.capacidadTotal,
+      }))
+  }, [vuelosVaciosBackend, simTime, coords, rutasLineas])
+
+  const activeDots = [...Object.values(activeDotMap), ...vuelosVaciosEnAire]
+
+  // F07: tramo del vuelo resaltado desde el panel, para pintar su ruta.
+  const tramoVueloResaltado = useMemo(() => {
+    if (!vueloResaltado) return null
+    const dot = activeDots.find(d => d.flightBusinessId === vueloResaltado)
+    return dot ? `${dot.desde}-${dot.hasta}` : null
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vueloResaltado, activeDotMap, vuelosVaciosEnAire])
+
+  // Tramos que ahora mismo tienen un avión encima: su línea debe verse siempre.
+  const tramosConAvion = useMemo(
+    () => new Set(activeDots.map(d => `${d.desde}-${d.hasta}`)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [activeDotMap, vuelosVaciosEnAire],
+  )
 
   // T41: reportar al padre (Dashboard) los envíos actualmente en vuelo, para
   // mostrarlos como lista. Solo emite cuando el conjunto realmente cambia
@@ -947,16 +1043,6 @@ export default function MapaMundi({
     return () => clearInterval(timerRef.current)
   }, [isPlaying, playSpeed, simEnd, liveMode, liveCeiling])
 
-  const coords = useMemo(() => {
-    const c = {}
-    Object.values(aeropuertosConOcupacion).forEach(ap => {
-      if (Number.isFinite(ap.latitud) && Number.isFinite(ap.longitud)) {
-        c[ap.codigo] = { lat: ap.latitud, lng: ap.longitud }
-      }
-    })
-    return c
-  }, [aeropuertosConOcupacion])
-
   function zoomIn() {
     mapInstance?.zoomIn()
   }
@@ -1028,6 +1114,24 @@ export default function MapaMundi({
     setEnvioBuscado(String(highlightShipment.id))
   }, [highlightShipment])
 
+  // F07: vinculación panel→mapa para unidades de transporte. Al elegir un vuelo
+  // en el panel se resalta y, si está en el aire, se centra el mapa sobre él.
+  useEffect(() => {
+    if (!focusFlight) return
+    // id null = se cerró la selección en el panel: quitar el resaltado.
+    if (!focusFlight.id) { setVueloResaltado(null); return }
+    setVueloResaltado(String(focusFlight.id))
+    const dot = activeDots.find(d => d.flightBusinessId === focusFlight.id)
+    if (!dot || !mapInstance) return
+    const a = coords[dot.desde]
+    const b = coords[dot.hasta]
+    if (!a || !b) return
+    const lat = a.lat + (b.lat - a.lat) * dot.progreso
+    const lng = a.lng + (b.lng - a.lng) * dot.progreso
+    mapInstance.flyTo([lat, lng], Math.max(mapInstance.getZoom(), 4), { duration: 0.8 })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusFlight])
+
   return (
     <div className="relative w-full h-full overflow-hidden bg-[#0c1a2e] select-none">
       <MapContainer
@@ -1047,7 +1151,10 @@ export default function MapaMundi({
 
         {rutasLineas
           .filter(r => tramosEnvioBuscado?.has(`${r.desde}-${r.hasta}`)
-            || !r.revealAt || !simTime || simTime >= r.revealAt)
+            || !r.revealAt || !simTime || simTime >= r.revealAt
+            // Si hay un avión (aunque vaya vacío) recorriendo el tramo ahora,
+            // su línea debe estar dibujada: un avión sin trayectoria confunde.
+            || tramosConAvion.has(`${r.desde}-${r.hasta}`))
           .map(ruta => {
             const a = coords[ruta.desde]
             const b = coords[ruta.hasta]
@@ -1062,16 +1169,23 @@ export default function MapaMundi({
             // (aeropuerto oculto por color/continente), atenuar también la ruta.
             const tramoOculto = icaosOcultos.has(ruta.desde) || icaosOcultos.has(ruta.hasta)
             let pathOptions
-            if (tramosEnvioBuscado) {
+            // F07: tramo del vuelo seleccionado en el panel.
+            const esTramoVueloResaltado = tramoVueloResaltado === key
+            if (esTramoVueloResaltado) {
+              pathOptions = { color: '#facc15', weight: 3, opacity: 0.95 }
+            } else if (tramosEnvioBuscado) {
               pathOptions = esDelEnvio
                 ? { color: '#facc15', weight: 4, opacity: 0.95 }                 // resaltado
                 : { color: '#475569', weight: 1, opacity: 0.1, dashArray: '2 8' } // atenuado
             } else if (tramoOculto) {
               pathOptions = { color: '#475569', weight: 1, opacity: 0.08, dashArray: '2 8' }
             } else if (recorrida) {
-              pathOptions = { color: '#475569', weight: 1, opacity: 0.18, dashArray: '2 8' }
+              pathOptions = { color: '#475569', weight: 1, opacity: 0.2, dashArray: '2 8' }
             } else {
-              pathOptions = { color: '#3b82f6', weight: 2, opacity: 0.5, dashArray: '6 6' }
+              // C34: trazo fino y segmentado (el profesor pidió bajar grosor y
+              // hacerlo más tenue), pero con opacidad suficiente para que la
+              // trayectoria siga siendo legible sobre el mapa oscuro.
+              pathOptions = { color: '#3b82f6', weight: 1.5, opacity: 0.5, dashArray: '5 7' }
             }
             return (
               <Polyline
@@ -1121,7 +1235,14 @@ export default function MapaMundi({
           const semUt = getPlaneSemaforo(pct)
           const utAtenuada = utsOcultas.has(semUt)
             || icaosOcultos.has(dot.desde) || icaosOcultos.has(dot.hasta)
-          const planeIcon = createPlaneIcon({ fill: color.fill, stroke: color.stroke, angle, count: dot.count })
+          // F07: el vuelo elegido en el panel se pinta en amarillo para ubicarlo.
+          const esResaltado = vueloResaltado && dot.flightBusinessId === vueloResaltado
+          const planeIcon = createPlaneIcon({
+            fill: esResaltado ? '#facc15' : color.fill,
+            stroke: esResaltado ? '#fde047' : color.stroke,
+            angle,
+            count: dot.count,
+          })
 
           return (
             <Marker
@@ -1129,13 +1250,20 @@ export default function MapaMundi({
               opacity={utAtenuada ? 0.2 : 1}
               position={[lat, lng]}
               icon={planeIcon}
+              eventHandlers={{
+                // F08: vinculación mapa→panel. Al hacer clic en un avión se
+                // notifica al padre para que el panel lo busque y lo enfoque.
+                click: () => onSelectFlightFromMap?.(dot.flightBusinessId),
+              }}
             >
               <Tooltip direction="top" offset={[0, -10]} className="tasf-tooltip" opacity={1}>
                 <div className="text-xs">
                   <div className="font-bold text-white mb-1">{dot.desde} {'->'} {dot.hasta}</div>
+                  <div className="font-mono text-[10px] text-slate-400 mb-1">{dot.flightBusinessId}</div>
                   <div className="text-slate-300">Envios: <span className="text-blue-300 font-semibold">{dot.count}</span></div>
                   <div className="text-slate-300">Maletas: <span className="text-blue-300 font-semibold">{dot.maletas.toLocaleString()}</span></div>
                   <div className="text-slate-300">Progreso: <span className="text-slate-200 font-semibold">{Math.round(dot.progreso * 100)}%</span></div>
+                  <div className="text-blue-300 mt-1">Clic para ver su carga en el panel {'->'}</div>
                 </div>
               </Tooltip>
             </Marker>
