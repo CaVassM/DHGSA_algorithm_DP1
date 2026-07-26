@@ -40,9 +40,13 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -55,8 +59,41 @@ public class PlanningRoutePersistenceService {
     private final RouteRepository routeRepository;
     private final FlightRepository flightRepository;
 
+    /**
+     * Persiste las rutas de una época fuera del hilo que anima la simulación.
+     *
+     * <p>C29: escribir ~1.800 rutas con sus legs tarda más que la pausa entre
+     * épocas, así que hacerlo en línea congelaba la reproducción. La detección
+     * de colapso y los eventos WebSocket trabajan sobre el {@link Individuo} en
+     * memoria, no sobre lo persistido, de modo que la animación puede seguir
+     * mientras la BD se pone al día. El {@code runId} ya existe cuando esto se
+     * invoca, y las escrituras de épocas sucesivas no se pisan porque el
+     * ejecutor de Spring las procesa en orden de llegada.
+     *
+     * <p>Lleva su propio {@code @Transactional} en vez de delegar en
+     * {@link #guardarRutasDeEpoca}: una llamada interna no pasa por el proxy de
+     * Spring, así que la transacción del otro método no se activaría.
+     */
+    @Async("routePersistenceExecutor")
+    @Transactional
+    public void guardarRutasDeEpocaAsync(Long runId, int numeroEpoca, Individuo mejor) {
+        try {
+            persistir(runId, numeroEpoca, mejor);
+        } catch (RuntimeException ex) {
+            // Que falle el guardado no debe tumbar la simulación: la corrida es
+            // lo que se está mostrando, y las rutas son el registro posterior.
+            log.error("No se pudieron persistir las rutas de la época {} (runId={}): {}",
+                    numeroEpoca, runId, ex.getMessage(), ex);
+        }
+    }
+
+    /** Versión síncrona: el llamador espera a que las rutas estén en BD. */
     @Transactional
     public void guardarRutasDeEpoca(Long runId, int numeroEpoca, Individuo mejor) {
+        persistir(runId, numeroEpoca, mejor);
+    }
+
+    private void persistir(Long runId, int numeroEpoca, Individuo mejor) {
         if (mejor == null || mejor.getEnviosAsignados() == null || mejor.getEnviosAsignados().isEmpty()) {
             log.info("No hay rutas para guardar en runId={}, epoca={}", runId, numeroEpoca);
             return;
@@ -65,8 +102,14 @@ public class PlanningRoutePersistenceService {
         PlanningRunEntity run = planningRunRepository.findById(runId)
                 .orElseThrow(() -> new IllegalStateException("No existe PlanningRun con id=" + runId));
 
-        Map<Long, ShipmentEntity> shipmentById = new HashMap<>();
-        Map<String, FlightEntity> flightByBusinessId = new HashMap<>();
+        // C29: los envíos y los vuelos de la época se traen en dos consultas, no
+        // en una por fila. Antes buscarShipment() hacía un SELECT por envío
+        // (~1.800 por época) y el hilo de la simulación se quedaba esperando a
+        // Postgres en vez de animar.
+        Map<String, ShipmentEntity> shipmentPorClave =
+                cargarShipments(mejor.getEnviosAsignados().keySet());
+        Map<String, FlightEntity> flightByBusinessId =
+                cargarVuelos(mejor.getEnviosAsignados().values());
         List<RouteEntity> porGuardar = new ArrayList<>(mejor.getEnviosAsignados().size());
 
         for (Map.Entry<Envio, RutaEnvio> entry : mejor.getEnviosAsignados().entrySet()) {
@@ -83,7 +126,7 @@ public class PlanningRoutePersistenceService {
                 continue;
             }
 
-            ShipmentEntity shipment = buscarShipment(envio);
+            ShipmentEntity shipment = shipmentPorClave.get(claveShipment(envio));
 
 //            if (shipmentId == null) {
 //                log.warn("No se guardó ruta: no se pudo convertir envioId={} a shipmentId", envio.getId());
@@ -125,16 +168,9 @@ public class PlanningRoutePersistenceService {
                         continue;
                     }
 
-                    String fid = vuelo.getId();
+                    String flightBusinessId = businessIdDeVuelo(vuelo.getId());
 
-                    String flightBusinessId = fid.contains("@")
-                            ? fid.substring(0, fid.indexOf("@"))
-                            : fid;
-
-                    FlightEntity flightEntity = flightByBusinessId.computeIfAbsent(
-                            flightBusinessId,
-                            bid -> flightRepository.findByBusinessId(bid).orElse(null)
-                    );
+                    FlightEntity flightEntity = flightByBusinessId.get(flightBusinessId);
 
                     if (flightEntity == null) {
                         log.warn("No se guardó leg: no existe FlightEntity con businessId={}", flightBusinessId);
@@ -191,26 +227,79 @@ public class PlanningRoutePersistenceService {
         }
     }
     
-    private ShipmentEntity buscarShipment(Envio envio) {
+    /**
+     * Los envíos de la época indexados por {@link #claveShipment}, en una sola
+     * consulta.
+     *
+     * <p>Un envío se identifica por (businessId, aeropuertoOrigen): el
+     * businessId solo no basta, de ahí que la clave lleve ambos. La consulta
+     * filtra por businessId — que es lo indexable — y el par se desempata aquí.
+     */
+    private Map<String, ShipmentEntity> cargarShipments(Collection<Envio> envios) {
+        Set<String> businessIds = envios.stream()
+                .filter(e -> e != null && e.getId() != null && !e.getId().isBlank())
+                .map(e -> limpiarBusinessId(e.getId()))
+                .collect(Collectors.toSet());
+
+        if (businessIds.isEmpty()) {
+            return Map.of();
+        }
+
+        Map<String, ShipmentEntity> porClave = new HashMap<>();
+        for (ShipmentEntity s : shipmentRepository.findAllByBusinessIdIn(businessIds)) {
+            Long origenId = s.getAeropuertoOrigen() != null ? s.getAeropuertoOrigen().getId() : null;
+            porClave.put(s.getBusinessId() + "@" + origenId, s);
+        }
+        return porClave;
+    }
+
+    /** Los vuelos usados por las rutas de la época, en una sola consulta. */
+    private Map<String, FlightEntity> cargarVuelos(Collection<RutaEnvio> rutas) {
+        Set<String> businessIds = new HashSet<>();
+        for (RutaEnvio ruta : rutas) {
+            if (ruta == null || ruta.getSecuenciaVuelos() == null) {
+                continue;
+            }
+            for (Vuelo vuelo : ruta.getSecuenciaVuelos()) {
+                if (vuelo != null && vuelo.getId() != null) {
+                    businessIds.add(businessIdDeVuelo(vuelo.getId()));
+                }
+            }
+        }
+
+        if (businessIds.isEmpty()) {
+            return Map.of();
+        }
+
+        Map<String, FlightEntity> porBusinessId = new HashMap<>();
+        for (FlightEntity f : flightRepository.findAllByBusinessIdIn(businessIds)) {
+            porBusinessId.put(f.getBusinessId(), f);
+        }
+        return porBusinessId;
+    }
+
+    /**
+     * Clave de un envío del dominio, para casarlo con su fila en shipments.
+     * Debe construirse igual que en {@link #cargarShipments}.
+     */
+    private String claveShipment(Envio envio) {
         if (envio == null || envio.getId() == null || envio.getId().isBlank()) {
             return null;
         }
+        Long origenId = envio.getAeropuertoOrigen() != null
+                ? Long.valueOf(envio.getAeropuertoOrigen().getId())
+                : null;
+        return limpiarBusinessId(envio.getId()) + "@" + origenId;
+    }
 
-        String businessId = limpiarBusinessId(envio.getId());
-
-        if (envio.getAeropuertoOrigen() == null) {
-            log.warn(
-                    "No se pudo buscar ShipmentEntity: envio={} no tiene aeropuerto origen o id de aeropuerto",
-                    businessId
-            );
-            return null;
-        }
-
-        Long aeropuertoOrigenId = Long.valueOf(envio.getAeropuertoOrigen().getId());
-
-        return shipmentRepository
-                .findByBusinessIdAndAeropuertoOrigen_Id(businessId, aeropuertoOrigenId)
-                .orElse(null);
+    /**
+     * El id de plantilla de una instancia de vuelo. {@code GrafoVuelos} fecha
+     * las instancias como {@code businessId@fecha}; en BD solo existe la
+     * plantilla.
+     */
+    private String businessIdDeVuelo(String id) {
+        int idx = id.indexOf("@");
+        return idx > 0 ? id.substring(0, idx) : id;
     }
     
     
