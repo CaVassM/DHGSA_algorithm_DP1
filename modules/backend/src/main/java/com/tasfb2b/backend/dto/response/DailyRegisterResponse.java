@@ -28,8 +28,26 @@ public class DailyRegisterResponse {
     private String destinoIcao;
     private int cantidadMaletas;
 
-    /** Deadline calculado según mismo/distinto continente (1 o 2 días). */
+    /** Deadline calculado según mismo/distinto continente (1 o 2 días), en UTC. */
     private LocalDateTime deadline;
+
+    /**
+     * Momento de la recepción en la hora de pared del aeropuerto de origen: la
+     * que marcaba el reloj del mostrador que registró la maleta.
+     */
+    private LocalDateTime registradoLocal;
+
+    /**
+     * Plazo de entrega en la hora de pared del aeropuerto de DESTINO — donde hay
+     * que entregar la maleta y donde alguien la espera. Mostrarlo en la hora del
+     * origen (o del servidor) obligaría al operador a hacer la conversión de
+     * cabeza para saber si el plazo es holgado o ajustado.
+     */
+    private LocalDateTime deadlineLocalDestino;
+
+    /** Husos de origen y destino ("GMT-5"), para acompañar a las horas. */
+    private String gmtOrigen;
+    private String gmtDestino;
 
     /** Secuencia de vuelos (flightBusinessId) que componen la ruta, en orden. */
     private List<String> rutaVuelos;

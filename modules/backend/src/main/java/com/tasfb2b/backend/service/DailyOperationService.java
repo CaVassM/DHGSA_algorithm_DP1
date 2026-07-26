@@ -3,6 +3,8 @@ package com.tasfb2b.backend.service;
 import com.tasfb2b.backend.domain.model.AirportEntity;
 import com.tasfb2b.backend.domain.model.FlightEntity;
 import com.tasfb2b.backend.dto.request.DailyRegisterRequest;
+import com.tasfb2b.backend.dto.response.DailyBulkUploadResponse;
+import com.tasfb2b.backend.dto.response.DailyCancelResponse;
 import com.tasfb2b.backend.dto.response.DailyCloseReportResponse;
 import com.tasfb2b.backend.dto.response.DailyRegisterResponse;
 import com.tasfb2b.backend.dto.response.DailyStateResponse;
@@ -11,7 +13,9 @@ import com.tasfb2b.backend.repository.AirportRepository;
 import com.tasfb2b.backend.repository.FlightRepository;
 import com.tasfb2b.dhgs.demo.domain.model.Aeropuerto;
 import com.tasfb2b.dhgs.demo.domain.model.Envio;
+import com.tasfb2b.dhgs.demo.domain.model.InstanciaVuelo;
 import com.tasfb2b.dhgs.demo.domain.model.Vuelo;
+import com.tasfb2b.dhgs.demo.domain.valueobject.HoraLocal;
 import com.tasfb2b.dhgs.demo.infraestructure.util.GrafoVuelos;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
@@ -19,10 +23,13 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -72,6 +79,20 @@ public class DailyOperationService {
     private LocalDateTime inicioOperacion;
 
     /**
+     * Asignaciones vigentes: qué vuelos concretos lleva cada envío aceptado.
+     *
+     * <p>El historial de {@code atendidos} guarda la ruta como identificadores,
+     * que sirven para el reporte pero no para reasignar: al cancelar un vuelo hay
+     * que devolver capacidad a los tramos que sí operan y buscar ruta nueva, y
+     * para eso hacen falta los objetos vivos del grafo.
+     */
+    private final Map<String, AsignacionViva> asignaciones = new LinkedHashMap<>();
+
+    /** Envío aceptado con la ruta que ocupa en este momento. */
+    private record AsignacionViva(Envio envio, List<Vuelo> ruta) {
+    }
+
+    /**
      * G09: reporte congelado de la última jornada cerrada. Mientras exista, la
      * operación está cerrada y no admite nuevos registros (hay que reiniciar).
      * Se conserva para poder volver a consultarlo e imprimirlo.
@@ -112,7 +133,18 @@ public class DailyOperationService {
             }
 
             GrafoVuelos nuevoGrafo = new GrafoVuelos();
-            nuevoGrafo.construir(new ArrayList<>(aeropuertosByIcao.values()), vuelos);
+            // Se materializan las salidas de hoy y mañana en vez de dejar las
+            // plantillas sueltas. Hacen falta dos días por dos razones: el plazo
+            // de entrega llega a 2 días, así que una ruta puede necesitar un
+            // vuelo de mañana; y una cancelación pedida a última hora recae sobre
+            // la salida del día siguiente (P&R P9), que tiene que existir para
+            // poder marcarse.
+            //
+            // El día se toma en UTC porque es la referencia común: con terminales
+            // en cuatro husos no hay un "hoy" único, y las salidas de los vuelos
+            // ya viven en esa misma línea de tiempo.
+            LocalDate hoy = HoraLocal.ahoraUtc().toLocalDate();
+            nuevoGrafo.construir(new ArrayList<>(aeropuertosByIcao.values()), vuelos, hoy, 2);
 
             this.grafo = nuevoGrafo;
             this.inicializado = true;
@@ -124,6 +156,7 @@ public class DailyOperationService {
             // G09: abrir una jornada nueva descarta el historial y el cierre previo.
             this.atendidos.clear();
             this.rechazados.clear();
+            this.asignaciones.clear();
             this.inicioOperacion = null;
             this.cierre = null;
 
@@ -204,20 +237,39 @@ public class DailyOperationService {
                 }
             }
 
+            // Huso horario: la recepción se registra en la hora de pared del
+            // aeropuerto que la recibe. Cuatro terminales registrando a la vez
+            // desde Lima, Buenos Aires, Copenhague y Delhi marcan cuatro horas
+            // distintas para el mismo instante; guardar la del servidor las
+            // volvería todas iguales y el plazo se contaría desde una hora que
+            // en ese mostrador nunca ocurrió.
+            //
+            // Se conserva la hora local (lo que ve el operador) y el instante
+            // absoluto (lo que permite comparar y ordenar entre husos).
+            LocalDateTime horaLocal = resolverHoraLocal(request.getFechaHoraLocal(), origen);
+            LocalDateTime creacionUtc = HoraLocal.aUtc(horaLocal, origen);
+
             String envioId = "DIA-" + secuenciaEnvio.incrementAndGet();
             Envio envio = new Envio();
             envio.setId(envioId);
             envio.setAeropuertoOrigen(origen);
             envio.setAeropuertoDestino(destino);
-            envio.setFechaHoraCreacion(LocalDateTime.now());
+            envio.setFechaHoraCreacion(creacionUtc);
             envio.setCantidadMaletas(maletas);
             envio.setIdCliente(request.getIdCliente());
             LocalDateTime deadline = envio.calcularDeadline();
+            // El plazo se muestra en la hora del aeropuerto de DESTINO: es donde
+            // hay que entregar la maleta y donde alguien la va a esperar.
+            LocalDateTime deadlineLocalDestino = HoraLocal.aLocal(deadline, destino);
 
             totalAceptados++;
             totalMaletasDespachadas += maletas;
 
             List<String> rutaIds = ruta.stream().map(Vuelo::getId).toList();
+
+            // Ruta vigente del envío: es lo que permite reasignarlo si más tarde
+            // se cancela uno de sus vuelos.
+            asignaciones.put(envioId, new AsignacionViva(envio, new ArrayList<>(ruta)));
 
             // G09: queda en el historial para poder listarlo en el reporte de cierre.
             atendidos.add(DailyCloseReportResponse.EnvioCerrado.builder()
@@ -244,9 +296,224 @@ public class DailyOperationService {
                     .destinoIcao(destinoIcao)
                     .cantidadMaletas(maletas)
                     .deadline(deadline)
+                    .registradoLocal(horaLocal)
+                    .deadlineLocalDestino(deadlineLocalDestino)
+                    .gmtOrigen(HoraLocal.etiquetaGmt(origen))
+                    .gmtDestino(HoraLocal.etiquetaGmt(destino))
                     .rutaVuelos(rutaIds)
                     .directa(ruta.size() == 1)
                     .escalas(ruta.size() - 1)
+                    .build();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * Carga en lote de envíos desde un archivo de texto.
+     *
+     * <p>Cada línea pasa por el mismo registro que usa el operador, así que la
+     * carga masiva y el tecleo manual no pueden divergir: se valida la ruta, se
+     * descuenta la capacidad y se aplica el huso horario igual en ambos casos.
+     *
+     * <p>Formato por línea, el de la data histórica:
+     * {@code id-AAAAMMDD-HH-mm-DESTINO-maletas-cliente}. La fecha y hora se leen
+     * como <b>hora local del aeropuerto de origen</b>, que es como las anota el
+     * mostrador que las recibió.
+     *
+     * @param origenIcao aeropuerto de la terminal que sube el archivo
+     * @param contenido  texto completo del archivo
+     */
+    public DailyBulkUploadResponse cargarLote(String origenIcao, String contenido) {
+        List<DailyRegisterResponse> resultados = new ArrayList<>();
+        List<String> errores = new ArrayList<>();
+        int lineaNum = 0;
+
+        for (String linea : contenido.split("\\R")) {
+            lineaNum++;
+            String limpia = linea.trim();
+            if (limpia.isEmpty() || limpia.startsWith("#")) {
+                continue;
+            }
+
+            String[] p = limpia.split("-");
+            if (p.length < 7) {
+                errores.add("Línea " + lineaNum + ": se esperan 7 campos separados por '-', llegaron "
+                        + p.length + " ('" + limpia + "').");
+                continue;
+            }
+
+            try {
+                String fecha = p[1].trim();               // AAAAMMDD
+                LocalDateTime horaLocal = LocalDateTime.of(
+                        Integer.parseInt(fecha.substring(0, 4)),
+                        Integer.parseInt(fecha.substring(4, 6)),
+                        Integer.parseInt(fecha.substring(6, 8)),
+                        Integer.parseInt(p[2].trim()),    // HH
+                        Integer.parseInt(p[3].trim()));   // mm
+
+                DailyRegisterRequest req = new DailyRegisterRequest();
+                req.setOrigenIcao(origenIcao);
+                req.setDestinoIcao(p[4].trim());
+                req.setCantidadMaletas(Integer.parseInt(p[5].trim()));
+                req.setIdCliente(p[6].trim());
+                req.setFechaHoraLocal(horaLocal.toString());
+
+                resultados.add(registrar(req));
+            } catch (RuntimeException e) {
+                errores.add("Línea " + lineaNum + ": no se pudo leer ('" + limpia + "').");
+            }
+        }
+
+        long aceptados = resultados.stream().filter(DailyRegisterResponse::isAceptado).count();
+        log.info("Día a día: carga en lote desde {} — {} aceptados, {} rechazados, {} ilegibles.",
+                origenIcao, aceptados, resultados.size() - aceptados, errores.size());
+
+        return DailyBulkUploadResponse.builder()
+                .origenIcao(origenIcao)
+                .lineasProcesadas(resultados.size())
+                .aceptados((int) aceptados)
+                .rechazados((int) (resultados.size() - aceptados))
+                .errores(errores)
+                .registros(resultados)
+                .build();
+    }
+
+    /**
+     * Cancela un vuelo y reasigna sus maletas (P&R P9).
+     *
+     * <p>A diferencia de la simulación por épocas, aquí no hay una siguiente
+     * ronda de planificación donde recolocar la carga: la operación es continua y
+     * el operador necesita saber en el acto si las maletas tienen otro vuelo. Por
+     * eso la reasignación es inmediata — se busca ruta nueva para cada envío
+     * afectado y se responde con lo que se pudo recolocar y lo que no.
+     *
+     * <p>Un envío que no encuentra ruta alternativa NO se descarta en silencio:
+     * queda listado como sin reasignar, que es la información que el operador
+     * necesita para actuar.
+     */
+    @Transactional(readOnly = true)
+    public DailyCancelResponse cancelarVuelo(String idVuelo) {
+        lock.lock();
+        try {
+            asegurarInicializado();
+
+            if (cierre != null) {
+                return DailyCancelResponse.builder()
+                        .aplicada(false)
+                        .idVuelo(idVuelo)
+                        .mensaje("La jornada está cerrada. Reinicia la operación para cancelar vuelos.")
+                        .build();
+            }
+
+            InstanciaVuelo instancia = grafo.resolverInstanciaACancelar(idVuelo, HoraLocal.ahoraUtc());
+            if (instancia == null) {
+                return DailyCancelResponse.builder()
+                        .aplicada(false)
+                        .idVuelo(idVuelo)
+                        .mensaje("No hay ninguna salida de " + idVuelo + " que pueda cancelarse:"
+                                + " o el vuelo no existe, o sus salidas restantes están dentro de"
+                                + " la hora previa (o ya canceladas).")
+                        .build();
+            }
+
+            instancia.setCancelado(true);
+
+            // Envíos que viajaban en esa salida. Se copian las claves porque el
+            // bucle reasigna y modifica el mapa mientras lo recorre.
+            List<String> afectados = asignaciones.entrySet().stream()
+                    .filter(e -> e.getValue().ruta().contains(instancia))
+                    .map(Map.Entry::getKey)
+                    .toList();
+
+            List<DailyCancelResponse.EnvioReasignado> reasignados = new ArrayList<>();
+            List<DailyCancelResponse.EnvioReasignado> sinRuta = new ArrayList<>();
+            int maletasAfectadas = 0;
+
+            for (String envioId : afectados) {
+                AsignacionViva previa = asignaciones.get(envioId);
+                Envio envio = previa.envio();
+                int maletas = envio.getCantidadMaletas();
+                maletasAfectadas += maletas;
+
+                // Libera la ruta rota completa: los tramos sanos ya no transportan
+                // esta carga, y sin devolverla quedarían ocupados por maletas que
+                // nunca van a viajar en ellos — la ruta nueva los encontraría
+                // llenos sin motivo. Al vuelo cancelado no se le devuelve nada:
+                // no opera.
+                for (Vuelo tramo : previa.ruta()) {
+                    if (tramo != instancia) {
+                        tramo.liberarCapacidad(maletas);
+                    }
+                }
+                asignaciones.remove(envioId);
+
+                List<Vuelo> nueva = grafo.dijkstraMenorTiempo(
+                        envio.getAeropuertoOrigen(), envio.getAeropuertoDestino(), maletas);
+
+                if (nueva == null || nueva.isEmpty()) {
+                    sinRuta.add(DailyCancelResponse.EnvioReasignado.builder()
+                            .envioId(envioId)
+                            .origenIcao(envio.getAeropuertoOrigen().getCodigoICAO())
+                            .destinoIcao(envio.getAeropuertoDestino().getCodigoICAO())
+                            .cantidadMaletas(maletas)
+                            .rutaAnterior(previa.ruta().stream().map(Vuelo::getId).toList())
+                            .rutaNueva(List.of())
+                            .build());
+                    continue;
+                }
+
+                for (Vuelo tramo : nueva) {
+                    tramo.registrarAsignacion(maletas);
+                }
+                asignaciones.put(envioId, new AsignacionViva(envio, new ArrayList<>(nueva)));
+
+                List<String> idsNueva = nueva.stream().map(Vuelo::getId).toList();
+                reasignados.add(DailyCancelResponse.EnvioReasignado.builder()
+                        .envioId(envioId)
+                        .origenIcao(envio.getAeropuertoOrigen().getCodigoICAO())
+                        .destinoIcao(envio.getAeropuertoDestino().getCodigoICAO())
+                        .cantidadMaletas(maletas)
+                        .rutaAnterior(previa.ruta().stream().map(Vuelo::getId).toList())
+                        .rutaNueva(idsNueva)
+                        .build());
+
+                // El reporte de cierre debe reflejar la ruta que finalmente lleva
+                // el envío, no la que se canceló.
+                atendidos.stream()
+                        .filter(a -> envioId.equals(a.getEnvioId()))
+                        .findFirst()
+                        .ifPresent(a -> {
+                            a.setRutaVuelos(idsNueva);
+                            a.setDirecta(idsNueva.size() == 1);
+                            a.setEscalas(idsNueva.size() - 1);
+                        });
+            }
+
+            log.info("Día a día: cancelado {} del {} ({} envíos afectados, {} reasignados, {} sin ruta).",
+                    idVuelo, instancia.getFechaOperacion(), afectados.size(),
+                    reasignados.size(), sinRuta.size());
+
+            String resumen = afectados.isEmpty()
+                    ? String.format("Vuelo %s del %s cancelado. No transportaba maletas.",
+                            idVuelo, instancia.getFechaOperacion())
+                    : String.format("Vuelo %s del %s cancelado. %d de %d envío(s) reasignados a otros vuelos%s.",
+                            idVuelo, instancia.getFechaOperacion(), reasignados.size(), afectados.size(),
+                            sinRuta.isEmpty() ? "" : ", " + sinRuta.size() + " sin ruta alternativa");
+
+            return DailyCancelResponse.builder()
+                    .aplicada(true)
+                    .idVuelo(idVuelo)
+                    .idInstancia(instancia.getId())
+                    .fechaOperacion(instancia.getFechaOperacion())
+                    .horaSalida(instancia.getHoraSalida())
+                    .origenIcao(instancia.getAeropuertoOrigen().getCodigoICAO())
+                    .destinoIcao(instancia.getAeropuertoDestino().getCodigoICAO())
+                    .enviosAfectados(afectados.size())
+                    .maletasAfectadas(maletasAfectadas)
+                    .enviosReasignados(reasignados)
+                    .enviosSinRuta(sinRuta)
+                    .mensaje(resumen)
                     .build();
         } finally {
             lock.unlock();
@@ -413,6 +680,27 @@ public class DailyOperationService {
                     + " no pudo ser atendida.";
         }
         return "Jornada cerrada con capacidad desbordada: la mayoría de los envíos no pudo ser atendida.";
+    }
+
+    /**
+     * Hora de pared con la que se registra la recepción.
+     *
+     * <p>La manda la terminal, que durante la prueba tiene el reloj puesto en el
+     * huso de su ciudad. Si no llega (carga de archivo sin hora, o una llamada
+     * directa a la API), se deduce del reloj del servidor convertido al huso del
+     * aeropuerto: el resultado es el mismo instante, expresado como lo vería el
+     * operador de ese mostrador.
+     */
+    private LocalDateTime resolverHoraLocal(String fechaHoraLocal, Aeropuerto origen) {
+        if (fechaHoraLocal != null && !fechaHoraLocal.isBlank()) {
+            try {
+                return LocalDateTime.parse(fechaHoraLocal.trim());
+            } catch (DateTimeParseException e) {
+                log.warn("Hora local inválida ('{}'), se usa el reloj del servidor en {}.",
+                        fechaHoraLocal, origen.getCodigoICAO());
+            }
+        }
+        return HoraLocal.ahoraEn(origen);
     }
 
     private void asegurarInicializado() {

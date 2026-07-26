@@ -1,6 +1,8 @@
 package com.tasfb2b.backend.controller;
 
 import com.tasfb2b.backend.dto.request.DailyRegisterRequest;
+import com.tasfb2b.backend.dto.response.DailyBulkUploadResponse;
+import com.tasfb2b.backend.dto.response.DailyCancelResponse;
 import com.tasfb2b.backend.dto.response.DailyCloseReportResponse;
 import com.tasfb2b.backend.dto.response.DailyRegisterResponse;
 import com.tasfb2b.backend.dto.response.DailyStateResponse;
@@ -11,10 +13,16 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 
 /**
  * Operación día a día (escenario REAL_TIME): registro manual de envíos uno a
@@ -46,6 +54,35 @@ public class DailyOperationController {
             description = "Muestra cómo se van llenando los vuelos y si se alcanzó el colapso total.")
     public ResponseEntity<DailyStateResponse> estado() {
         return ResponseEntity.ok(dailyOperationService.estado());
+    }
+
+    @PostMapping("/shipments/upload")
+    @Operation(summary = "Cargar un archivo de envíos",
+            description = "Registra en lote los envíos de un archivo de texto con el formato de la "
+                    + "data histórica (id-AAAAMMDD-HH-mm-DESTINO-maletas-cliente). Cada línea pasa "
+                    + "por el mismo registro que un envío manual: valida ruta, descuenta capacidad y "
+                    + "aplica el huso del aeropuerto. La fecha y hora se leen como hora local del "
+                    + "origen.")
+    public ResponseEntity<DailyBulkUploadResponse> cargarArchivo(
+            @RequestParam String origenIcao,
+            @RequestParam("file") MultipartFile file
+    ) throws IOException {
+        String contenido = new String(file.getBytes(), StandardCharsets.UTF_8);
+        return ResponseEntity.ok(
+                dailyOperationService.cargarLote(origenIcao.trim().toUpperCase(), contenido));
+    }
+
+    @PostMapping("/flights/{idVuelo}/cancel")
+    @Operation(summary = "Cancelar un vuelo y reasignar sus maletas",
+            description = "P&R P9: cancela la próxima salida del vuelo que despegue con al menos una "
+                    + "hora de margen y busca ruta alternativa para cada envío que la usaba. La "
+                    + "reasignación es inmediata (la operación es continua, no hay épocas). Devuelve "
+                    + "qué envíos se recolocaron y cuáles quedaron sin ruta.")
+    public ResponseEntity<DailyCancelResponse> cancelarVuelo(@PathVariable String idVuelo) {
+        DailyCancelResponse respuesta = dailyOperationService.cancelarVuelo(idVuelo);
+        return respuesta.isAplicada()
+                ? ResponseEntity.ok(respuesta)
+                : ResponseEntity.unprocessableEntity().body(respuesta);
     }
 
     @PostMapping("/close")

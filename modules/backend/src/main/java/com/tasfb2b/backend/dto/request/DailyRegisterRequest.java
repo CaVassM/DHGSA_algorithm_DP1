@@ -15,7 +15,17 @@ import lombok.Data;
 @Data
 public class DailyRegisterRequest {
 
-    @NotBlank(message = "El aeropuerto de origen (código ICAO) es obligatorio.")
+    /**
+     * Aeropuerto donde está instalada la terminal que registra.
+     *
+     * <p>No lo teclea el operador: lo fija la estación de trabajo al abrir la
+     * pantalla. El enunciado lo pide así — "resulta redundante/innecesario y
+     * hasta riesgoso que el personal de registro de maletas registre la ciudad
+     * de origen, pues se trata de una computadora que está todo el tiempo en
+     * dicho aeropuerto". Sigue viajando en la petición porque el servidor no
+     * tiene otra forma de saber desde dónde se registra.
+     */
+    @NotBlank(message = "La terminal no tiene un aeropuerto asignado.")
     private String origenIcao;
 
     @NotBlank(message = "El aeropuerto de destino (código ICAO) es obligatorio.")
@@ -26,4 +36,15 @@ public class DailyRegisterRequest {
 
     /** Aerolínea que solicita el envío (opcional). */
     private String idCliente;
+
+    /**
+     * Fecha y hora locales del aeropuerto de origen en que se recibe la maleta.
+     *
+     * <p>Opcional: si no llega, el servidor la deduce de su propio reloj
+     * convirtiéndolo al huso del aeropuerto. Se acepta para la carga de archivos,
+     * donde cada registro trae su hora, y porque durante la prueba cada estudiante
+     * tiene su equipo puesto en el huso de la ciudad que le toca — es esa hora, la
+     * de la terminal, la que debe quedar registrada, no la del servidor.
+     */
+    private String fechaHoraLocal;
 }
