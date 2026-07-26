@@ -27,6 +27,14 @@ const iconoAeropuerto = L.divIcon({
   iconAnchor: [4, 4],
 })
 
+/** Aeropuerto atenuado: su continente está filtrado (T54/T55, ver MapaMundi). */
+const iconoAeropuertoAtenuado = L.divIcon({
+  className: 'tasf-daily-airport',
+  html: '<div style="width:8px;height:8px;border-radius:50%;background:#475569;border:1px solid #94a3b8;opacity:0.25;"></div>',
+  iconSize: [8, 8],
+  iconAnchor: [4, 4],
+})
+
 /** Aeropuerto que participa en la ruta seleccionada. */
 function iconoRuta(color, etiqueta) {
   return L.divIcon({
@@ -53,6 +61,60 @@ function iconoMaleta(color) {
 const COLOR_ORIGEN = '#22c55e'
 const COLOR_ESCALA = '#f59e0b'
 const COLOR_DESTINO = '#3b82f6'
+
+// Ángulo de rumbo entre dos puntos (para orientar el ícono del avión). Misma
+// fórmula que MapaMundi.getHeadingAngle: no se importa de allá a propósito
+// (este mapa no comparte código con el de la simulación), pero el resultado
+// visual debe ser idéntico.
+function getHeadingAngle(from, to) {
+  const dx = to.lng - from.lng
+  const dy = to.lat - from.lat
+  return Math.atan2(-dy, dx) * (180 / Math.PI)
+}
+
+/**
+ * Ícono de avión en vuelo, mismo SVG y clases CSS que MapaMundi
+ * (`.tasf-plane-icon-wrapper` / `.tasf-plane-icon`, definidas en index.css)
+ * para que la maleta en tránsito se vea igual en los dos mapas. Sin badge de
+ * conteo: aquí siempre es UN envío, no un vuelo compartido por varios.
+ */
+function iconoAvion({ fill, stroke, angle }) {
+  return L.divIcon({
+    className: 'tasf-plane-icon-wrapper',
+    html: `
+      <div class="tasf-plane-icon" style="--plane-rotation:${angle.toFixed(1)}deg;">
+        <svg viewBox="-8 -8 16 16" width="26" height="26" aria-hidden="true">
+          <path
+            d="M 7,0 L 2,-1.6 L 0,-5 L -2,-2.6 L -3.6,-3.5 L -4.6,-2 L -5,-1 L -5,1 L -4.6,2 L -3.6,3.5 L -2,2.6 L 0,5 L 2,1.6 Z"
+            fill="${fill}"
+            stroke="${stroke}"
+            stroke-width="1"
+          />
+        </svg>
+      </div>
+    `,
+    iconSize: [30, 30],
+    iconAnchor: [15, 15],
+  })
+}
+
+// T54/T55 (mapa en vivo): filtro por estado del envío, adaptado aquí porque
+// esta pantalla no maneja ocupación de almacén/avión — solo el estado de la
+// maleta que ya calcula estadoDeLaMaleta().
+const ESTADOS_FILTRO = [
+  { fase: 'en-almacen', color: '#22c55e', label: 'En almacén' },
+  { fase: 'en-vuelo', color: '#3b82f6', label: 'En vuelo' },
+  { fase: 'en-escala', color: '#f59e0b', label: 'En escala' },
+  { fase: 'entregada', color: '#94a3b8', label: 'Entregada' },
+  { fase: 'sin-ruta', color: '#64748b', label: 'Sin ruta' },
+]
+
+// Alterna un valor en un Set (sin mutar el original). Igual que en MapaMundi.
+function toggleSet(set, valor) {
+  const next = new Set(set)
+  if (next.has(valor)) next.delete(valor); else next.add(valor)
+  return next
+}
 
 function hhmm(iso) {
   return iso ? String(iso).slice(11, 16) : '—'
@@ -169,6 +231,12 @@ export default function MapaDiaADia() {
   const [cargando, setCargando] = useState(true)
   const [error, setError] = useState(null)
 
+  // T54/T55 (portados del mapa en vivo): filtro por estado del envío y por
+  // continente. Sets de valores OCULTOS; vacío = todo visible.
+  const [estadosOcultos, setEstadosOcultos] = useState(() => new Set())
+  const [continentesOcultos, setContinentesOcultos] = useState(() => new Set())
+  const [filtrosAbiertos, setFiltrosAbiertos] = useState(false)
+
   // Cancelación desde el propio mapa. La prueba encadena "seleccionar un envío,
   // verlo en el mapa, cancelar un vuelo y comprobar la reasignación": mandar a
   // otra pantalla justo en ese punto obligaría a saltar de pestaña y volver,
@@ -244,13 +312,35 @@ export default function MapaDiaADia() {
 
   const enviosFiltrados = useMemo(() => {
     const q = filtro.trim().toUpperCase()
-    if (!q) return envios
-    return envios.filter(e =>
-      e.envioId?.toUpperCase().includes(q)
-      || e.destinoIcao?.toUpperCase().includes(q)
-      || e.origenIcao?.toUpperCase().includes(q)
-      || e.idCliente?.toUpperCase().includes(q))
-  }, [envios, filtro])
+    return envios.filter(e => {
+      if (q && !(
+        e.envioId?.toUpperCase().includes(q)
+        || e.destinoIcao?.toUpperCase().includes(q)
+        || e.origenIcao?.toUpperCase().includes(q)
+        || e.idCliente?.toUpperCase().includes(q)
+      )) return false
+      // Filtro por estado (T54/T55): oculta envíos cuya fase actual esté apagada.
+      if (estadosOcultos.size > 0 && estadosOcultos.has(estadoDeLaMaleta(e, ahoraUtc).fase)) {
+        return false
+      }
+      return true
+    })
+  }, [envios, filtro, estadosOcultos, ahoraUtc])
+
+  // Continentes presentes en el dataset, para el filtro (igual que MapaMundi).
+  const continentes = useMemo(
+    () => Array.from(new Set(aeropuertos.map(a => a.continente).filter(Boolean))).sort(),
+    [aeropuertos],
+  )
+
+  // ICAOs cuyo continente está apagado: sus aeropuertos y los tramos que los
+  // tocan se atenúan en el mapa.
+  const icaosContinenteOculto = useMemo(() => {
+    const set = new Set()
+    if (continentesOcultos.size === 0) return set
+    aeropuertos.forEach(a => { if (continentesOcultos.has(a.continente)) set.add(a.codigoIcao) })
+    return set
+  }, [aeropuertos, continentesOcultos])
 
   const envio = envios.find(e => e.envioId === seleccionado) ?? null
   const estadoActual = envio ? estadoDeLaMaleta(envio, ahoraUtc) : null
@@ -279,6 +369,8 @@ export default function MapaDiaADia() {
       return {
         lat: a.lat + (b.lat - a.lat) * estadoActual.progreso,
         lng: a.lng + (b.lng - a.lng) * estadoActual.progreso,
+        // Rumbo del ícono de avión (T-request: mismo estilo que MapaMundi).
+        angle: getHeadingAngle(a, b),
       }
     }
     return null // entregada: ya no hay nada que situar
@@ -406,7 +498,11 @@ export default function MapaDiaADia() {
                 referencia geográfica, sin competir por la atención. */}
             {aeropuertos.map(a => (
               icaosEnRuta.has(a.codigoIcao) ? null : (
-                <Marker key={a.codigoIcao} position={[a.latitud, a.longitud]} icon={iconoAeropuerto}>
+                <Marker
+                  key={a.codigoIcao}
+                  position={[a.latitud, a.longitud]}
+                  icon={icaosContinenteOculto.has(a.codigoIcao) ? iconoAeropuertoAtenuado : iconoAeropuerto}
+                >
                   <Tooltip direction="top" className="tasf-tooltip" opacity={1}>
                     <span className="text-xs">{a.codigoIcao} · {a.ciudad}</span>
                   </Tooltip>
@@ -424,6 +520,11 @@ export default function MapaDiaADia() {
               // el viaje sin necesidad de animar nada.
               const enCurso = estadoActual?.fase === 'en-vuelo' && estadoActual.tramoActual === i
               const yaPasado = estadoActual?.tramoActual != null && i < estadoActual.tramoActual
+              // Filtro por continente: si el aeropuerto de origen o destino de
+              // este tramo está apagado, se atenúa (regla del profesor: filtrar
+              // aeropuertos oculta sus vuelos — MapaMundi.icaosOcultos).
+              const continenteOculto = icaosContinenteOculto.has(t.origenIcao)
+                || icaosContinenteOculto.has(t.destinoIcao)
               return (
                 <Polyline
                   key={`${t.vueloId}-${i}`}
@@ -431,7 +532,7 @@ export default function MapaDiaADia() {
                   pathOptions={{
                     color: t.cancelado ? '#ef4444' : enCurso ? '#60a5fa' : '#3b82f6',
                     weight: enCurso ? 5 : 3,
-                    opacity: t.cancelado ? 0.9 : yaPasado ? 0.35 : 0.9,
+                    opacity: continenteOculto ? 0.12 : (t.cancelado ? 0.9 : yaPasado ? 0.35 : 0.9),
                     // El tramo cancelado se dibuja discontinuo: sigue siendo
                     // parte del historial del envío, pero ese avión no vuela.
                     dashArray: t.cancelado ? '6 6' : null,
@@ -466,7 +567,12 @@ export default function MapaDiaADia() {
             {posicionMaleta && (
               <Marker
                 position={[posicionMaleta.lat, posicionMaleta.lng]}
-                icon={iconoMaleta(estadoActual.color)}
+                // En vuelo se ve como un avión (mismo ícono/estilo que el mapa
+                // en vivo, rotado hacia su rumbo); en tierra sigue siendo el
+                // punto pulsante, que ahí sí representa una maleta quieta.
+                icon={estadoActual.fase === 'en-vuelo' && posicionMaleta.angle != null
+                  ? iconoAvion({ fill: estadoActual.color, stroke: '#bfdbfe', angle: posicionMaleta.angle })
+                  : iconoMaleta(estadoActual.color)}
                 zIndexOffset={2000}
               >
                 <Tooltip direction="top" offset={[0, -10]} className="tasf-tooltip" opacity={1}>
@@ -501,6 +607,37 @@ export default function MapaDiaADia() {
               )
             })}
           </MapContainer>
+
+          {/* T54/T55 (portados del mapa en vivo): filtro por estado del envío
+              y por continente, en un panel plegable igual al de MapaMundi.
+              Va arriba a la izquierda: la ficha del envío usa la derecha y el
+              cartel de "selecciona un envío" el centro. */}
+          <div className="absolute top-3 left-3 z-[1000] bg-slate-900/92 backdrop-blur border border-slate-700 rounded-xl shadow-lg w-44">
+            <button
+              onClick={() => setFiltrosAbiertos(a => !a)}
+              className="w-full px-3 py-2 text-xs font-semibold text-slate-300 hover:text-white transition-colors text-left"
+            >
+              {filtrosAbiertos ? 'Filtros ▴' : 'Filtros ▾'}
+            </button>
+            {filtrosAbiertos && (
+              <div className="px-3 pb-3 max-h-80 overflow-y-auto">
+                <FiltroEstado
+                  ocultos={estadosOcultos}
+                  onToggle={(f) => setEstadosOcultos(prev => toggleSet(prev, f))}
+                />
+                {continentes.length > 1 && (
+                  <>
+                    <div className="h-px bg-slate-700 my-2" />
+                    <FiltroContinente
+                      continentes={continentes}
+                      ocultos={continentesOcultos}
+                      onToggle={(c) => setContinentesOcultos(prev => toggleSet(prev, c))}
+                    />
+                  </>
+                )}
+              </div>
+            )}
+          </div>
 
           {/* Ficha del envío elegido: el plan de viaje completo, tramo a tramo,
               con las horas en la hora de cada aeropuerto. */}
@@ -625,7 +762,8 @@ export default function MapaDiaADia() {
             <Leyenda color={COLOR_DESTINO} label="Destino" />
             <Leyenda color="#ef4444" label="Vuelo cancelado" />
             <span className="w-px bg-slate-700" />
-            <Leyenda color="#3b82f6" label="Maleta (punto pulsante)" />
+            <Leyenda color="#3b82f6" label="Maleta en vuelo (avión)" />
+            <Leyenda color="#22c55e" label="Maleta en tierra (punto pulsante)" />
           </div>
 
           {!envio && !cargando && envios.length > 0 && (
@@ -644,6 +782,52 @@ function Leyenda({ color, label }) {
     <div className="flex items-center gap-1.5">
       <span className="w-3 h-3 rounded-full" style={{ background: color }} />
       <span className="text-slate-300 text-xs">{label}</span>
+    </div>
+  )
+}
+
+// T54/T55 (mismo componente que MapaMundi): casilla marcada = visible,
+// desmarcada = oculto/atenuado en el mapa.
+function FiltroCheck({ marcado, onToggle, hex, label }) {
+  return (
+    <button onClick={onToggle}
+      className={`w-full flex items-center gap-2 text-xs rounded px-1 py-0.5 transition-colors ${marcado ? 'text-slate-200' : 'text-slate-500'}`}
+      title={marcado ? 'Haz clic para ocultar en el mapa' : 'Haz clic para mostrar en el mapa'}>
+      <span className={`w-3.5 h-3.5 shrink-0 rounded border flex items-center justify-center text-[9px] font-bold ${
+        marcado ? 'bg-blue-600 border-blue-500 text-white' : 'bg-slate-800 border-slate-600 text-transparent'}`}>
+        ✓
+      </span>
+      {hex && <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: hex, opacity: marcado ? 1 : 0.3 }} />}
+      <span className="truncate">{label}</span>
+    </button>
+  )
+}
+
+function FiltroEstado({ ocultos, onToggle }) {
+  return (
+    <div>
+      <p className="text-[10px] text-slate-400 uppercase tracking-wider mb-1.5">Estado del envío</p>
+      <div className="flex flex-col gap-0.5">
+        {ESTADOS_FILTRO.map(s => (
+          <FiltroCheck key={s.fase} marcado={!ocultos.has(s.fase)}
+            onToggle={() => onToggle(s.fase)} hex={s.color} label={s.label} />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// Filtro por continente (multiselección). Ocultar un continente atenúa sus
+// aeropuertos y los tramos hacia/desde ellos (igual que MapaMundi).
+function FiltroContinente({ continentes, ocultos, onToggle }) {
+  return (
+    <div>
+      <p className="text-[10px] text-slate-400 uppercase tracking-wider mb-1.5">Continente</p>
+      <div className="flex flex-col gap-0.5">
+        {continentes.map(c => (
+          <FiltroCheck key={c} marcado={!ocultos.has(c)} onToggle={() => onToggle(c)} label={c} />
+        ))}
+      </div>
     </div>
   )
 }
