@@ -59,6 +59,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
@@ -150,6 +151,16 @@ public class SimulacionEnVivoService {
      * El lock garantiza una simulación a la vez; las demás esperan su turno.
      */
     private final ReentrantLock simulacionLock = new ReentrantLock();
+
+    /**
+     * Segundos que una corrida nueva espera a que la anterior suelte el turno.
+     *
+     * <p>Generoso a propósito: la previa tiene que terminar la época que esté
+     * calculando, y con decenas de miles de envíos una época puede tardar
+     * bastante. Pasado ese margen es mejor avisar que seguir esperando en
+     * silencio.
+     */
+    private static final long ESPERA_MAXIMA_TURNO_SEGUNDOS = 90;
 
     /** Parámetros de una corrida en vivo. */
     public record LiveParams(
@@ -318,8 +329,37 @@ private OptimizationAlgorithm resolverOptimizationAlgorithm(String rawAlgorithm)
         }
         cancelaciones.put(runId, cancelado);
         String topic = "/topic/simulacion/" + runId;
+
         // Una simulación a la vez: protege el estado mutable de los singletons.
-        simulacionLock.lock();
+        //
+        // La espera es ACOTADA. Marcar la corrida previa como cancelada no la
+        // detiene en el acto: termina la época que estuviera calculando, y con
+        // decenas de miles de envíos eso puede llevar bastantes segundos. Con un
+        // lock() sin límite, la nueva corrida se quedaba esperando en silencio y
+        // el front mostraba la anterior congelada a media barra, sin saber que
+        // había una detrás haciendo cola.
+        boolean turno;
+        try {
+            turno = simulacionLock.tryLock(ESPERA_MAXIMA_TURNO_SEGUNDOS, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            cancelaciones.remove(runId);
+            return;
+        }
+        if (!turno) {
+            log.warn("Simulación {}: la corrida anterior no liberó el turno en {} s.",
+                    runId, ESPERA_MAXIMA_TURNO_SEGUNDOS);
+            emitir(topic, SimulationEventResponse.builder()
+                    .tipo("ERROR").runId(runId)
+                    .mensaje("Hay otra simulación terminando de cerrarse y no liberó el turno a tiempo."
+                            + " Espera unos segundos y vuelve a iniciar.")
+                    .build());
+            finalizarRun(runId, PlanningRunStatus.FAILED,
+                    "No se pudo tomar el turno: otra simulación seguía en curso.", 0, 0, 0.0);
+            cancelaciones.remove(runId);
+            return;
+        }
+
         try {
             if (cancelado.get()) {
                 return; // cancelada mientras esperaba turno
@@ -385,9 +425,25 @@ private OptimizationAlgorithm resolverOptimizationAlgorithm(String rawAlgorithm)
                     params.epochHours(), params.horizonDays()));
 
             if (epocas.isEmpty()) {
+                // Decir solo "¿hay envíos en el rango?" deja al operador
+                // adivinando cuál es el rango bueno. Con la base cargada por
+                // partes (o a medio importar) es fácil elegir una fecha vacía,
+                // así que se informa qué periodo tiene datos.
+                ShipmentEntity primero = shipmentRepository
+                        .findFirstByOrderByFechaHoraCreacionAsc().orElse(null);
+                ShipmentEntity ultimo = shipmentRepository
+                        .findFirstByOrderByFechaHoraCreacionDesc().orElse(null);
+                String rango = (primero == null || ultimo == null)
+                        ? " La tabla de envíos está vacía: importa datos antes de simular."
+                        : String.format(" La base tiene envíos entre %s y %s.",
+                                primero.getFechaHoraCreacion().toLocalDate(),
+                                ultimo.getFechaHoraCreacion().toLocalDate());
+
                 emitir(topic, SimulationEventResponse.builder()
                         .tipo("ERROR").runId(runId)
-                        .mensaje("No hay épocas que simular (¿hay envíos en el rango?).")
+                        .mensaje(String.format(
+                                "No hay envíos entre %s y %s, así que no hay nada que simular.%s",
+                                ventanaInicio.toLocalDate(), ventanaFin.toLocalDate(), rango))
                         .build());
                 return;
             }
@@ -493,6 +549,27 @@ private OptimizationAlgorithm resolverOptimizationAlgorithm(String rawAlgorithm)
                                 params.populationSize(), limite);
                 }
 
+                // Corte inmediato tras planificar: si mientras se calculaba esta
+                // época llegó una cancelación (o una corrida nueva pidiendo el
+                // turno), no tiene sentido persistir rutas ni emitir eventos de
+                // una simulación que ya nadie mira. Sin esto, el trabajo restante
+                // de la época retenía el lock varios segundos más.
+                if (cancelado.get()) {
+                    log.info("Simulación {}: cancelada durante la época {}; libera el turno.",
+                            runId, epoca.getNumeroEpoca());
+                    emitir(topic, SimulationEventResponse.builder()
+                            .tipo("FIN").runId(runId)
+                            .mensaje("Simulación cancelada por el usuario.")
+                            .totalAsignadosAcumulado(totalAsignados)
+                            .costoAcumulado(simuladorEpocas.getCostoAcumulado())
+                            .build());
+                    finalizarRun(runId, PlanningRunStatus.FAILED,
+                            "Simulación cancelada por el usuario.",
+                            totalAsignados, pendientes.size(),
+                            simuladorEpocas.getCostoAcumulado());
+                    return;
+                }
+
                 pendientes = simuladorEpocas.finalizarEpoca(epoca, mejor);
 
                 // Estado visible para las cancelaciones que lleguen mientras se
@@ -506,7 +583,9 @@ private OptimizationAlgorithm resolverOptimizationAlgorithm(String rawAlgorithm)
                 if (mejor != null && mejor.getEnviosAsignados() != null && !mejor.getEnviosAsignados().isEmpty()) {
                     totalAsignados += mejor.getEnviosAsignados().size();
 
-                    planningRoutePersistenceService.guardarRutasDeEpoca(
+                    // C29: en segundo plano. La animación no espera a la BD; el
+                    // colapso se detecta sobre el Individuo en memoria.
+                    planningRoutePersistenceService.guardarRutasDeEpocaAsync(
                             runId,
                             epoca.getNumeroEpoca(),
                             mejor
@@ -547,21 +626,36 @@ private OptimizationAlgorithm resolverOptimizationAlgorithm(String rawAlgorithm)
                 );
                 
                 // --- Detección de colapso ---
+                //
+                // El enunciado lo define sin ambigüedad: el colapso es que "el
+                // sistema logístico de la empresa ya no cumpla con entregar AL
+                // MENOS UNA MALETA". No es un porcentaje de carga pendiente: un
+                // envío postpuesto a la época siguiente todavía puede llegar a
+                // tiempo, y contarlo como fallo daría una fecha de colapso
+                // demasiado temprana.
+                //
+                // Lo que sí es un incumplimiento es una maleta que ya no puede
+                // entregarse dentro de su plazo. Se detectan dos formas:
+                //   - una ruta planificada que entrega DESPUÉS del deadline;
+                //   - un envío pendiente cuyo deadline ya venció mientras esperaba.
                 if (params.modoColapso()) {
+                    IncumplimientoPlazo incumplimiento =
+                            detectarIncumplimiento(mejor, pendientes, epoca.getFin());
                     boolean almacenSaturado = ultimaOcupacion.values().stream()
                             .anyMatch(pct -> pct >= 100.0);
-                    int totalConsiderado = totalAsignados + pendientes.size();
-                    double pctSinAtender = totalConsiderado > 0
-                            ? (pendientes.size() * 100.0) / totalConsiderado : 0.0;
-                    if (almacenSaturado || pctSinAtender >= params.umbralColapso()) {
+
+                    if (incumplimiento != null || almacenSaturado) {
                         colapsoDetectado = true;
+                        String motivo = incumplimiento != null
+                                ? incumplimiento.descripcion()
+                                : "Almacén saturado: la capacidad de un aeropuerto quedó excedida.";
                         CollapseReportResponse reporte = construirReporte(
                                 true, params.factorCarga(), epoca.getNumeroEpoca(), epoca.getFin(),
-                                almacenSaturado ? "Almacén saturado (capacidad excedida)."
-                                        : String.format("%.0f%% de envíos sin atender (umbral %.0f%%).",
-                                                pctSinAtender, params.umbralColapso()),
+                                motivo,
                                 totalEnviosOriginal * Math.max(1, params.factorCarga()),
                                 totalAsignados, pendientes.size(), ultimaOcupacion);
+                        reporte.setEnvioIncumplido(
+                                incumplimiento != null ? incumplimiento.envioId() : null);
                         emitir(topic, SimulationEventResponse.builder()
                                 .tipo("COLAPSO").runId(runId)
                                 .numeroEpoca(epoca.getNumeroEpoca())
@@ -573,10 +667,15 @@ private OptimizationAlgorithm resolverOptimizationAlgorithm(String rawAlgorithm)
                                 .mensaje("⚠ COLAPSO detectado: " + reporte.getMotivo())
                                 .build());
                         
+                        // La fecha va PRIMERO en el mensaje: es el dato que la
+                        // entrega pide mostrar, y el reporte persistido (que se
+                        // consulta después, ya sin el evento WebSocket) solo
+                        // conserva este texto.
                         finalizarRun(
                                 runId,
                                 PlanningRunStatus.COMPLETED_WITH_PENDING_SHIPMENTS,
-                                "COLAPSO detectado: " + reporte.getMotivo(),
+                                String.format("COLAPSO LOGÍSTICO el %s. %s",
+                                        epoca.getFin(), reporte.getMotivo()),
                                 totalAsignados,
                                 pendientes.size(),
                                 simuladorEpocas.getCostoAcumulado()
@@ -783,6 +882,75 @@ private OptimizationAlgorithm resolverOptimizationAlgorithm(String rawAlgorithm)
                 .maletas(0)
                 .envios(0)
                 .build();
+    }
+
+    /** Primera maleta que el sistema ya no puede entregar dentro de su plazo. */
+    private record IncumplimientoPlazo(String envioId, String descripcion) {
+    }
+
+    /**
+     * Busca la primera maleta que incumple su plazo, que es como el enunciado
+     * define el colapso: "hasta que el sistema logístico de la empresa ya no
+     * cumpla con entregar al menos una maleta".
+     *
+     * <p>Se miran las dos formas en que eso ocurre:
+     * <ul>
+     *   <li><b>Ruta tardía</b>: la planificación asignó el envío, pero la entrega
+     *       (llegada del último vuelo + recojo) cae después del deadline. La
+     *       propia {@code RutaEnvio} ya sabe calcular ese retraso.</li>
+     *   <li><b>Pendiente vencido</b>: el envío sigue sin ruta y su deadline ya
+     *       pasó. No hace falta esperar a que se le asigne nada: esa maleta ya
+     *       no llega a tiempo.</li>
+     * </ul>
+     *
+     * <p>Un envío meramente postpuesto NO cuenta: pasar a la época siguiente es
+     * el funcionamiento normal del simulador y todavía puede entregarse dentro
+     * de plazo.
+     *
+     * @return el primer incumplimiento encontrado, o {@code null} si no hay
+     */
+    private IncumplimientoPlazo detectarIncumplimiento(
+            Individuo solucion, List<Envio> pendientes, LocalDateTime relojEpoca) {
+
+        if (solucion != null && solucion.getEnviosAsignados() != null) {
+            for (Map.Entry<Envio, RutaEnvio> e : solucion.getEnviosAsignados().entrySet()) {
+                RutaEnvio ruta = e.getValue();
+                if (ruta == null) continue;
+                long retraso = ruta.getRetraso();
+                if (retraso > 0) {
+                    Envio envio = e.getKey();
+                    return new IncumplimientoPlazo(envio.getId(), String.format(
+                            "El envío %s (%s → %s, %d maletas) no llega a tiempo: se entrega %d h %d min"
+                                    + " después de su plazo. El sistema ya no cumple con entregar al"
+                                    + " menos una maleta.",
+                            envio.getId(),
+                            envio.getAeropuertoOrigen().getCodigoICAO(),
+                            envio.getAeropuertoDestino().getCodigoICAO(),
+                            envio.getCantidadMaletas(),
+                            retraso / 60, retraso % 60));
+                }
+            }
+        }
+
+        if (pendientes != null) {
+            for (Envio envio : pendientes) {
+                LocalDateTime deadline = envio.getDeadline() != null
+                        ? envio.getDeadline()
+                        : envio.calcularDeadline();
+                if (deadline != null && relojEpoca.isAfter(deadline)) {
+                    return new IncumplimientoPlazo(envio.getId(), String.format(
+                            "El envío %s (%s → %s, %d maletas) venció sin ruta asignada: su plazo"
+                                    + " terminó el %s y sigue sin poder despacharse. El sistema ya no"
+                                    + " cumple con entregar al menos una maleta.",
+                            envio.getId(),
+                            envio.getAeropuertoOrigen().getCodigoICAO(),
+                            envio.getAeropuertoDestino().getCodigoICAO(),
+                            envio.getCantidadMaletas(),
+                            deadline));
+                }
+            }
+        }
+        return null;
     }
 
     private Map<String, Double> ocupacionDe(EpocaData epoca) {
