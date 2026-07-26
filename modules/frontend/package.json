@@ -17,6 +17,7 @@
     "react-leaflet": "^4.2.1",
     "react-router-dom": "^6.26.2",
     "recharts": "^2.12.7",
+    "sockjs-client": "^1.6.1",
     "topojson-client": "^3.1.0",
     "world-atlas": "^2.0.2"
   },

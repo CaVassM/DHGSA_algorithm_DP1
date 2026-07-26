@@ -38,7 +38,7 @@ function ensureClient() {
   if (client) return client
 
   client = new Client({
-    brokerURL: WS_URL,
+    webSocketFactory: () => new SockJS(WS_URL),
     reconnectDelay: 3000,
     heartbeatIncoming: 10000,
     heartbeatOutgoing: 10000,
