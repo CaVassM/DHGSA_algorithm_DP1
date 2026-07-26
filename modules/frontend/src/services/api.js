@@ -81,6 +81,33 @@ export async function getEstadoDiario() {
   return data
 }
 
+// Carga en lote de envíos desde un archivo de texto. Cada línea se registra por
+// el mismo camino que un envío manual, así que puede aceptarse o rechazarse por
+// los mismos motivos; el detalle llega por línea.
+export async function cargarArchivoDiario(origenIcao, file) {
+  const formData = new FormData()
+  formData.append('file', file)
+  const { data } = await api.post('/daily/shipments/upload', formData, {
+    params: { origenIcao },
+    timeout: 120000,
+  })
+  return data
+}
+
+// P&R P9: cancela un vuelo y reasigna sus maletas en el acto. Devuelve el cuerpo
+// también cuando rechaza (422), que trae el motivo.
+export async function cancelarVueloDiario(idVuelo) {
+  try {
+    const { data } = await api.post(`/daily/flights/${encodeURIComponent(idVuelo)}/cancel`)
+    return data
+  } catch (err) {
+    if (err.response?.status === 422 && err.response.data) {
+      return err.response.data
+    }
+    throw err
+  }
+}
+
 export async function reiniciarDiario() {
   const { data } = await api.post('/daily/reset')
   return data

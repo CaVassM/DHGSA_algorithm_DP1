@@ -215,8 +215,12 @@ public class DailyOperationService {
                         origenIcao, destinoIcao, maletas);
             }
 
-            // Busca una ruta de vuelos que admita TODA la carga (carga requerida = maletas).
-            List<Vuelo> ruta = grafo.dijkstraMenorTiempo(origen, destino, maletas);
+            // Busca una ruta de vuelos que admita TODA la carga (carga requerida
+            // = maletas). La salida más temprana admisible es AHORA: sin acotarlo,
+            // la búsqueda arranca al principio del día y puede devolver vuelos que
+            // ya despegaron — maletas asignadas a aviones que no están.
+            List<Vuelo> ruta = grafo.dijkstraMenorTiempo(
+                    origen, destino, maletas, HoraLocal.ahoraUtc());
             if (ruta == null || ruta.isEmpty()) {
                 return rechazo("No hay ruta con capacidad para " + maletas
                                 + " maletas de " + origenIcao + " a " + destinoIcao
@@ -449,7 +453,8 @@ public class DailyOperationService {
                 asignaciones.remove(envioId);
 
                 List<Vuelo> nueva = grafo.dijkstraMenorTiempo(
-                        envio.getAeropuertoOrigen(), envio.getAeropuertoDestino(), maletas);
+                        envio.getAeropuertoOrigen(), envio.getAeropuertoDestino(), maletas,
+                        HoraLocal.ahoraUtc());
 
                 if (nueva == null || nueva.isEmpty()) {
                     sinRuta.add(DailyCancelResponse.EnvioReasignado.builder()
