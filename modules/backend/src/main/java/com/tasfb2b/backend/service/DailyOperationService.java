@@ -357,15 +357,24 @@ public class DailyOperationService {
                     if (!(v instanceof InstanciaVuelo inst)) continue;
                     Aeropuerto o = v.getAeropuertoOrigen();
                     Aeropuerto d = v.getAeropuertoDestino();
+                    // El catálogo guarda salida/llegada en hora LOCAL de cada
+                    // punta (origen/destino respectivamente), no en UTC. El
+                    // frontend sí compara salidaUtc/llegadaUtc contra el reloj
+                    // UTC real para decidir si la maleta ya voló o no, así que
+                    // hay que convertir explícitamente: mandar la hora local tal
+                    // cual en esos campos hacía que un envío desde un aeropuerto
+                    // con huso negativo apareciera "ya en vuelo" de entrada.
                     LocalDateTime salida = inst.getFechaHoraSalida();
                     LocalDateTime llegada = inst.getFechaHoraLlegada();
+                    LocalDateTime salidaUtc = HoraLocal.aUtc(salida, o);
+                    LocalDateTime llegadaUtc = HoraLocal.aUtc(llegada, d);
 
                     tramos.add(DailyShipmentRouteResponse.Tramo.builder()
                             .vueloId(v.getId())
                             .origenIcao(o.getCodigoICAO())
                             .destinoIcao(d.getCodigoICAO())
-                            .salidaUtc(salida)
-                            .llegadaUtc(llegada)
+                            .salidaUtc(salidaUtc)
+                            .llegadaUtc(llegadaUtc)
                             .salidaLocal(salida)
                             .llegadaLocal(llegada)
                             .gmtOrigen(HoraLocal.etiquetaGmt(o))
