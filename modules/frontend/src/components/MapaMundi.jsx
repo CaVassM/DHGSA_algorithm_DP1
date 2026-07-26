@@ -327,6 +327,10 @@ export default function MapaMundi({
   runCompleted = false,
   liveMode = false,
   liveEvent = null,
+  // Rutas ya conocidas por el evento EPOCA de esta corrida (acumuladas por el
+  // Dashboard), disponibles ANTES de que la persistencia asíncrona las guarde
+  // en BD. Ver comentario en el useMemo de `routes` más abajo.
+  liveRoutes = [],
   multiplicador = 240,
   epochHours = 4,
   routesRefreshKey = 0,
@@ -346,7 +350,6 @@ export default function MapaMundi({
   const timerRef = useRef(null)
 
   const [airports, setAirports] = useState(null)
-  const [routes, setRoutes] = useState(null)
   const [persistedRoutes, setPersistedRoutes] = useState(null)
   const [flights, setFlights] = useState([])
 
@@ -428,23 +431,11 @@ export default function MapaMundi({
       .catch(() => {})
   }, [])
 
-/*   useEffect(() => {
-    if (!runId) return
-    let vivo = true
-    getPlanningRunRoutes(runId)
-      .then(list => {
-        if (!vivo) return
-        const valid = list.filter(r => r.origenIcao && r.destinoIcao)
-        setRoutes(valid)
-        // Inicializar el reloj SOLO si aún no hay simTime. Antes esto corría
-        // también cuando el run pasaba a completado (runCompleted cambia), y
-        // reseteaba el reproductor al inicio en plena reproducción.
-        const starts = valid.map(r => r.tiempoInicio).filter(Boolean).sort()
-        if (starts.length > 0) setSimTime(prev => prev ?? new Date(starts[0]))
-      })
-      .catch(() => {})
-    return () => { vivo = false }
-  }, [runId, runCompleted]) */
+  // Rutas ya cerradas en BD (runs completados, o para rellenar si se entra al
+  // dashboard directamente). En modo vivo esto sirve de respaldo/reconciliación
+  // tardía, NUNCA de fuente primaria: la persistencia es async y a propósito va
+  // por detrás de la animación (ver PlanningRoutePersistenceService), así que
+  // esperar a la BD dejaba la primera época sin nada que dibujar.
   useEffect(() => {
     if (!runId) return
     let vivo = true
@@ -455,7 +446,7 @@ export default function MapaMundi({
 
         const valid = (list ?? []).filter(r => r.origenIcao && r.destinoIcao)
 
-        setRoutes(valid)
+        setPersistedRoutes(valid)
 
         const starts = valid.map(r => r.tiempoInicio).filter(Boolean).sort()
         if (starts.length > 0) {
@@ -467,15 +458,19 @@ export default function MapaMundi({
     return () => { vivo = false }
 }, [runId, runCompleted, routesRefreshKey])
 
-/*   const routes = useMemo(() => {
-    if (liveMode && liveRoutes && liveRoutes.length > 0) {
-      return liveRoutes
-        .map(adaptLiveRouteToMapRoute)
-        .filter(r => r && r.origenIcao && r.destinoIcao)
-    }
+  // Rutas adaptadas del evento EPOCA (llegan por WebSocket, en memoria, sin
+  // pasar por la BD): son la fuente de verdad mientras la corrida está en vivo.
+  const liveRoutesAdaptadas = useMemo(() => {
+    if (!liveRoutes || liveRoutes.length === 0) return []
+    return liveRoutes
+      .map(adaptLiveRouteToMapRoute)
+      .filter(r => r && r.origenIcao && r.destinoIcao)
+  }, [liveRoutes])
 
+  const routes = useMemo(() => {
+    if (liveMode) return liveRoutesAdaptadas
     return persistedRoutes
-  }, [liveMode, liveRoutes, persistedRoutes]) */
+  }, [liveMode, liveRoutesAdaptadas, persistedRoutes])
 
   // --- Reproducción en vivo: seguir el ritmo del backend ---
   //

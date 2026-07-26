@@ -67,8 +67,10 @@ export default function Dashboard() {
     if (navRunId == null) return
     setRunId(navRunId)
     setSimulacionEnVivo(navLive ?? false)
-    // Nueva corrida: limpiar el último evento para no arrastrar el de la anterior.
+    // Nueva corrida: limpiar el último evento y las rutas para no arrastrar las
+    // de la anterior (mismo runId reusado en el componente montado).
     setEventoSimulacion(null)
+    setRutasEnVivo([])
   }, [navRunId, navLive])
 
   // Persistir el runId para que sobreviva recargas y navegación entre páginas
@@ -144,11 +146,20 @@ export default function Dashboard() {
     if (ev.tipo === 'EPOCA') {
       setSimulacionEnVivo(true)
       setEventoSimulacion(ev)
-      //setRutasEnVivo(ev.rutas ?? [])
-      //setRutasEnVivo(prev => [...prev, ...(ev.rutas ?? [])])
-      setTimeout(() => {
-        setRoutesRefreshKey(v => v + 1)
-      }, 500)
+      // Las rutas ya vienen completas en el propio evento (calculadas en
+      // memoria, sin pasar por BD): usarlas directo evita la carrera contra
+      // PlanningRoutePersistenceService, que persiste de forma asíncrona y a
+      // propósito por detrás de la animación (puede tardar más que la pausa
+      // entre épocas). Antes se esperaba un timeout fijo de 500ms y se
+      // reconsultaba la BD; en la época 1 casi nunca alcanzaba y el mapa
+      // aparecía vacío hasta que la época 2 "arrastraba" las rutas atrasadas.
+      if (Array.isArray(ev.rutas) && ev.rutas.length > 0) {
+        setRutasEnVivo(prev => {
+          const porEnvio = new Map(prev.map(r => [r.envioId, r]))
+          ev.rutas.forEach(r => porEnvio.set(r.envioId, r))
+          return Array.from(porEnvio.values())
+        })
+      }
       if (ev.ocupacionAlmacenes) {
         setOcupacion(ev.ocupacionAlmacenes)
       }
@@ -157,6 +168,9 @@ export default function Dashboard() {
     if (ev.tipo === 'FIN') {
       setSimulacionEnVivo(false)
       setEventoSimulacion(ev)
+      // Reconciliación final: una vez terminada la corrida no hay apuro, y esto
+      // asegura que el mapa quede alineado con lo realmente persistido.
+      setTimeout(() => setRoutesRefreshKey(v => v + 1), 2000)
     }
 
     // D14/D15: un vuelo cancelado durante la corrida. El id de instancia viene
@@ -247,6 +261,7 @@ useEffect(() => { setCancelaciones([]) }, [runId])
             runCompleted={!!(run && TERMINAL_STATUSES.has(run.status))}
             liveMode={simulacionEnVivo}
             liveEvent={eventoSimulacion}
+            liveRoutes={rutasEnVivo}
             multiplicador={multiplicador}
             epochHours={epochHours}
             routesRefreshKey={routesRefreshKey}
