@@ -1179,23 +1179,23 @@ export default function MapaMundi({
           {simTime && (
             <div className="px-3 py-2 border-b border-slate-700/50">
               <div className="flex items-center justify-between">
-                <span className="text-[9px] text-blue-300 uppercase tracking-widest font-semibold">Simulado</span>
-                <span className="text-[10px] text-slate-400 font-mono">{formatSimDateTime(simTime).split(' ')[0]}</span>
+                <span className="text-[10px] text-blue-300 uppercase tracking-widest font-semibold">Simulado</span>
+                <span className="text-[15px] text-slate-400 font-mono">{formatSimDateTime(simTime).split(' ')[0]}</span>
               </div>
               <div className="flex items-baseline justify-between mt-0.5">
                 <span className="text-2xl font-bold font-mono text-white leading-none">{formatSimDateTime(simTime).split(' ')[1]}</span>
-                <span className="text-[11px] font-mono text-green-400">+{formatElapsed(simStart ? simTime - simStart : null)}</span>
+                <span className="text-[15px] font-mono text-green-400">+{formatElapsed(simStart ? simTime - simStart : null)}</span>
               </div>
             </div>
           )}
           <div className="px-3 py-2">
             <div className="flex items-center justify-between">
-              <span className="text-[9px] text-emerald-300 uppercase tracking-widest font-semibold">Real</span>
-              <span className="text-[10px] text-slate-400 font-mono">{formatSimDateTime(realTime).split(' ')[0]}</span>
+              <span className="text-[10px] text-emerald-300 uppercase tracking-widest font-semibold">Real</span>
+              <span className="text-[15px] text-slate-400 font-mono">{formatSimDateTime(realTime).split(' ')[0]}</span>
             </div>
             <div className="flex items-baseline justify-between mt-0.5">
               <span className="text-lg font-bold font-mono text-emerald-400 leading-none">{formatRealTime(realTime)}</span>
-              <span className="text-[11px] font-mono text-emerald-400">
+              <span className="text-[15px] font-mono text-emerald-400">
                 {inicioReal ? `+${formatElapsedReal(realTime - inicioReal)}` : '--:--'}
               </span>
             </div>
