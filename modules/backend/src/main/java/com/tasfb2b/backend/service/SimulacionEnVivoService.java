@@ -14,6 +14,7 @@ import com.tasfb2b.backend.domain.model.ShipmentEntity;
 import com.tasfb2b.backend.dto.request.LiveSimulationRequest;
 import com.tasfb2b.backend.dto.response.CollapseReportResponse;
 import com.tasfb2b.backend.dto.response.SimulationEventResponse;
+import com.tasfb2b.backend.dto.response.VueloEpocaDTO;
 import com.tasfb2b.backend.mapper.DomainMapper;
 import com.tasfb2b.backend.repository.AirportRepository;
 import com.tasfb2b.backend.repository.FlightRepository;
@@ -27,6 +28,8 @@ import com.tasfb2b.dhgs.demo.application.dto.RutaDTO;
 import com.tasfb2b.dhgs.demo.domain.model.Aeropuerto;
 import com.tasfb2b.dhgs.demo.domain.model.AlmacenEstado;
 import com.tasfb2b.dhgs.demo.domain.model.Envio;
+import com.tasfb2b.dhgs.demo.domain.model.InstanciaVuelo;
+import com.tasfb2b.dhgs.demo.domain.model.RutaEnvio;
 import com.tasfb2b.dhgs.demo.domain.model.Vuelo;
 import com.tasfb2b.dhgs.demo.domain.service.EpocaData;
 import com.tasfb2b.dhgs.demo.domain.service.SimuladorEpocas;
@@ -48,8 +51,11 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
@@ -349,6 +355,13 @@ private OptimizationAlgorithm resolverOptimizationAlgorithm(String rawAlgorithm)
 //                    return;
 //                }
 
+                // C29: el ritmo de la simulación se mide desde que arranca el
+                // ciclo de la época, no desde que termina de calcularla. Así el
+                // tiempo de planificación se descuenta de la pausa y la
+                // reproducción avanza a intervalos parejos, sin los saltos que
+                // producía esperar la pausa completa DESPUÉS del cómputo.
+                long inicioCicloMs = System.currentTimeMillis();
+
                 simuladorEpocas.prepararEpoca(epoca, pendientes);
                 List<Envio> enviosEpoca = epoca.getTodosLosEnvios();
 
@@ -380,6 +393,8 @@ private OptimizationAlgorithm resolverOptimizationAlgorithm(String rawAlgorithm)
 
                 ultimaOcupacion = ocupacionDe(epoca);
 
+                List<VueloEpocaDTO> vuelosEpoca = vuelosDeEpoca(epoca, mejor);
+
                 emitir(topic, SimulationEventResponse.builder()
                         .tipo("EPOCA").runId(runId)
                         .numeroEpoca(epoca.getNumeroEpoca())
@@ -392,6 +407,7 @@ private OptimizationAlgorithm resolverOptimizationAlgorithm(String rawAlgorithm)
                         .costoEpoca(epoca.getCostoEpoca())
                         .rutas(rutas)
                         .ocupacionAlmacenes(ultimaOcupacion)
+                        .vuelosEpoca(vuelosEpoca)
                         .totalAsignadosAcumulado(totalAsignados)
                         .costoAcumulado(simuladorEpocas.getCostoAcumulado())
                         .build());
@@ -444,7 +460,22 @@ private OptimizationAlgorithm resolverOptimizationAlgorithm(String rawAlgorithm)
                     }
                 }
 
-                dormir(pausaMsPorEpoca, cancelado);
+                // C29: el ritmo lo marca el ciclo completo (planificar + pausa),
+                // no la pausa sola. Si planificar ya consumió el tiempo de la
+                // época no se espera nada más: antes se sumaba la pausa íntegra
+                // al cómputo y la reproducción se quedaba congelada.
+                //
+                // El coste de planificar varía mucho con la carga de la época
+                // (unos segundos con pocos envíos, más de un minuto con miles),
+                // así que sin este descuento la cadencia era irregular y el mapa
+                // alternaba avances rápidos con parones largos.
+                long computoMs = System.currentTimeMillis() - inicioCicloMs;
+                long esperaMs = Math.max(0, pausaMsPorEpoca - computoMs);
+                if (computoMs > pausaMsPorEpoca) {
+                    log.debug("Época {} tardó {} ms en planificar, por encima del ritmo objetivo de {} ms",
+                            epoca.getNumeroEpoca(), computoMs, pausaMsPorEpoca);
+                }
+                dormir(esperaMs, cancelado);
             }
 
             // Fin sin colapso (o simulación normal de periodo)
@@ -530,6 +561,98 @@ private OptimizationAlgorithm resolverOptimizationAlgorithm(String rawAlgorithm)
         return shipmentRepository.findFirstByOrderByFechaHoraCreacionAsc()
                 .map(s -> s.getFechaHoraCreacion().toLocalDate().minusDays(1).atStartOfDay())
                 .orElse(LocalDateTime.now());
+    }
+
+    /**
+     * C27: vuelos que operan durante la época con la carga que realmente
+     * transportan. Recorre las rutas asignadas acumulando maletas por instancia
+     * de vuelo y añade, con 0 maletas, las instancias que despegan dentro de la
+     * época sin llevar ningún envío: son los vuelos <b>vacíos</b> que el mapa
+     * debe pintar en gris. Deducirlos en el frontend a partir del catálogo
+     * produciría aviones que la planificación nunca despachó.
+     */
+    private List<VueloEpocaDTO> vuelosDeEpoca(EpocaData epoca, Individuo mejor) {
+        Map<String, VueloEpocaDTO> porInstancia = new LinkedHashMap<>();
+
+        if (mejor != null && mejor.getEnviosAsignados() != null) {
+            for (Map.Entry<Envio, RutaEnvio> asignacion : mejor.getEnviosAsignados().entrySet()) {
+                RutaEnvio ruta = asignacion.getValue();
+                if (ruta == null || ruta.getSecuenciaVuelos() == null) continue;
+                int maletas = asignacion.getKey().getCantidadMaletas();
+
+                for (Vuelo vuelo : ruta.getSecuenciaVuelos()) {
+                    VueloEpocaDTO dto = porInstancia.computeIfAbsent(claveInstancia(vuelo),
+                            k -> nuevoVueloEpoca(vuelo));
+                    if (dto == null) continue;
+                    dto.setMaletas(dto.getMaletas() + maletas);
+                    dto.setEnvios(dto.getEnvios() + 1);
+                }
+            }
+        }
+
+        // Vuelos vacíos: solo sobre TRAMOS que la planificación está usando en
+        // esta época. Filtrar por aeropuerto no alcanza (la operación toca casi
+        // todos los aeropuertos, así que pasaba el catálogo entero); el tramo
+        // origen→destino sí acota a rutas realmente operadas, que además son las
+        // únicas con trayectoria dibujada en el mapa.
+        Set<String> tramosOperando = new HashSet<>();
+        for (VueloEpocaDTO conCarga : porInstancia.values()) {
+            if (conCarga != null) {
+                tramosOperando.add(conCarga.getOrigenIcao() + "-" + conCarga.getDestinoIcao());
+            }
+        }
+
+        if (!tramosOperando.isEmpty()) {
+            for (List<Vuelo> salientes : grafoVuelos.getAdyacencia().values()) {
+                for (Vuelo vuelo : salientes) {
+                    if (!(vuelo instanceof InstanciaVuelo instancia)) continue;
+                    LocalDateTime salida = instancia.getFechaHoraSalida();
+                    if (salida == null || salida.isBefore(epoca.getInicio()) || !salida.isBefore(epoca.getFin())) {
+                        continue;
+                    }
+                    if (vuelo.getAeropuertoOrigen() == null || vuelo.getAeropuertoDestino() == null) continue;
+                    String tramo = vuelo.getAeropuertoOrigen().getCodigoICAO()
+                            + "-" + vuelo.getAeropuertoDestino().getCodigoICAO();
+                    if (!tramosOperando.contains(tramo)) continue;
+                    porInstancia.computeIfAbsent(claveInstancia(vuelo), k -> nuevoVueloEpoca(vuelo));
+                }
+            }
+        }
+
+        List<VueloEpocaDTO> resultado = new ArrayList<>(porInstancia.size());
+        for (VueloEpocaDTO dto : porInstancia.values()) {
+            if (dto != null) resultado.add(dto);
+        }
+        return resultado;
+    }
+
+    /** Clave única de una ocurrencia concreta de vuelo (plantilla + salida). */
+    private String claveInstancia(Vuelo vuelo) {
+        if (vuelo instanceof InstanciaVuelo instancia && instancia.getFechaHoraSalida() != null) {
+            return vuelo.getId() + "@" + instancia.getFechaHoraSalida();
+        }
+        return String.valueOf(vuelo.getId());
+    }
+
+    /** Construye el DTO base de un vuelo (sin carga todavía). */
+    private VueloEpocaDTO nuevoVueloEpoca(Vuelo vuelo) {
+        if (vuelo.getAeropuertoOrigen() == null || vuelo.getAeropuertoDestino() == null) return null;
+        LocalDateTime salida = null;
+        LocalDateTime llegada = null;
+        if (vuelo instanceof InstanciaVuelo instancia) {
+            salida = instancia.getFechaHoraSalida();
+            llegada = instancia.getFechaHoraLlegada();
+        }
+        return VueloEpocaDTO.builder()
+                .businessId(vuelo.getId())
+                .origenIcao(vuelo.getAeropuertoOrigen().getCodigoICAO())
+                .destinoIcao(vuelo.getAeropuertoDestino().getCodigoICAO())
+                .salida(salida)
+                .llegada(llegada)
+                .capacidad(vuelo.getCapacidad())
+                .maletas(0)
+                .envios(0)
+                .build();
     }
 
     private Map<String, Double> ocupacionDe(EpocaData epoca) {

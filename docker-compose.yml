@@ -51,6 +51,13 @@ services:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-tasf_b2b}
       SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER:-tasf}
       SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-tasf123}
+
+      # G06: origenes autorizados a llamar a la API y a abrir el WebSocket.
+      # Por defecto "*", que es lo que hace falta en el laboratorio: las IPs de
+      # los equipos que se conectan como visualizadores cambian y no se pueden
+      # enumerar. En un despliegue publico hay que acotarlo al dominio real
+      # (ver CORS_ALLOWED_ORIGINS en .env).
+      TASFB2B_CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-*}
     depends_on:
       - postgres
       - redis

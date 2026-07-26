@@ -47,6 +47,13 @@ public class SimulationEventResponse {
     /** Ocupación de almacenes por ICAO (0-100) tras esta época. */
     private Map<String, Double> ocupacionAlmacenes;
 
+    /**
+     * C27: vuelos que operan en esta época con su carga real, incluidos los
+     * que salen vacíos. Permite al mapa pintar el semáforo completo de las
+     * unidades de transporte sin inventar aviones en el frontend.
+     */
+    private List<VueloEpocaDTO> vuelosEpoca;
+
     // --- Acumulado de la simulación ---
     private int totalAsignadosAcumulado;
     private double costoAcumulado;

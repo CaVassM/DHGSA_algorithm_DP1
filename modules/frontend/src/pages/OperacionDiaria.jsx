@@ -1,6 +1,13 @@
 import { useState, useEffect, useCallback } from 'react'
 import NavBar from '../components/NavBar'
-import { getAirports, registrarEnvioDiario, getEstadoDiario, reiniciarDiario } from '../services/api'
+import {
+  getAirports,
+  registrarEnvioDiario,
+  getEstadoDiario,
+  reiniciarDiario,
+  cerrarOperacionDiaria,
+  getReporteCierreDiario,
+} from '../services/api'
 
 // Operación día a día (escenario REAL_TIME).
 // Pantalla independiente del simulador: se registran envíos a mano, uno a uno,
@@ -28,6 +35,12 @@ export default function OperacionDiaria() {
   const [registros, setRegistros] = useState([])
   const [error, setError] = useState(null)
 
+  // G09: reporte de cierre de la jornada. Mientras sea null la jornada está
+  // abierta; en cuanto existe, la operación queda congelada y se muestra el
+  // reporte de la última planificación estable.
+  const [cierre, setCierre] = useState(null)
+  const [cerrando, setCerrando] = useState(false)
+
   const refrescarEstado = useCallback(async () => {
     try {
       const s = await getEstadoDiario()
@@ -45,8 +58,27 @@ export default function OperacionDiaria() {
       .then(page => { if (alive) setAeropuertos(page?.content ?? []) })
       .catch(() => {})
     refrescarEstado()
+    // G09: si la jornada ya fue cerrada (p. ej. desde otro visualizador),
+    // recuperamos el reporte al entrar en vez de mostrar la pantalla operativa.
+    getReporteCierreDiario()
+      .then(r => { if (alive && r) setCierre(r) })
+      .catch(() => {})
     return () => { alive = false }
   }, [refrescarEstado])
+
+  async function handleCerrar() {
+    setError(null)
+    setCerrando(true)
+    try {
+      const reporte = await cerrarOperacionDiaria()
+      setCierre(reporte)
+      await refrescarEstado()
+    } catch {
+      setError('No se pudo cerrar la jornada.')
+    } finally {
+      setCerrando(false)
+    }
+  }
 
   async function handleRegistrar(e) {
     e.preventDefault()
@@ -82,6 +114,7 @@ export default function OperacionDiaria() {
       const s = await reiniciarDiario()
       setEstado(s)
       setRegistros([])
+      setCierre(null) // G09: reiniciar abre una jornada nueva.
     } catch {
       setError('No se pudo reiniciar.')
     }
@@ -95,17 +128,36 @@ export default function OperacionDiaria() {
     <div className="min-h-screen bg-[#0f172a] text-slate-200">
       <NavBar />
 
-      <div className="max-w-6xl mx-auto px-6 pt-4 flex items-center justify-between">
-        <span className="text-xs text-slate-400 uppercase tracking-widest">Operación Día a Día — Tiempo Real</span>
-        <button
-          onClick={handleReset}
-          className="px-3 py-1.5 rounded text-xs font-medium text-slate-400 hover:text-white hover:bg-slate-700 border border-slate-700 transition-colors"
-        >
-          Reiniciar operación
-        </button>
+      <div className="max-w-6xl mx-auto px-6 pt-4 flex items-center justify-between print:hidden">
+        <span className="text-xs text-slate-400 uppercase tracking-widest">
+          Operación Día a Día — Tiempo Real
+          {cierre && <span className="ml-2 text-amber-400">· JORNADA CERRADA</span>}
+        </span>
+        <div className="flex gap-2">
+          {/* G09: cerrar congela la jornada y emite el reporte de la última
+              planificación estable. Solo tiene sentido con la jornada abierta. */}
+          {!cierre && (
+            <button
+              onClick={handleCerrar}
+              disabled={cerrando}
+              className="px-3 py-1.5 rounded text-xs font-medium bg-amber-600 hover:bg-amber-500 disabled:bg-amber-800 disabled:cursor-not-allowed text-white transition-colors"
+            >
+              {cerrando ? 'Cerrando…' : 'Cerrar operaciones del día'}
+            </button>
+          )}
+          <button
+            onClick={handleReset}
+            className="px-3 py-1.5 rounded text-xs font-medium text-slate-400 hover:text-white hover:bg-slate-700 border border-slate-700 transition-colors"
+          >
+            {cierre ? 'Abrir jornada nueva' : 'Reiniciar operación'}
+          </button>
+        </div>
       </div>
 
-      <div className="max-w-6xl mx-auto p-6 grid grid-cols-1 lg:grid-cols-3 gap-6">
+      {/* G09: con la jornada cerrada, la pantalla pasa a ser el reporte. */}
+      {cierre && <ReporteCierre reporte={cierre} />}
+
+      <div className={`max-w-6xl mx-auto p-6 grid grid-cols-1 lg:grid-cols-3 gap-6 ${cierre ? 'hidden' : ''}`}>
 
         {/* Columna izquierda: formulario + resumen */}
         <div className="space-y-6">
@@ -261,6 +313,171 @@ function Metric({ label, value, clr }) {
   return (
     <div className="bg-slate-700/40 rounded-lg px-3 py-2.5 border border-slate-600/50 text-center">
       <div className={`text-xl font-bold font-mono leading-none ${clr}`}>{value.toLocaleString()}</div>
+      <div className="text-xs text-slate-400 mt-1">{label}</div>
+    </div>
+  )
+}
+
+// G09: reporte de la última planificación estable al cerrar las operaciones
+// día a día. Mismo formato que el reporte de periodo (imprimible) para que los
+// tres escenarios se presenten de forma consistente.
+function fmtFecha(dt) {
+  if (!dt) return '—'
+  return String(dt).replace('T', ' ').slice(0, 19)
+}
+
+function ReporteCierre({ reporte }) {
+  const atencion = reporte.porcentajeAtencion ?? 0
+  const colorAtencion = atencion >= 95 ? 'text-green-400' : atencion >= 85 ? 'text-amber-400' : 'text-red-400'
+  const atendidos = reporte.enviosAtendidos ?? []
+  const rechazados = reporte.enviosRechazados ?? []
+
+  return (
+    <div className="max-w-4xl mx-auto p-6">
+      <div className="flex items-center justify-between mb-5 print:hidden">
+        <div>
+          <h1 className="text-2xl font-bold text-white">Reporte de Cierre — Operación Día a Día</h1>
+          <p className="text-slate-400 text-sm">Última planificación estable de la jornada</p>
+        </div>
+        <button
+          onClick={() => window.print()}
+          className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium transition-colors"
+        >
+          🖨 Imprimir / PDF
+        </button>
+      </div>
+
+      <div className="bg-slate-800 rounded-2xl border border-slate-700 overflow-hidden print:bg-white">
+        {/* Desenlace de la jornada */}
+        <div className={`px-6 py-4 border-b border-slate-700 ${
+          reporte.colapsoTotal ? 'bg-red-500/10' : ''
+        }`}>
+          <div className="text-xs text-slate-400 uppercase tracking-widest mb-1">Cierre de jornada</div>
+          <div className={`text-sm font-medium ${reporte.colapsoTotal ? 'text-red-400' : 'text-slate-200'}`}>
+            {reporte.colapsoTotal ? '⚠ ' : ''}{reporte.motivo}
+          </div>
+        </div>
+
+        {/* Cumplimiento destacado */}
+        <div className="px-6 py-6 border-b border-slate-700 text-center">
+          <div className="text-xs text-slate-400 uppercase tracking-widest mb-1">Envíos atendidos</div>
+          <div className={`text-5xl font-bold ${colorAtencion}`}>{atencion}%</div>
+          <div className="text-xs text-slate-500 mt-1">
+            {reporte.totalAceptados} de {reporte.totalRegistrados} envíos registrados
+          </div>
+        </div>
+
+        {/* KPIs */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-px bg-slate-700">
+          <KpiCierre label="Atendidos" value={reporte.totalAceptados} clr="text-green-400" />
+          <KpiCierre label="Rechazados" value={reporte.totalRechazados} clr="text-red-400" />
+          <KpiCierre label="Maletas despachadas" value={reporte.totalMaletasDespachadas} clr="text-blue-400" />
+          <KpiCierre label="Ocupación de flota" value={`${reporte.ocupacionFlotaPorcentaje}%`} clr="text-white" raw />
+          <KpiCierre label="Vuelos saturados" value={`${reporte.vuelosSaturados}/${reporte.vuelosOperados}`} clr="text-amber-400" raw />
+          <KpiCierre label="Registrados" value={reporte.totalRegistrados} clr="text-slate-300" />
+        </div>
+
+        {/* Tiempos */}
+        <div className="px-6 py-4 border-t border-slate-700 text-sm space-y-1">
+          <div className="flex justify-between gap-4">
+            <span className="text-slate-400">Inicio de operación</span>
+            <span className="text-slate-200 font-mono">{fmtFecha(reporte.inicioOperacion)}</span>
+          </div>
+          <div className="flex justify-between gap-4">
+            <span className="text-slate-400">Cierre</span>
+            <span className="text-slate-200 font-mono">{fmtFecha(reporte.fechaCierre)}</span>
+          </div>
+        </div>
+
+        {/* Detalle de envíos atendidos */}
+        <div className="px-6 py-4 border-t border-slate-700">
+          <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">
+            Envíos atendidos ({atendidos.length})
+          </h3>
+          {atendidos.length === 0 ? (
+            <p className="text-sm text-slate-500">Ninguno.</p>
+          ) : (
+            <div className="max-h-72 overflow-y-auto print:max-h-none print:overflow-visible">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-slate-400 text-xs">
+                    <th className="text-left py-1.5 font-semibold">Envío</th>
+                    <th className="text-left py-1.5 font-semibold">Ruta</th>
+                    <th className="text-right py-1.5 font-semibold">Maletas</th>
+                    <th className="text-left py-1.5 font-semibold pl-3">Plan de vuelos</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {atendidos.map(e => (
+                    <tr key={e.envioId} className="border-t border-slate-700/50">
+                      <td className="py-1.5 font-mono text-xs text-slate-400">{e.envioId}</td>
+                      <td className="py-1.5 text-slate-300">{e.origenIcao} → {e.destinoIcao}</td>
+                      <td className="py-1.5 text-right font-mono text-slate-400">{e.cantidadMaletas}</td>
+                      <td className="py-1.5 pl-3 text-xs text-slate-500">
+                        {e.directa ? 'directa' : `${e.escalas} escala(s)`} · {(e.rutaVuelos ?? []).join(' → ')}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        {/* Detalle de rechazos */}
+        {rechazados.length > 0 && (
+          <div className="px-6 py-4 border-t border-slate-700">
+            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">
+              Envíos no atendidos ({rechazados.length})
+            </h3>
+            <ul className="space-y-1.5 max-h-60 overflow-y-auto print:max-h-none print:overflow-visible">
+              {rechazados.map((r, i) => (
+                <li key={i} className="text-sm flex justify-between gap-3 border-t border-slate-700/50 pt-1.5">
+                  <span className="font-mono text-red-400 shrink-0">
+                    {r.origenIcao} → {r.destinoIcao} ({r.cantidadMaletas})
+                  </span>
+                  <span className="text-xs text-slate-500 text-right">{r.motivo}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* Vuelos más cargados al cierre */}
+        {(reporte.vuelosMasCargados ?? []).length > 0 && (
+          <div className="px-6 py-4 border-t border-slate-700">
+            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">
+              Vuelos más cargados al cierre
+            </h3>
+            <div className="space-y-1.5">
+              {reporte.vuelosMasCargados.map(v => {
+                const c = colorOcupacion(v.ocupacionPorcentaje)
+                return (
+                  <div key={v.vueloId} className="flex items-center gap-2 text-xs">
+                    <span className="text-slate-300 w-28 shrink-0">{v.origenIcao} → {v.destinoIcao}</span>
+                    <div className="flex-1 h-1.5 rounded-full bg-slate-700 overflow-hidden">
+                      <div className={`h-full ${c.bar}`} style={{ width: `${Math.min(100, v.ocupacionPorcentaje)}%` }} />
+                    </div>
+                    <span className={`font-mono w-20 text-right ${c.txt}`}>
+                      {v.ocupado}/{v.capacidad}
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function KpiCierre({ label, value, clr, raw = false }) {
+  return (
+    <div className="bg-slate-800 px-4 py-4 text-center print:bg-white">
+      <div className={`text-2xl font-bold font-mono ${clr}`}>
+        {raw ? value : Number(value ?? 0).toLocaleString()}
+      </div>
       <div className="text-xs text-slate-400 mt-1">{label}</div>
     </div>
   )

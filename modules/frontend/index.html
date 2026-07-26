@@ -2,6 +2,16 @@
 <html lang="es">
   <head>
     <meta charset="UTF-8" />
+    <!-- Configuración de despliegue (dirección del backend). Va en <head> y
+         ANTES de cualquier otra cosa a propósito: es un script clásico, así que
+         se ejecuta durante el parseo, mientras que el bundle de la aplicación
+         es un módulo (diferido) y corre después. Así window.__TASF_BACKEND_URL__
+         ya está definido cuando la app lo lee.
+
+         Queda FUERA del bundle: se copia tal cual a dist/, de modo que en el
+         servidor (contenedor, S3, EC2) se puede apuntar a otro backend sin
+         recompilar. Ver public/config.js. -->
+    <script src="/config.js"></script>
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />

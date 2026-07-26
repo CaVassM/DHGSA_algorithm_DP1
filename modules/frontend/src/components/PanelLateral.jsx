@@ -74,7 +74,7 @@ export default function PanelLateral({
     : { label: 'Simulación en Curso', dotClass: 'bg-green-500 animate-pulse', textClass: 'text-green-400' }
 
   // ── Colapso del panel completo (toggle ocultar/mostrar) ─────────────────────
-  const [panelCollapsed, setPanelCollapsed] = useState(() => readPersistedBool(PANEL_COLLAPSED_KEY, false))
+  const [panelCollapsed, setPanelCollapsed] = useState(() => readPersistedBool(PANEL_COLLAPSED_KEY, true))
   useEffect(() => { writePersistedBool(PANEL_COLLAPSED_KEY, panelCollapsed) }, [panelCollapsed])
 
   // ── Log persistente ───────────────────────────────────────────────────────
@@ -171,14 +171,17 @@ export default function PanelLateral({
           ocupacionPorIcao={ocupacionPorIcao}
           enviosOperativos={enviosOperativos}
           airportFromMap={airportFromMap}
+          flightFromMap={flightFromMap}
           onSelectAirport={onSelectAirport}
           onSelectShipment={onSelectShipment}
+          onSelectFlight={onSelectFlight}
         />
       </CollapsibleSection>
 
-      {/* Estado de la simulación */}
+      {/* Estado de la simulación. Arranca contraída para dar una vista limpia. */}
       <CollapsibleSection
         id="estado"
+        defaultOpen={false}
         title={
           <span className="flex items-center gap-2 normal-case">
             <span className={`w-2.5 h-2.5 rounded-full ${statusCfg.dotClass}`} />
@@ -219,8 +222,8 @@ export default function PanelLateral({
         </div>
       </CollapsibleSection>
 
-      {/* KPIs */}
-      <CollapsibleSection id="kpis" title="Estado Actual">
+      {/* KPIs. Arranca contraída para dar una vista limpia. */}
+      <CollapsibleSection id="kpis" title="Estado Actual" defaultOpen={false}>
         <div className="space-y-2.5">
           {isReal ? (
             <>
@@ -250,9 +253,10 @@ export default function PanelLateral({
         </div>
       </CollapsibleSection>
 
-      {/* Log de eventos */}
+      {/* Log de eventos. Arranca contraída para dar una vista limpia. */}
       <CollapsibleSection
         id="log"
+        defaultOpen={false}
         title={isReal
           ? `Log de Eventos${logHistory.length > 0 ? ` (${logHistory.length})` : ''}`
           : `Log de Eventos — Día ${SIMULACION.diaActual}`}

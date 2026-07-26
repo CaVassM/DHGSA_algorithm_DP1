@@ -18,6 +18,7 @@ import {
   UMBRALES_ALMACEN,
 } from '../data/aeropuertos'
 import { getAirports, getFlights, getPlanningRunRoutes } from '../services/api'
+import { buildRouteLegs, RECOJO_DESTINO_MS } from '../services/rutaTramos'
 
 // Respiro entre bloques (ms): al terminar los vuelos de una época y llegar la
 // siguiente, la reproducción espera este instante antes de reanudar, para que la
@@ -25,36 +26,9 @@ import { getAirports, getFlights, getPlanningRunRoutes } from '../services/api'
 // unos segundos entre bloques).
 const RESPIRO_MS = 3000
 
-// Returns the next Date at HH:mm that is strictly after `afterDate`.
-function getNextDeparture(horaSalida, afterDate) {
-  const [h, m] = horaSalida.split(':').map(Number)
-  const d = new Date(afterDate)
-  d.setHours(h, m, 0, 0)
-  if (d <= afterDate) d.setDate(d.getDate() + 1)
-  return d
-}
-
-// Reconstructs per-leg { desde, hasta, salida: Date, llegada: Date, ... }
-function buildRouteLegs(route, flightMap) {
-  let cursor = new Date(route.tiempoInicio)
-  return (route.flightBusinessIds ?? []).flatMap(fid => {
-    const flight = flightMap.get(fid)
-    if (!flight) return []
-    const salida = getNextDeparture(flight.horaSalida, cursor)
-    const llegada = new Date(salida.getTime() + flight.duracionMinutos * 60 * 1000)
-    cursor = llegada
-    return [{
-      flightBusinessId: fid,
-      shipmentId: route.shipmentBusinessId,
-      cantidadMaletas: route.cantidadMaletas ?? 0,
-      desde: flight.origenIcao,
-      hasta: flight.destinoIcao,
-      salida,
-      llegada,
-      capacidadVuelo: flight.capacidad ?? 0,
-    }]
-  })
-}
+// G05: la reconstrucción de tramos (y con ella la permanencia mínima de la
+// maleta en cada escala) vive en services/rutaTramos.js — es lógica pura y así
+// se puede probar aislada del mapa.
 
 function formatSimDateTime(date) {
   if (!date) return '-'
@@ -139,8 +113,17 @@ function createPlaneIcon({ fill, stroke, angle, count }) {
 
 // T6: ícono de aeropuerto (en vez de un círculo). El color del semáforo va en
 // el relleno; el borde blanco lo mantiene legible sobre el mapa oscuro.
+// Cacheado por (fill, atenuado): sin esto, MapaMundi se re-renderiza cada
+// segundo (reloj en vivo) y cada render creaba un ícono nuevo, forzando a
+// Leaflet a reemplazar el DOM del marcador. El navegador no dispara
+// "mouseout" cuando el elemento bajo el cursor se reemplaza, así que el
+// tooltip de hover quedaba pegado abierto aunque el mouse ya no estuviera ahí.
+const airportIconCache = new Map()
 function createAirportIcon({ fill, atenuado = false }) {
-  return L.divIcon({
+  const cacheKey = `${fill}|${atenuado}`
+  const cached = airportIconCache.get(cacheKey)
+  if (cached) return cached
+  const icon = L.divIcon({
     className: 'tasf-airport-icon-wrapper',
     html: `
       <div class="tasf-airport-icon" style="--ap-fill:${fill};opacity:${atenuado ? 0.3 : 1};">
@@ -154,6 +137,8 @@ function createAirportIcon({ fill, atenuado = false }) {
     iconSize: [24, 24],
     iconAnchor: [12, 12],
   })
+  airportIconCache.set(cacheKey, icon)
+  return icon
 }
 
 function fallbackPctToLatLng(ap) {
@@ -328,6 +313,9 @@ export default function MapaMundi({
   focusAirport,
   highlightShipment,
   onSelectAirportFromMap,
+  // F07/F08: vinculación bidireccional de unidades de transporte (aviones).
+  focusFlight,
+  onSelectFlightFromMap,
 }) {
   const navigate = useNavigate()
   const timerRef = useRef(null)
@@ -387,9 +375,20 @@ export default function MapaMundi({
   // ocultar un continente, sus aeropuertos Y los vuelos hacia/desde ellos se
   // ocultan (regla del profesor: filtrar aeropuertos oculta sus vuelos).
   const [continentesOcultos, setContinentesOcultos] = useState(() => new Set())
+  // Panel de filtros colapsable: cerrado por defecto para no tapar el mapa.
+  const [filtrosAbiertos, setFiltrosAbiertos] = useState(false)
 
   // T50: aeropuerto seleccionado para ver su detalle en panel (misma vista).
   const [almacenSeleccionado, setAlmacenSeleccionado] = useState(null)
+
+  // F07: vuelo resaltado tras seleccionarlo en el panel.
+  const [vueloResaltado, setVueloResaltado] = useState(null)
+
+
+  // C27: vuelos SIN carga que la simulación despachó, informados por el backend
+  // en cada época (`vuelosEpoca` con maletas = 0). Se acumulan por época para
+  // poder pintarlos en gris cuando el reloj pasa por su ventana de vuelo.
+  const [vuelosVaciosBackend, setVuelosVaciosBackend] = useState([])
 
   useEffect(() => {
     getAirports()
@@ -539,6 +538,28 @@ export default function MapaMundi({
     }
     ultimaEpocaLlegadaRef.current = ahora
 
+    // C27: quedarse con los vuelos que la simulación despachó VACÍOS en esta
+    // época. Los que llevan carga ya se dibujan a partir de las rutas, así que
+    // aquí solo interesan los de 0 maletas.
+    if (Array.isArray(liveEvent.vuelosEpoca)) {
+      const vacios = liveEvent.vuelosEpoca
+        .filter(v => (v.maletas ?? 0) === 0 && v.salida && v.llegada)
+        .map(v => ({
+          key: `${v.businessId}@${v.salida}`,
+          flightBusinessId: v.businessId,
+          desde: v.origenIcao,
+          hasta: v.destinoIcao,
+          salida: new Date(v.salida),
+          llegada: new Date(v.llegada),
+          capacidadTotal: v.capacidad ?? 0,
+        }))
+      setVuelosVaciosBackend(prev => {
+        const porClave = new Map(prev.map(v => [v.key, v]))
+        vacios.forEach(v => porClave.set(v.key, v))
+        return Array.from(porClave.values())
+      })
+    }
+
     // Ventana de la época en curso, para el progreso por épocas de la barra.
     setLiveEpocaInfo({
       num: numEpoca,
@@ -608,6 +629,24 @@ export default function MapaMundi({
       .filter(l => normalizarId(l.shipmentId) === objetivo)
       .forEach(l => set.add(`${l.desde}-${l.hasta}`))
     return set
+  }, [envioBuscado, allLegs])
+
+  // G05: plan de viaje del envío buscado, tramo a tramo, con el tiempo que la
+  // maleta permanece en tierra en cada escala. Hace verificable a simple vista
+  // que ninguna conexión baja de la permanencia mínima (10 min).
+  const planEnvioBuscado = useMemo(() => {
+    if (!envioBuscado) return null
+    const objetivo = normalizarId(envioBuscado)
+    const legs = allLegs
+      .filter(l => normalizarId(l.shipmentId) === objetivo)
+      .sort((a, b) => a.salida - b.salida)
+    if (legs.length === 0) return null
+    return {
+      legs,
+      maletas: legs[0].cantidadMaletas ?? 0,
+      // Entrega efectiva = aterrizaje del último tramo + recojo en destino.
+      entrega: new Date(legs[legs.length - 1].llegada.getTime() + RECOJO_DESTINO_MS),
+    }
   }, [envioBuscado, allLegs])
 
   const almacenOcupacion = useMemo(() => {
@@ -683,6 +722,18 @@ export default function MapaMundi({
     return set
   }, [aeropuertosConOcupacion, almacenesOcultos, continentesOcultos])
 
+  // Coordenadas por ICAO. Declarado aquí (y no más abajo) porque el cálculo de
+  // los vuelos vacíos en el aire lo necesita antes de renderizar.
+  const coords = useMemo(() => {
+    const c = {}
+    Object.values(aeropuertosConOcupacion).forEach(ap => {
+      if (Number.isFinite(ap.latitud) && Number.isFinite(ap.longitud)) {
+        c[ap.codigo] = { lat: ap.latitud, lng: ap.longitud }
+      }
+    })
+    return c
+  }, [aeropuertosConOcupacion])
+
   // Lista de continentes presentes en el dataset (para el filtro).
   const continentes = useMemo(
     () => Array.from(new Set(Object.values(aeropuertosConOcupacion).map(ap => ap.continente).filter(Boolean))).sort(),
@@ -746,11 +797,13 @@ export default function MapaMundi({
     return ts.length > 0 ? new Date(ts[ts.length - 1]) : null
   }, [routes])
 
-  const activeLegs = simTime
-    ? allLegs
-        .filter(leg => leg.salida <= simTime && simTime <= leg.llegada)
-        .map(leg => ({ ...leg, progreso: (simTime - leg.salida) / (leg.llegada - leg.salida) }))
-    : []
+  const activeLegs = useMemo(() => (
+    simTime
+      ? allLegs
+          .filter(leg => leg.salida <= simTime && simTime <= leg.llegada)
+          .map(leg => ({ ...leg, progreso: (simTime - leg.salida) / (leg.llegada - leg.salida) }))
+      : []
+  ), [allLegs, simTime])
   
   const enviosOperativos = useMemo(() => {
     if (!simTime) {
@@ -826,27 +879,78 @@ export default function MapaMundi({
   // verse como dos aviones separados, cada uno en su propio punto de la ruta.
   // Envíos que SÍ comparten el mismo vuelo físico (mismo id + misma salida)
   // siguen fusionándose en un solo ícono con el badge de conteo.
-  const activeDotMap = {}
-  activeLegs.forEach(leg => {
-    const key = `${leg.flightBusinessId}@${leg.salida.getTime()}`
-    if (!activeDotMap[key]) {
-      activeDotMap[key] = {
-        key,
-        flightBusinessId: leg.flightBusinessId,
-        desde: leg.desde,
-        hasta: leg.hasta,
-        progreso: leg.progreso,
+  const activeDotMap = useMemo(() => {
+    const map = {}
+    activeLegs.forEach(leg => {
+      const key = `${leg.flightBusinessId}@${leg.salida.getTime()}`
+      if (!map[key]) {
+        map[key] = {
+          key,
+          flightBusinessId: leg.flightBusinessId,
+          desde: leg.desde,
+          hasta: leg.hasta,
+          progreso: leg.progreso,
+          count: 0,
+          maletas: 0,
+          // Capacidad del vuelo físico: es una sola (la del avión), no se suma
+          // por cada envío que viaja en él.
+          capacidadTotal: leg.capacidadVuelo ?? 0,
+        }
+      }
+      map[key].count += 1
+      map[key].maletas += leg.cantidadMaletas
+    })
+    return map
+  }, [activeLegs])
+  // C27: los aviones VACÍOS también deben verse. `activeDotMap` se arma desde
+  // los envíos planificados, así que un vuelo sin carga asignada nunca llegaba
+  // a dibujarse y el filtro "Vacío" no mostraba nada. Aquí completamos con los
+  // vuelos del catálogo que están en el aire en el instante simulado y no
+  // transportan ningún envío: se pintan en gris (semáforo vacío) con 0 maletas.
+  // C27: aviones VACÍOS que están en el aire en el instante simulado. Salen de
+  // los vuelos que el backend informó con 0 maletas (`vuelosEpoca`), nunca de
+  // inventar ocurrencias del catálogo en el front: si un tramo tiene demanda el
+  // planificador le asigna carga, así que un gris sobre una ruta con envíos
+  // sería una contradicción.
+  const vuelosVaciosEnAire = useMemo(() => {
+    if (!simTime) return []
+    // Solo se pintan sobre tramos que ya tienen su línea dibujada: un avión sin
+    // trayectoria visible confunde más de lo que aporta.
+    const tramosConLinea = new Set(rutasLineas.map(r => `${r.desde}-${r.hasta}`))
+    return vuelosVaciosBackend
+      .filter(v => v.salida <= simTime && simTime <= v.llegada
+        && coords[v.desde] && coords[v.hasta]
+        && tramosConLinea.has(`${v.desde}-${v.hasta}`))
+      .map(v => ({
+        key: v.key,
+        flightBusinessId: v.flightBusinessId,
+        desde: v.desde,
+        hasta: v.hasta,
+        progreso: (simTime - v.salida) / (v.llegada - v.salida),
         count: 0,
         maletas: 0,
-        // Capacidad del vuelo físico: es una sola (la del avión), no se suma
-        // por cada envío que viaja en él.
-        capacidadTotal: leg.capacidadVuelo ?? 0,
-      }
-    }
-    activeDotMap[key].count += 1
-    activeDotMap[key].maletas += leg.cantidadMaletas
-  })
-  const activeDots = Object.values(activeDotMap)
+        capacidadTotal: v.capacidadTotal,
+      }))
+  }, [vuelosVaciosBackend, simTime, coords, rutasLineas])
+
+  const activeDots = [...Object.values(activeDotMap), ...vuelosVaciosEnAire]
+
+  // F07: tramo del vuelo resaltado desde el panel, para pintar su ruta. Si el
+  // avión ya aterrizó deja de existir en `activeDots` y el resaltado se
+  // descarta solo, en vez de dejar un tramo amarillo huérfano en el mapa.
+  const tramoVueloResaltado = useMemo(() => {
+    if (!vueloResaltado) return null
+    const dot = activeDots.find(d => d.flightBusinessId === vueloResaltado)
+    return dot ? `${dot.desde}-${dot.hasta}` : null
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vueloResaltado, activeDotMap, vuelosVaciosEnAire])
+
+  // Tramos que ahora mismo tienen un avión encima: su línea debe verse siempre.
+  const tramosConAvion = useMemo(
+    () => new Set(activeDots.map(d => `${d.desde}-${d.hasta}`)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [activeDotMap, vuelosVaciosEnAire],
+  )
 
   // T41: reportar al padre (Dashboard) los envíos actualmente en vuelo, para
   // mostrarlos como lista. Solo emite cuando el conjunto realmente cambia
@@ -941,16 +1045,6 @@ export default function MapaMundi({
     return () => clearInterval(timerRef.current)
   }, [isPlaying, playSpeed, simEnd, liveMode, liveCeiling])
 
-  const coords = useMemo(() => {
-    const c = {}
-    Object.values(aeropuertosConOcupacion).forEach(ap => {
-      if (Number.isFinite(ap.latitud) && Number.isFinite(ap.longitud)) {
-        c[ap.codigo] = { lat: ap.latitud, lng: ap.longitud }
-      }
-    })
-    return c
-  }, [aeropuertosConOcupacion])
-
   function zoomIn() {
     mapInstance?.zoomIn()
   }
@@ -1020,7 +1114,31 @@ export default function MapaMundi({
     if (!highlightShipment?.id) return
     setBusquedaInput(String(highlightShipment.id))
     setEnvioBuscado(String(highlightShipment.id))
+    // Solo puede haber un resaltado activo: al enfocar un envío se descarta el
+    // de la unidad de transporte, o quedarían dos rutas en amarillo a la vez.
+    setVueloResaltado(null)
   }, [highlightShipment])
+
+  // F07: vinculación panel→mapa para unidades de transporte. Al elegir un vuelo
+  // en el panel se resalta y, si está en el aire, se centra el mapa sobre él.
+  useEffect(() => {
+    if (!focusFlight) return
+    // id null = se cerró la selección en el panel: quitar el resaltado.
+    if (!focusFlight.id) { setVueloResaltado(null); return }
+    setVueloResaltado(String(focusFlight.id))
+    // Excluyente con el resaltado de envío (ver highlightShipment).
+    setEnvioBuscado('')
+    setBusquedaInput('')
+    const dot = activeDots.find(d => d.flightBusinessId === focusFlight.id)
+    if (!dot || !mapInstance) return
+    const a = coords[dot.desde]
+    const b = coords[dot.hasta]
+    if (!a || !b) return
+    const lat = a.lat + (b.lat - a.lat) * dot.progreso
+    const lng = a.lng + (b.lng - a.lng) * dot.progreso
+    mapInstance.flyTo([lat, lng], Math.max(mapInstance.getZoom(), 4), { duration: 0.8 })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusFlight])
 
   return (
     <div className="relative w-full h-full overflow-hidden bg-[#0c1a2e] select-none">
@@ -1041,7 +1159,10 @@ export default function MapaMundi({
 
         {rutasLineas
           .filter(r => tramosEnvioBuscado?.has(`${r.desde}-${r.hasta}`)
-            || !r.revealAt || !simTime || simTime >= r.revealAt)
+            || !r.revealAt || !simTime || simTime >= r.revealAt
+            // Si hay un avión (aunque vaya vacío) recorriendo el tramo ahora,
+            // su línea debe estar dibujada: un avión sin trayectoria confunde.
+            || tramosConAvion.has(`${r.desde}-${r.hasta}`))
           .map(ruta => {
             const a = coords[ruta.desde]
             const b = coords[ruta.hasta]
@@ -1056,16 +1177,26 @@ export default function MapaMundi({
             // (aeropuerto oculto por color/continente), atenuar también la ruta.
             const tramoOculto = icaosOcultos.has(ruta.desde) || icaosOcultos.has(ruta.hasta)
             let pathOptions
-            if (tramosEnvioBuscado) {
+            // F07: tramo del vuelo seleccionado en el panel.
+            const esTramoVueloResaltado = tramoVueloResaltado === key
+            if (esTramoVueloResaltado) {
+              pathOptions = { color: '#facc15', weight: 3, opacity: 0.95 }
+            } else if (tramosEnvioBuscado) {
+              // Al resaltar un envío el resto se atenúa, pero sigue visible:
+              // borrarlas del todo dejaba el mapa vacío y se perdía el contexto
+              // de la operación alrededor de la ruta buscada.
               pathOptions = esDelEnvio
-                ? { color: '#facc15', weight: 4, opacity: 0.95 }                 // resaltado
-                : { color: '#475569', weight: 1, opacity: 0.1, dashArray: '2 8' } // atenuado
+                ? { color: '#facc15', weight: 4, opacity: 0.95 }                    // resaltado
+                : { color: '#3b82f6', weight: 1, opacity: 0.22, dashArray: '4 8' }  // contexto
             } else if (tramoOculto) {
               pathOptions = { color: '#475569', weight: 1, opacity: 0.08, dashArray: '2 8' }
             } else if (recorrida) {
-              pathOptions = { color: '#475569', weight: 1, opacity: 0.18, dashArray: '2 8' }
+              pathOptions = { color: '#475569', weight: 1, opacity: 0.2, dashArray: '2 8' }
             } else {
-              pathOptions = { color: '#3b82f6', weight: 2, opacity: 0.5, dashArray: '6 6' }
+              // C34: trazo fino y segmentado (el profesor pidió bajar grosor y
+              // hacerlo más tenue), pero con opacidad suficiente para que la
+              // trayectoria siga siendo legible sobre el mapa oscuro.
+              pathOptions = { color: '#3b82f6', weight: 1.5, opacity: 0.5, dashArray: '5 7' }
             }
             return (
               <Polyline
@@ -1115,7 +1246,14 @@ export default function MapaMundi({
           const semUt = getPlaneSemaforo(pct)
           const utAtenuada = utsOcultas.has(semUt)
             || icaosOcultos.has(dot.desde) || icaosOcultos.has(dot.hasta)
-          const planeIcon = createPlaneIcon({ fill: color.fill, stroke: color.stroke, angle, count: dot.count })
+          // F07: el vuelo elegido en el panel se pinta en amarillo para ubicarlo.
+          const esResaltado = vueloResaltado && dot.flightBusinessId === vueloResaltado
+          const planeIcon = createPlaneIcon({
+            fill: esResaltado ? '#facc15' : color.fill,
+            stroke: esResaltado ? '#fde047' : color.stroke,
+            angle,
+            count: dot.count,
+          })
 
           return (
             <Marker
@@ -1123,13 +1261,20 @@ export default function MapaMundi({
               opacity={utAtenuada ? 0.2 : 1}
               position={[lat, lng]}
               icon={planeIcon}
+              eventHandlers={{
+                // F08: vinculación mapa→panel. Al hacer clic en un avión se
+                // notifica al padre para que el panel lo busque y lo enfoque.
+                click: () => onSelectFlightFromMap?.(dot.flightBusinessId),
+              }}
             >
               <Tooltip direction="top" offset={[0, -10]} className="tasf-tooltip" opacity={1}>
                 <div className="text-xs">
                   <div className="font-bold text-white mb-1">{dot.desde} {'->'} {dot.hasta}</div>
+                  <div className="font-mono text-[10px] text-slate-400 mb-1">{dot.flightBusinessId}</div>
                   <div className="text-slate-300">Envios: <span className="text-blue-300 font-semibold">{dot.count}</span></div>
                   <div className="text-slate-300">Maletas: <span className="text-blue-300 font-semibold">{dot.maletas.toLocaleString()}</span></div>
                   <div className="text-slate-300">Progreso: <span className="text-slate-200 font-semibold">{Math.round(dot.progreso * 100)}%</span></div>
+                  <div className="text-blue-300 mt-1">Clic para ver su carga en el panel {'->'}</div>
                 </div>
               </Tooltip>
             </Marker>
@@ -1169,7 +1314,7 @@ export default function MapaMundi({
                   <div className="text-slate-400 mb-1">{ap.ciudad} - {ap.continente}</div>
                   <div className="text-slate-300">Ocupacion: <span className="font-semibold text-green-300">{ap.almacen.actual.toLocaleString()}/{ap.almacen.capacidad.toLocaleString()}</span></div>
                   <div className="text-slate-300">Riesgo: <span className="text-amber-300">{ap.maletasEnRiesgo}</span></div>
-                  <div className="text-blue-300 mt-1">Hover + click para ver detalles {'->'}</div>
+                  <div className="text-blue-300 mt-1">Mantén el cursor y haz clic para ver detalles {'->'}</div>
                 </div>
               </Tooltip>
             </Marker>
@@ -1295,31 +1440,87 @@ export default function MapaMundi({
         </div>
       )}
 
+      {/* G05: plan de viaje del envío buscado. Muestra cada tramo y, entre
+          tramos, cuánto permanece la maleta en el almacén de la escala; si
+          bajara del mínimo se marcaría en rojo. */}
+      {planEnvioBuscado && (
+        <div className="absolute top-44 left-1/2 -translate-x-1/2 z-[1000] bg-slate-900/95 backdrop-blur border border-slate-700 rounded-xl shadow-xl px-4 py-3 w-[26rem] max-h-72 overflow-y-auto">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[11px] font-semibold text-slate-300 uppercase tracking-wider">
+              Plan de viaje · {planEnvioBuscado.maletas} maletas
+            </span>
+            <span className="text-[10px] text-slate-500">permanencia mín. 10 min</span>
+          </div>
+
+          <ol className="space-y-1">
+            {planEnvioBuscado.legs.map((leg, i) => (
+              <li key={`${leg.flightBusinessId}-${i}`}>
+                {i > 0 && (
+                  <div className={`flex items-center gap-1.5 text-[11px] pl-2 py-0.5 ${
+                    leg.esperaMin >= 10 ? 'text-slate-400' : 'text-red-400'
+                  }`}>
+                    <span>⏱</span>
+                    <span>
+                      escala en <b className="font-mono text-slate-300">{leg.desde}</b>:{' '}
+                      {formatElapsed(leg.esperaMin * 60000)}
+                    </span>
+                    <span>{leg.esperaMin >= 10 ? '✓' : '✕ bajo el mínimo'}</span>
+                  </div>
+                )}
+                <div className="flex items-center justify-between gap-2 text-xs bg-slate-800/60 rounded px-2 py-1.5">
+                  <span className="font-mono text-slate-200">{leg.desde} → {leg.hasta}</span>
+                  <span className="font-mono text-slate-400 text-[11px]">
+                    {formatSimDateTime(leg.salida).slice(5)} → {formatSimDateTime(leg.llegada).slice(5)}
+                  </span>
+                </div>
+              </li>
+            ))}
+          </ol>
+
+          <div className="mt-2 pt-2 border-t border-slate-700 flex justify-between text-[11px]">
+            <span className="text-slate-400">Entrega al cliente (+15 min recojo)</span>
+            <span className="font-mono text-green-400">{formatSimDateTime(planEnvioBuscado.entrega)}</span>
+          </div>
+        </div>
+      )}
+
       {/* T54/T55: filtros por semáforo (almacenes y UT) reflejados en el mapa.
-          Reubicado a la derecha (bajo los botones de zoom) para despejar el
-          eje vertical: la esquina inferior-izquierda tapaba el sur de
-          Sudamérica (Argentina/Chile), que el profesor pidió mantener visible. */}
-      <div className="absolute top-32 right-3 z-[1000] bg-slate-900/92 backdrop-blur border border-slate-700 rounded-xl p-3 shadow-lg w-44 max-h-[60vh] overflow-y-auto">
-        <FiltroSemaforo
-          titulo="Almacenes"
-          ocultos={almacenesOcultos}
-          onToggle={(c) => setAlmacenesOcultos(prev => toggleSet(prev, c))}
-        />
-        <div className="h-px bg-slate-700 my-2" />
-        <FiltroSemaforo
-          titulo="UT (aviones)"
-          ocultos={utsOcultas}
-          onToggle={(c) => setUtsOcultas(prev => toggleSet(prev, c))}
-        />
-        {continentes.length > 1 && (
-          <>
-            <div className="h-px bg-slate-700 my-2" />
-            <FiltroContinente
-              continentes={continentes}
-              ocultos={continentesOcultos}
-              onToggle={(c) => setContinentesOcultos(prev => toggleSet(prev, c))}
+          En la columna izquierda, debajo del reloj/cartel de época, para no
+          chocar con "Envíos en vuelo" (columna derecha, crece hacia arriba).
+          NO va en la esquina inferior-izquierda: ahí tapa el sur de
+          Sudamérica (Argentina/Chile), que el profesor pidió mantener visible;
+          por eso el tope de altura queda acotado para no llegar a esa esquina. */}
+      <div className="absolute top-72 left-3 z-[1000] bg-slate-900/92 backdrop-blur border border-slate-700 rounded-xl shadow-lg w-44">
+        <button
+          onClick={() => setFiltrosAbiertos(a => !a)}
+          className="w-full px-3 py-2 text-xs font-semibold text-slate-300 hover:text-white transition-colors text-left"
+        >
+          {filtrosAbiertos ? 'Filtros ▴' : 'Filtros ▾'}
+        </button>
+        {filtrosAbiertos && (
+          <div className="px-3 pb-3 max-h-64 overflow-y-auto">
+            <FiltroSemaforo
+              titulo="Almacenes"
+              ocultos={almacenesOcultos}
+              onToggle={(c) => setAlmacenesOcultos(prev => toggleSet(prev, c))}
             />
-          </>
+            <div className="h-px bg-slate-700 my-2" />
+            <FiltroSemaforo
+              titulo="UT (aviones)"
+              ocultos={utsOcultas}
+              onToggle={(c) => setUtsOcultas(prev => toggleSet(prev, c))}
+            />
+            {continentes.length > 1 && (
+              <>
+                <div className="h-px bg-slate-700 my-2" />
+                <FiltroContinente
+                  continentes={continentes}
+                  ocultos={continentesOcultos}
+                  onToggle={(c) => setContinentesOcultos(prev => toggleSet(prev, c))}
+                />
+              </>
+            )}
+          </div>
         )}
       </div>
 
@@ -1423,7 +1624,7 @@ function FiltroCheck({ marcado, onToggle, hex, label }) {
   return (
     <button onClick={onToggle}
       className={`w-full flex items-center gap-2 text-xs rounded px-1 py-0.5 transition-colors ${marcado ? 'text-slate-200' : 'text-slate-500'}`}
-      title={marcado ? 'Click para ocultar en el mapa' : 'Click para mostrar en el mapa'}>
+      title={marcado ? 'Haz clic para ocultar en el mapa' : 'Haz clic para mostrar en el mapa'}>
       <span className={`w-3.5 h-3.5 shrink-0 rounded border flex items-center justify-center text-[9px] font-bold ${
         marcado ? 'bg-blue-600 border-blue-500 text-white' : 'bg-slate-800 border-slate-600 text-transparent'}`}>
         ✓

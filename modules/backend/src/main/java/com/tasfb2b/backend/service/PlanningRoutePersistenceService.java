@@ -67,13 +67,7 @@ public class PlanningRoutePersistenceService {
 
         Map<Long, ShipmentEntity> shipmentById = new HashMap<>();
         Map<String, FlightEntity> flightByBusinessId = new HashMap<>();
-
-        log.info(
-                "Guardando {} rutas para runId={}, epoca={}",
-                mejor.getEnviosAsignados().size(),
-                runId,
-                numeroEpoca
-        );
+        List<RouteEntity> porGuardar = new ArrayList<>(mejor.getEnviosAsignados().size());
 
         for (Map.Entry<Envio, RutaEnvio> entry : mejor.getEnviosAsignados().entrySet()) {
             Envio envio = entry.getKey();
@@ -123,12 +117,6 @@ public class PlanningRoutePersistenceService {
 
             List<Vuelo> secuencia = ruta.getSecuenciaVuelos();
 
-            log.info(
-                    "Ruta para shipmentId={} tiene {} vuelos",
-                    envio.getId(),
-                    secuencia == null ? 0 : secuencia.size()
-            );
-
             if (secuencia != null) {
                 for (int i = 0; i < secuencia.size(); i++) {
                     Vuelo vuelo = secuencia.get(i);
@@ -162,13 +150,17 @@ public class PlanningRoutePersistenceService {
             }
 
 
-            routeRepository.save(route);
+            // C29: acumular y guardar en lote al final. Un save() por envío con
+            // dos líneas de log cada uno hacía que una época de ~1.800 envíos
+            // tardara más de un minuto en persistirse, y la reproducción se
+            // quedaba congelada esperándola.
+            porGuardar.add(route);
+        }
 
-            log.info(
-                "Ruta guardada para envio={} con {} legs",
-                envio.getId(),
-                route.getLegs().size()
-            );
+        if (!porGuardar.isEmpty()) {
+            routeRepository.saveAll(porGuardar);
+            log.info("Época {}: {} rutas persistidas para runId={}",
+                    numeroEpoca, porGuardar.size(), runId);
         }
     }
 
