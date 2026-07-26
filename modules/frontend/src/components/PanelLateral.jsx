@@ -57,7 +57,16 @@ function writePersistedBool(key, val) {
 
 // ── Component ────────────────────────────────────────────────────────────────
 
-export default function PanelLateral({ run,runId,enVuelo=[],enviosOperativos, ocupacionPorIcao, airportFromMap, onSelectAirport, onSelectShipment }) {
+export default function PanelLateral({
+  run,
+  runId,
+  enVuelo = [],
+  enviosOperativos = { planificados: [], enVuelo: [], entregados4h: [] },
+  ocupacionPorIcao = {},
+  airportFromMap,
+  onSelectAirport,
+  onSelectShipment,
+}) {
   const isReal     = !!run
   const isTerminal = isReal && TERMINAL_STATUSES.has(run.status)
   const statusCfg  = isReal
@@ -155,7 +164,7 @@ export default function PanelLateral({ run,runId,enVuelo=[],enviosOperativos, oc
       {/* Listas operativas: almacenes / vuelos (UT) / envíos, con búsqueda,
           orden y scroll. Es el núcleo del "panel de control" pedido por el
           profesor. Arranca abierta porque es lo que más se va a usar. */}
-      <CollapsibleSection id="listas" title="Listas" defaultOpen={true} noPadding>
+      <CollapsibleSection id="listas" title="Listas operativas" defaultOpen={true} noPadding>
         <PanelListas
           runId={runId}
           enVuelo={enVuelo}
@@ -325,3 +334,4 @@ function KpiRow({ label, value, color }) {
     </div>
   )
 }
+

@@ -68,6 +68,12 @@ function formatRealTime(date) {
   return `${p(date.getHours())}:${p(date.getMinutes())}:${p(date.getSeconds())}`
 }
 
+function formatRealDateTime(date) {
+  if (!date) return '-'
+  const p = n => String(n).padStart(2, '0')
+  return `${date.getFullYear()}-${p(date.getMonth() + 1)}-${p(date.getDate())} ${formatRealTime(date)}`
+}
+
 function formatElapsed(ms) {
   if (ms == null || ms < 0) return '-'
   const totalMin = Math.floor(ms / 60000)
@@ -482,6 +488,7 @@ export default function MapaMundi({
     lastLiveEpochRef.current = 0
     setSimTime(null)
     setIsPlaying(false)
+    setInicioReal(null)
     pausaManualRef.current = false
     ultimaEpocaLlegadaRef.current = null
     setLivePlaySpeed(estimacionInicial)
@@ -1170,34 +1177,59 @@ export default function MapaMundi({
         })}
       </MapContainer>
 
-      {/* Tiempos compactados en UNA tarjeta densa: el profesor pidió que los
-          tiempos no roben tanto espacio vertical (el mapa es lo importante),
-          pero que sigan visibles. Simulado arriba, real abajo, transcurridos
-          en una línea cada uno. */}
+      {/* Resumen temporal de la ejecución. Se distingue el calendario simulado
+          del reloj real para que cada valor sea entendible durante la demostración. */}
       <div className="absolute top-3 left-3 z-[1000] pointer-events-none">
-        <div className="bg-slate-950/95 backdrop-blur border border-blue-500/25 rounded-lg overflow-hidden shadow-lg shadow-black/50 w-52">
-          {simTime && (
-            <div className="px-3 py-2 border-b border-slate-700/50">
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] text-blue-300 uppercase tracking-widest font-semibold">Simulado</span>
-                <span className="text-[15px] text-slate-400 font-mono">{formatSimDateTime(simTime).split(' ')[0]}</span>
+        <div className="bg-slate-950/95 backdrop-blur border border-blue-500/25 rounded-lg overflow-hidden shadow-lg shadow-black/50 w-72">
+          <div className="px-3 py-2 border-b border-slate-700/50">
+            <div className="text-[10px] text-blue-300 uppercase tracking-widest font-semibold mb-1.5">
+              Tiempo de simulación
+            </div>
+
+            <div className="space-y-1 text-[11px]">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-slate-400">Fecha Inicio</span>
+                <span className="font-mono text-sm font-bold text-white">{formatSimDateTime(simStart)}</span>
               </div>
-              <div className="flex items-baseline justify-between mt-0.5">
-                <span className="text-2xl font-bold font-mono text-white leading-none">{formatSimDateTime(simTime).split(' ')[1]}</span>
-                <span className="text-[15px] font-mono text-green-400">+{formatElapsed(simStart ? simTime - simStart : null)}</span>
+
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-slate-300 font-semibold">Hora simulación Actual</span>
+                <span className="font-mono text-sm font-bold text-white">{formatSimDateTime(simTime)}</span>
+              </div>
+
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-slate-400">Tiempo simulación transcurrido</span>
+                <span className="font-mono text-green-400 text-sm">
+                  {formatElapsed(simStart && simTime ? simTime - simStart : null)}
+                </span>
               </div>
             </div>
-          )}
+          </div>
+
           <div className="px-3 py-2">
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] text-emerald-300 uppercase tracking-widest font-semibold">Real</span>
-              <span className="text-[15px] text-slate-400 font-mono">{formatSimDateTime(realTime).split(' ')[0]}</span>
+            <div className="text-[10px] text-emerald-300 uppercase tracking-widest font-semibold mb-1.5">
+              Tiempo real
             </div>
-            <div className="flex items-baseline justify-between mt-0.5">
-              <span className="text-lg font-bold font-mono text-emerald-400 leading-none">{formatRealTime(realTime)}</span>
-              <span className="text-[15px] font-mono text-emerald-400">
-                {inicioReal ? `+${formatElapsedReal(realTime - inicioReal)}` : '--:--'}
-              </span>
+
+            <div className="space-y-1 text-[11px]">
+{/*               <div className="flex items-center justify-between gap-3">
+                <span className="text-slate-400">Inicio real</span>
+                <span className="font-mono text-slate-300 ">
+                  {inicioReal ? formatRealDateTime(inicioReal) : 'Aún no iniciado'}
+                </span>
+              </div> */}
+
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-slate-300 font-semibold">Hora real actual</span>
+                <span className="font-mono text-sm font-bold text-emerald-400">{formatRealDateTime(realTime)}</span>
+              </div>
+
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-slate-400">Tiempo real transcurrido</span>
+                <span className="font-mono text-emerald-400 text-sm">
+                  {inicioReal ? formatElapsedReal(realTime - inicioReal) : '--:--'}
+                </span>
+              </div>
             </div>
           </div>
         </div>
