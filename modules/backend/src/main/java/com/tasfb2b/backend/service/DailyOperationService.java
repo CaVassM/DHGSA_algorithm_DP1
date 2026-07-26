@@ -7,6 +7,7 @@ import com.tasfb2b.backend.dto.response.DailyBulkUploadResponse;
 import com.tasfb2b.backend.dto.response.DailyCancelResponse;
 import com.tasfb2b.backend.dto.response.DailyCloseReportResponse;
 import com.tasfb2b.backend.dto.response.DailyRegisterResponse;
+import com.tasfb2b.backend.dto.response.DailyShipmentRouteResponse;
 import com.tasfb2b.backend.dto.response.DailyStateResponse;
 import com.tasfb2b.backend.mapper.DomainMapper;
 import com.tasfb2b.backend.repository.AirportRepository;
@@ -320,6 +321,77 @@ public class DailyOperationService {
                     .directa(ruta.size() == 1)
                     .escalas(ruta.size() - 1)
                     .build();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * Envíos registrados con su ruta, para dibujarlos en el mapa.
+     *
+     * <p>Se sirven desde las asignaciones vivas y no desde el historial, de modo
+     * que un envío reasignado tras una cancelación aparezca con la ruta que
+     * realmente sigue y no con la que se anuló.
+     */
+    @Transactional(readOnly = true)
+    public List<DailyShipmentRouteResponse> enviosConRuta() {
+        lock.lock();
+        try {
+            asegurarInicializado();
+
+            List<DailyShipmentRouteResponse> resultado = new ArrayList<>();
+            for (Map.Entry<String, AsignacionViva> e : asignaciones.entrySet()) {
+                Envio envio = e.getValue().envio();
+                List<Vuelo> ruta = e.getValue().ruta();
+                Aeropuerto origen = envio.getAeropuertoOrigen();
+                Aeropuerto destino = envio.getAeropuertoDestino();
+
+                List<DailyShipmentRouteResponse.Tramo> tramos = new ArrayList<>();
+                LocalDateTime llegadaPrevia = null;
+
+                for (Vuelo v : ruta) {
+                    if (!(v instanceof InstanciaVuelo inst)) continue;
+                    Aeropuerto o = v.getAeropuertoOrigen();
+                    Aeropuerto d = v.getAeropuertoDestino();
+                    LocalDateTime salida = inst.getFechaHoraSalida();
+                    LocalDateTime llegada = inst.getFechaHoraLlegada();
+
+                    tramos.add(DailyShipmentRouteResponse.Tramo.builder()
+                            .vueloId(v.getId())
+                            .origenIcao(o.getCodigoICAO())
+                            .destinoIcao(d.getCodigoICAO())
+                            .salidaUtc(salida)
+                            .llegadaUtc(llegada)
+                            .salidaLocal(HoraLocal.aLocal(salida, o))
+                            .llegadaLocal(HoraLocal.aLocal(llegada, d))
+                            .gmtOrigen(HoraLocal.etiquetaGmt(o))
+                            .gmtDestino(HoraLocal.etiquetaGmt(d))
+                            .esperaMinutos(llegadaPrevia != null && salida != null
+                                    ? Duration.between(llegadaPrevia, salida).toMinutes()
+                                    : 0)
+                            .cancelado(!inst.estaOperable())
+                            .build());
+                    llegadaPrevia = llegada;
+                }
+
+                LocalDateTime entregaUtc = calcularEntrega(ruta);
+                resultado.add(DailyShipmentRouteResponse.builder()
+                        .envioId(e.getKey())
+                        .origenIcao(origen.getCodigoICAO())
+                        .destinoIcao(destino.getCodigoICAO())
+                        .cantidadMaletas(envio.getCantidadMaletas())
+                        .idCliente(envio.getIdCliente())
+                        .registradoLocal(HoraLocal.aLocal(envio.getFechaHoraCreacion(), origen))
+                        .entregaLocalDestino(HoraLocal.aLocal(entregaUtc, destino))
+                        .deadlineLocalDestino(HoraLocal.aLocal(envio.getDeadline(), destino))
+                        .gmtOrigen(HoraLocal.etiquetaGmt(origen))
+                        .gmtDestino(HoraLocal.etiquetaGmt(destino))
+                        .directa(tramos.size() == 1)
+                        .escalas(Math.max(0, tramos.size() - 1))
+                        .tramos(tramos)
+                        .build());
+            }
+            return resultado;
         } finally {
             lock.unlock();
         }

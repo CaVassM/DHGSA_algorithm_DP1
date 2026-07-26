@@ -4,6 +4,7 @@ import Dashboard from './pages/Dashboard'
 import DetalleAeropuerto from './pages/DetalleAeropuerto'
 import IndicadoresGlobales from './pages/IndicadoresGlobales'
 import OperacionDiaria from './pages/OperacionDiaria'
+import MapaDiaADia from './pages/MapaDiaADia'
 import SimulacionEnVivo from './pages/SimulacionEnVivo'
 import SimulacionColapso from './pages/SimulacionColapso'
 import ReportePeriodo from './pages/ReportePeriodo'
@@ -18,6 +19,9 @@ export default function App() {
         <Route path="/aeropuerto/:codigo" element={<DetalleAeropuerto />} />
         <Route path="/indicadores" element={<IndicadoresGlobales />} />
         <Route path="/dia-a-dia" element={<OperacionDiaria />} />
+        {/* Mapa de operaciones día a día: pantalla separada de la de registro,
+            como pide el enunciado (aquella es para quien solo recepciona). */}
+        <Route path="/dia-a-dia/mapa" element={<MapaDiaADia />} />
         <Route path="/simulacion-vivo" element={<SimulacionEnVivo />} />
         <Route path="/colapso" element={<SimulacionColapso />} />
         <Route path="/reporte" element={<ReportePeriodo />} />

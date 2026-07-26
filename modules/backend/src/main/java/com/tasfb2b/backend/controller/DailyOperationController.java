@@ -3,6 +3,7 @@ package com.tasfb2b.backend.controller;
 import com.tasfb2b.backend.dto.request.DailyRegisterRequest;
 import com.tasfb2b.backend.dto.response.DailyBulkUploadResponse;
 import com.tasfb2b.backend.dto.response.DailyCancelResponse;
+import com.tasfb2b.backend.dto.response.DailyShipmentRouteResponse;
 import com.tasfb2b.backend.dto.response.DailyCloseReportResponse;
 import com.tasfb2b.backend.dto.response.DailyRegisterResponse;
 import com.tasfb2b.backend.dto.response.DailyStateResponse;
@@ -23,6 +24,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 /**
  * Operación día a día (escenario REAL_TIME): registro manual de envíos uno a
@@ -54,6 +56,16 @@ public class DailyOperationController {
             description = "Muestra cómo se van llenando los vuelos y si se alcanzó el colapso total.")
     public ResponseEntity<DailyStateResponse> estado() {
         return ResponseEntity.ok(dailyOperationService.estado());
+    }
+
+    @GetMapping("/shipments")
+    @Operation(summary = "Envíos registrados con su ruta",
+            description = "Lista los envíos aceptados con los tramos que siguen, cada uno con sus "
+                    + "horas en UTC y en la hora local de su aeropuerto. Es lo que el mapa necesita "
+                    + "para dibujar gráficamente todas las rutas de un envío. Un envío reasignado "
+                    + "tras una cancelación aparece con la ruta que realmente sigue.")
+    public ResponseEntity<List<DailyShipmentRouteResponse>> enviosConRuta() {
+        return ResponseEntity.ok(dailyOperationService.enviosConRuta());
     }
 
     @PostMapping("/shipments/upload")

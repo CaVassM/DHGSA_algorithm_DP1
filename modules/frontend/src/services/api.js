@@ -81,6 +81,13 @@ export async function getEstadoDiario() {
   return data
 }
 
+// Envíos registrados con la ruta que siguen, para dibujarlos en el mapa de
+// operaciones. Un envío reasignado tras una cancelación llega con su ruta nueva.
+export async function getEnviosDiariosConRuta() {
+  const { data } = await api.get('/daily/shipments')
+  return data
+}
+
 // Carga en lote de envíos desde un archivo de texto. Cada línea se registra por
 // el mismo camino que un envío manual, así que puede aceptarse o rechazarse por
 // los mismos motivos; el detalle llega por línea.
