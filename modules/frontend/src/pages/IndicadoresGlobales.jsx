@@ -82,82 +82,42 @@ function formatHorario(h) {
   return `${hh}:${m[2]}${suffix}`
 }
 
-// Convierte cualquier texto a una forma comparable para búsquedas.
-function normalizarTexto(valor) {
-  return String(valor ?? '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .trim()
-}
-
-// Convierte horarios "HH:mm:ss" o "10:30 AM" a minutos desde medianoche.
-function horarioAMinutos(horario) {
-  if (!horario) return Number.POSITIVE_INFINITY
-  const texto = String(horario).trim()
-  const match = texto.match(/^(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM)?/i)
-  if (!match) return Number.POSITIVE_INFINITY
-
-  let hora = Number(match[1])
-  const minuto = Number(match[2])
-  const periodo = match[3]?.toUpperCase()
-
-  if (periodo === 'AM' && hora === 12) hora = 0
-  if (periodo === 'PM' && hora < 12) hora += 12
-  return hora * 60 + minuto
-}
-
-function construirTextoUbicacion(codigo, info) {
-  return [codigo, info?.ciudad, info?.nombre, info?.pais, info?.continente]
-    .filter(Boolean)
-    .join(' ')
-}
-
 // Construye la lista de UT individuales (Unidades de Transporte = vuelos).
 // El stock/ocupación de cada UT = suma de maletas de las rutas que la usan.
-function buildUTs(flightList, routeList, airportLookup = new Map()) {
+function buildUTs(flightList, routeList) {
   const maletasPorVuelo = new Map()
   ;(routeList ?? []).forEach(r => {
     ;(r.flightBusinessIds ?? []).forEach(fid => {
-      maletasPorVuelo.set(String(fid), (maletasPorVuelo.get(String(fid)) ?? 0) + (r.cantidadMaletas ?? 0))
+      maletasPorVuelo.set(fid, (maletasPorVuelo.get(fid) ?? 0) + (r.cantidadMaletas ?? 0))
     })
   })
-
   return (flightList ?? [])
     .filter(Boolean)
     .map((f, i) => {
-      const codigo = String(f.businessId ?? f.id ?? `UT-${i + 1}`)
-      const origen = f.origenIcao ?? '—'
-      const destino = f.destinoIcao ?? '—'
-      const origenInfo = airportLookup.get(origen)
-      const destinoInfo = airportLookup.get(destino)
-      const actual = maletasPorVuelo.get(codigo) ?? 0
+      const codigo    = String(f.businessId ?? f.id ?? `UT-${i + 1}`)
+      const actual    = maletasPorVuelo.get(f.businessId) ?? 0
       const capacidad = f.capacidad || 0
-
       return {
         codigo,
-        desde: origen,
-        hasta: destino,
-        origenDetalle: origenInfo?.ciudad ?? origenInfo?.nombre ?? '',
-        destinoDetalle: destinoInfo?.ciudad ?? destinoInfo?.nombre ?? '',
-        origenTexto: construirTextoUbicacion(origen, origenInfo),
-        destinoTexto: construirTextoUbicacion(destino, destinoInfo),
-        horario: f.horaSalida,
+        desde:     f.origenIcao ?? '—',
+        hasta:     f.destinoIcao ?? '—',
+        horario:   f.horaSalida,
         actual,
         capacidad,
         pct: capacidad > 0 ? Math.round((actual / capacidad) * 100) : 0,
       }
     })
+    .sort((a, b) => b.pct - a.pct || a.codigo.localeCompare(b.codigo))
 }
 
 // T40: lista de envíos individuales planificados (destino, UT/vuelos, maletas).
 function buildEnviosPlanificados(routeList) {
   return (routeList ?? [])
     .map(r => ({
-      envio: r.shipmentBusinessId,
-      desde: r.origenIcao,
+      envio:   r.shipmentBusinessId,
+      desde:   r.origenIcao,
       destino: r.destinoIcao,
-      uts: r.flightBusinessIds ?? [],
+      uts:     r.flightBusinessIds ?? [],
       maletas: r.cantidadMaletas ?? 0,
       directa: r.esDirecta,
       escalas: r.escalas ?? 0,
@@ -165,14 +125,14 @@ function buildEnviosPlanificados(routeList) {
     .sort((a, b) => b.maletas - a.maletas)
 }
 
-// Envíos que traslada una UT: rutas cuyo recorrido incluye ese vuelo.
+// T14: envíos que traslada una UT (vuelo) — rutas cuyo recorrido incluye ese vuelo.
 function enviosDeUT(vueloId, routeList) {
   return (routeList ?? [])
-    .filter(r => (r.flightBusinessIds ?? []).map(String).includes(String(vueloId)))
+    .filter(r => (r.flightBusinessIds ?? []).includes(vueloId))
     .map(r => ({
-      envio: r.shipmentBusinessId,
-      desde: r.origenIcao,
-      hasta: r.destinoIcao,
+      envio:   r.shipmentBusinessId,
+      desde:   r.origenIcao,
+      hasta:   r.destinoIcao,
       maletas: r.cantidadMaletas ?? 0,
       directa: r.esDirecta,
       escalas: r.escalas ?? 0,
@@ -180,53 +140,22 @@ function enviosDeUT(vueloId, routeList) {
     .sort((a, b) => b.maletas - a.maletas)
 }
 
-// Productos/carga que traslada una UT. Si el backend incorpora una colección
-// productos/items, se usa; mientras tanto se representa la carga disponible
-// en el modelo actual: cantidad de maletas por envío.
-function productosDeUT(vueloId, routeList) {
-  return (routeList ?? [])
-    .filter(r => (r.flightBusinessIds ?? []).map(String).includes(String(vueloId)))
-    .flatMap(r => {
-      const productos = r.productos ?? r.items ?? r.detalleProductos
-      if (Array.isArray(productos) && productos.length > 0) {
-        return productos.map((p, i) => ({
-          key: `${r.shipmentBusinessId}-${p.id ?? p.codigo ?? i}`,
-          envio: r.shipmentBusinessId,
-          producto: p.nombre ?? p.descripcion ?? p.tipo ?? p.codigo ?? `Producto ${i + 1}`,
-          cantidad: p.cantidad ?? p.unidades ?? 1,
-        }))
-      }
-      return [{
-        key: `${r.shipmentBusinessId}-carga`,
-        envio: r.shipmentBusinessId,
-        producto: 'Maletas / carga del envío',
-        cantidad: r.cantidadMaletas ?? 0,
-      }]
-    })
-    .sort((a, b) => b.cantidad - a.cantidad || String(a.envio).localeCompare(String(b.envio)))
-}
-
-// Lista de UT a partir de los datos mock.
+// Lista de UT a partir de los datos mock (cada vuelo en aire ya es una UT individual).
 function buildUTsMock() {
-  const airportLookup = new Map(Object.values(AEROPUERTOS).map(ap => [ap.codigo, ap]))
-  return VUELOS_EN_AIRE.map(v => {
-    const capacidad = v.maletasCapacidad || 0
-    const origenInfo = airportLookup.get(v.desde)
-    const destinoInfo = airportLookup.get(v.hasta)
-    return {
-      codigo: v.codigo,
-      desde: v.desde,
-      hasta: v.hasta,
-      origenDetalle: origenInfo?.ciudad ?? origenInfo?.nombre ?? '',
-      destinoDetalle: destinoInfo?.ciudad ?? destinoInfo?.nombre ?? '',
-      origenTexto: construirTextoUbicacion(v.desde, origenInfo),
-      destinoTexto: construirTextoUbicacion(v.hasta, destinoInfo),
-      horario: v.horaDespegue,
-      actual: v.maletasActual,
-      capacidad,
-      pct: capacidad > 0 ? Math.round((v.maletasActual / capacidad) * 100) : 0,
-    }
-  })
+  return VUELOS_EN_AIRE
+    .map(v => {
+      const capacidad = v.maletasCapacidad || 0
+      return {
+        codigo:    v.codigo,
+        desde:     v.desde,
+        hasta:     v.hasta,
+        horario:   v.horaDespegue,
+        actual:    v.maletasActual,
+        capacidad,
+        pct: capacidad > 0 ? Math.round((v.maletasActual / capacidad) * 100) : 0,
+      }
+    })
+    .sort((a, b) => b.pct - a.pct || a.codigo.localeCompare(b.codigo))
 }
 
 // Color del semáforo de ocupación de una UT (reutiliza el estado VACÍO para 0 maletas).
@@ -294,16 +223,7 @@ export default function IndicadoresGlobales() {
   const [sortDir,          setSortDir]          = useState('desc')
   const [filtroTexto,      setFiltroTexto]      = useState('')
   const [filtroContinente, setFiltroContinente] = useState('Todos')
-
-  // Controles específicos de la lista de UT. Se separan búsqueda, filtro y
-  // ordenamiento para que cada requisito sea visible y verificable en el panel.
-  const [busquedaUtOrigen,  setBusquedaUtOrigen]  = useState('')
-  const [busquedaUtDestino, setBusquedaUtDestino] = useState('')
-  const [filtroUtOrigen,    setFiltroUtOrigen]    = useState('Todos')
-  const [filtroUtDestino,   setFiltroUtDestino]   = useState('Todos')
-  const [ordenUtCampo,      setOrdenUtCampo]      = useState('ocupacion')
-  const [ordenUtDir,        setOrdenUtDir]        = useState('desc')
-  const [utDetalle,         setUtDetalle]         = useState({ codigo: null, vista: 'envios' })
+  const [utExpandida,      setUtExpandida]      = useState(null) // T14: código de UT abierta
 
   useEffect(() => {
     if (!runId) return
@@ -344,57 +264,12 @@ export default function IndicadoresGlobales() {
   const vuelosData  = routes ? adaptRoutes(routes) : []
 
   // ── Lista de UT individuales (Unidades de Transporte) ────────────────────
-  const airportLookup = useMemo(() => {
-    const base = airports ?? Object.values(AEROPUERTOS)
-    return new Map(base.map(ap => [ap.codigoIcao ?? ap.codigo, ap]))
-  }, [airports])
-
-  const utsBase = useMemo(
-    () => flights ? buildUTs(flights, routes ?? [], airportLookup) : buildUTsMock(),
-    [flights, routes, airportLookup],
-  )
-  const utsReales = !!flights
-
-  const origenesUT = useMemo(
-    () => [...new Set(utsBase.map(u => u.desde).filter(Boolean))].sort(),
-    [utsBase],
-  )
-  const destinosUT = useMemo(
-    () => [...new Set(utsBase.map(u => u.hasta).filter(Boolean))].sort(),
-    [utsBase],
-  )
-
-  const utsData = useMemo(() => {
-    const origenBuscado = normalizarTexto(busquedaUtOrigen)
-    const destinoBuscado = normalizarTexto(busquedaUtDestino)
-
-    const comparadores = {
-      ocupacion: (a, b) => a.pct - b.pct,
-      salida: (a, b) => horarioAMinutos(a.horario) - horarioAMinutos(b.horario),
-      origen: (a, b) => String(a.desde).localeCompare(String(b.desde)),
-      destino: (a, b) => String(a.hasta).localeCompare(String(b.hasta)),
-    }
-    const comparar = comparadores[ordenUtCampo] ?? comparadores.ocupacion
-    const factor = ordenUtDir === 'asc' ? 1 : -1
-
-    return utsBase
-      .filter(u => !origenBuscado || normalizarTexto(u.origenTexto).includes(origenBuscado))
-      .filter(u => !destinoBuscado || normalizarTexto(u.destinoTexto).includes(destinoBuscado))
-      .filter(u => filtroUtOrigen === 'Todos' || u.desde === filtroUtOrigen)
-      .filter(u => filtroUtDestino === 'Todos' || u.hasta === filtroUtDestino)
-      .sort((a, b) => factor * comparar(a, b) || a.codigo.localeCompare(b.codigo))
-  }, [utsBase, busquedaUtOrigen, busquedaUtDestino, filtroUtOrigen, filtroUtDestino, ordenUtCampo, ordenUtDir])
-
-  const utsOcupadas = utsData.filter(u => u.actual > 0).length
-  const utsVacias = utsData.filter(u => u.actual === 0).length
-
-  function alternarDetalleUT(codigo, vista) {
-    setUtDetalle(actual =>
-      actual.codigo === codigo && actual.vista === vista
-        ? { codigo: null, vista }
-        : { codigo, vista },
-    )
-  }
+  // Con vuelos reales se enumera cada UT y se le imputa el stock de las rutas;
+  // sin datos reales se usan los vuelos mock (cada uno ya es una UT individual).
+  const utsData      = flights ? buildUTs(flights, routes ?? []) : buildUTsMock()
+  const utsReales    = !!flights
+  const utsOcupadas  = utsData.filter(u => u.actual > 0).length
+  const utsVacias    = utsData.filter(u => u.actual === 0).length
 
   // T40: envíos planificados individuales (desde rutas reales del run)
   const enviosPlanificados = routes ? buildEnviosPlanificados(routes) : []
@@ -583,258 +458,116 @@ export default function IndicadoresGlobales() {
 
         {/* Lista de UT individuales (Unidades de Transporte) */}
         <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
-          <div className="px-5 py-4 border-b border-slate-700 space-y-4">
-            <div className="flex items-center justify-between gap-4 flex-wrap">
-              <div>
-                <h2 className="font-semibold text-white">Unidades de Transporte (UT)</h2>
-                <p className="text-xs text-slate-400 mt-0.5">
-                  Busca, filtra y ordena las UT. Usa los botones de detalle para revisar sus envíos y productos/carga.
-                </p>
-              </div>
-              <div className="flex items-center gap-4 text-xs">
-                <span className="text-slate-400">
-                  Mostradas: <span className="font-mono font-bold text-white">{utsData.length}</span>
-                  <span className="text-slate-600"> / {utsBase.length}</span>
-                </span>
-                <span className="text-slate-400">Con carga: <span className="font-mono font-bold text-green-400">{utsOcupadas}</span></span>
-                <span className="text-slate-400">Vacías: <span className="font-mono font-bold text-slate-300">{utsVacias}</span></span>
-              </div>
+          <div className="px-5 py-4 border-b border-slate-700 flex items-center justify-between gap-4 flex-wrap">
+            <div>
+              <h2 className="font-semibold text-white">Unidades de Transporte (UT)</h2>
+              <p className="text-xs text-slate-400 mt-0.5">
+                {utsReales
+                  ? 'Cada vuelo individual con su ocupación/stock'
+                  : 'Cada vuelo individual con su ocupación/stock — datos de demostración'}
+              </p>
             </div>
-
-            {/* Búsqueda: acepta código de aeropuerto, ciudad o nombre del aeropuerto. */}
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
-              <label className="text-xs text-slate-400">
-                Buscar en origen
-                <input
-                  type="text"
-                  value={busquedaUtOrigen}
-                  onChange={e => setBusquedaUtOrigen(e.target.value)}
-                  placeholder="Almacén, ciudad o aeropuerto"
-                  className="mt-1 w-full bg-slate-700 border border-slate-600 text-slate-200 rounded px-3 py-2 placeholder-slate-500 focus:outline-none focus:border-blue-500"
-                />
-              </label>
-              <label className="text-xs text-slate-400">
-                Buscar en destino
-                <input
-                  type="text"
-                  value={busquedaUtDestino}
-                  onChange={e => setBusquedaUtDestino(e.target.value)}
-                  placeholder="Almacén, ciudad o aeropuerto"
-                  className="mt-1 w-full bg-slate-700 border border-slate-600 text-slate-200 rounded px-3 py-2 placeholder-slate-500 focus:outline-none focus:border-blue-500"
-                />
-              </label>
-              <label className="text-xs text-slate-400">
-                Filtrar por origen
-                <select
-                  value={filtroUtOrigen}
-                  onChange={e => setFiltroUtOrigen(e.target.value)}
-                  className="mt-1 w-full bg-slate-700 border border-slate-600 text-slate-200 rounded px-3 py-2 cursor-pointer focus:outline-none focus:border-blue-500"
-                >
-                  <option value="Todos">Todos los orígenes</option>
-                  {origenesUT.map(codigo => <option key={codigo} value={codigo}>{codigo}</option>)}
-                </select>
-              </label>
-              <label className="text-xs text-slate-400">
-                Filtrar por destino
-                <select
-                  value={filtroUtDestino}
-                  onChange={e => setFiltroUtDestino(e.target.value)}
-                  className="mt-1 w-full bg-slate-700 border border-slate-600 text-slate-200 rounded px-3 py-2 cursor-pointer focus:outline-none focus:border-blue-500"
-                >
-                  <option value="Todos">Todos los destinos</option>
-                  {destinosUT.map(codigo => <option key={codigo} value={codigo}>{codigo}</option>)}
-                </select>
-              </label>
-            </div>
-
-            {/* Ordenamiento explícito: ya no queda oculto dentro de buildUTs(). */}
-            <div className="flex items-end gap-3 flex-wrap">
-              <label className="text-xs text-slate-400">
-                Ordenar lista por
-                <select
-                  value={ordenUtCampo}
-                  onChange={e => setOrdenUtCampo(e.target.value)}
-                  className="mt-1 block bg-slate-700 border border-slate-600 text-slate-200 rounded px-3 py-2 cursor-pointer focus:outline-none focus:border-blue-500"
-                >
-                  <option value="ocupacion">Nivel de ocupación</option>
-                  <option value="salida">Hora de salida</option>
-                  <option value="origen">Origen</option>
-                  <option value="destino">Destino</option>
-                </select>
-              </label>
-              <button
-                type="button"
-                onClick={() => setOrdenUtDir(d => d === 'asc' ? 'desc' : 'asc')}
-                className="px-3 py-2 rounded border border-slate-600 bg-slate-700 text-xs text-slate-200 hover:bg-slate-600 transition-colors"
-                title="Cambiar dirección del ordenamiento"
-              >
-                {ordenUtDir === 'asc' ? 'Ascendente ▲' : 'Descendente ▼'}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setBusquedaUtOrigen('')
-                  setBusquedaUtDestino('')
-                  setFiltroUtOrigen('Todos')
-                  setFiltroUtDestino('Todos')
-                }}
-                className="px-3 py-2 rounded text-xs text-slate-400 hover:text-white hover:bg-slate-700 transition-colors"
-              >
-                Limpiar búsqueda y filtros
-              </button>
+            <div className="flex items-center gap-4 text-xs">
+              <span className="text-slate-400">Total: <span className="font-mono font-bold text-white">{utsData.length}</span></span>
+              <span className="text-slate-400">Con carga: <span className="font-mono font-bold text-green-400">{utsOcupadas}</span></span>
+              <span className="text-slate-400">Vacías: <span className="font-mono font-bold text-slate-300">{utsVacias}</span></span>
             </div>
           </div>
-
-          <div className="overflow-x-auto max-h-[560px] overflow-y-auto">
+          <div className="overflow-x-auto max-h-[460px] overflow-y-auto">
             <table className="w-full text-sm">
               <thead className="sticky top-0 z-10">
                 <tr className="bg-slate-700 text-slate-400 text-xs uppercase">
                   <th className="text-left px-4 py-3">UT (código)</th>
-                  <th className="text-left px-4 py-3">Origen</th>
-                  <th className="text-left px-4 py-3">Destino</th>
-                  <th className="text-left px-4 py-3">Hora de salida</th>
+                  <th className="text-left px-4 py-3">Origen → Destino</th>
+                  <th className="text-left px-4 py-3">Horario</th>
                   <th className="text-right px-4 py-3">Stock</th>
                   <th className="text-left px-4 py-3 w-44">Ocupación</th>
                   <th className="text-left px-4 py-3">Estado</th>
-                  <th className="text-left px-4 py-3">Acciones</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-700/50">
                 {utsData.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="px-4 py-10 text-center text-slate-500 text-sm">
-                      No hay UT que coincidan con la búsqueda y los filtros seleccionados.
+                    <td colSpan={6} className="px-4 py-10 text-center text-slate-500 text-sm">
+                      {runId ? 'Cargando unidades de transporte...' : 'No hay unidades de transporte para mostrar'}
                     </td>
                   </tr>
                 ) : (
                   utsData.flatMap((ut) => {
                     const color = colorOcupacionUT(ut)
-                    const abierta = utDetalle.codigo === ut.codigo
-                    const puedeVerDetalle = utsReales && ut.actual > 0
+                    const abierta = utExpandida === ut.codigo
+                    // T14: drill-down sólo tiene sentido con rutas reales cargadas.
+                    const puedeExpandir = utsReales && ut.actual > 0
                     const envios = abierta ? enviosDeUT(ut.codigo, routes ?? []) : []
-                    const productos = abierta ? productosDeUT(ut.codigo, routes ?? []) : []
                     const filas = [
-                      <tr key={ut.codigo} className={abierta ? 'bg-slate-700/30' : 'hover:bg-slate-700/20 transition-colors'}>
-                        <td className="px-4 py-3 font-mono font-semibold text-blue-400 text-xs">{ut.codigo}</td>
-                        <td className="px-4 py-3 text-slate-300 whitespace-nowrap">
-                          <div className="font-mono">{ut.desde}</div>
-                          {ut.origenDetalle && <div className="text-[11px] text-slate-500 font-sans">{ut.origenDetalle}</div>}
+                      <tr
+                        key={ut.codigo}
+                        className={`transition-colors ${puedeExpandir ? 'cursor-pointer' : ''} ${abierta ? 'bg-slate-700/30' : 'hover:bg-slate-700/20'}`}
+                        onClick={() => puedeExpandir && setUtExpandida(abierta ? null : ut.codigo)}
+                      >
+                        <td className="px-4 py-3 font-mono font-semibold text-blue-400 text-xs">
+                          {puedeExpandir && <span className="text-slate-500 mr-1">{abierta ? '▾' : '▸'}</span>}
+                          {ut.codigo}
                         </td>
-                        <td className="px-4 py-3 text-slate-300 whitespace-nowrap">
-                          <div className="font-mono">{ut.hasta}</div>
-                          {ut.destinoDetalle && <div className="text-[11px] text-slate-500 font-sans">{ut.destinoDetalle}</div>}
-                        </td>
+                        <td className="px-4 py-3 text-slate-300 whitespace-nowrap">{ut.desde} → {ut.hasta}</td>
                         <td className="px-4 py-3 text-slate-400 font-mono text-xs whitespace-nowrap">{formatHorario(ut.horario)}</td>
                         <td className="px-4 py-3 font-mono text-slate-300 text-right whitespace-nowrap">
                           {ut.actual.toLocaleString()}/{ut.capacidad.toLocaleString()}
                         </td>
-                        <td className="px-4 py-3"><BarraProgreso pct={ut.pct} color={color} height="h-1.5" showLabel /></td>
+                        <td className="px-4 py-3">
+                          <BarraProgreso pct={ut.pct} color={color} height="h-1.5" showLabel />
+                        </td>
                         <td className="px-4 py-3">
                           <SemaforoBadge
                             color={color}
                             label={ut.actual === 0 ? 'VACÍA' : ut.pct >= 90 ? 'LLENA' : ut.pct >= 50 ? 'ALTA' : 'BAJA'}
                           />
                         </td>
-                        <td className="px-4 py-3 whitespace-nowrap">
-                          <div className="flex gap-2">
-                            <button
-                              type="button"
-                              disabled={!puedeVerDetalle}
-                              onClick={() => alternarDetalleUT(ut.codigo, 'envios')}
-                              className="px-2.5 py-1 rounded text-xs border border-blue-500/40 text-blue-300 hover:bg-blue-500/10 disabled:opacity-40 disabled:cursor-not-allowed"
-                            >
-                              {abierta && utDetalle.vista === 'envios' ? 'Ocultar envíos' : 'Ver envíos'}
-                            </button>
-                            <button
-                              type="button"
-                              disabled={!puedeVerDetalle}
-                              onClick={() => alternarDetalleUT(ut.codigo, 'productos')}
-                              className="px-2.5 py-1 rounded text-xs border border-violet-500/40 text-violet-300 hover:bg-violet-500/10 disabled:opacity-40 disabled:cursor-not-allowed"
-                            >
-                              {abierta && utDetalle.vista === 'productos' ? 'Ocultar productos' : 'Ver productos'}
-                            </button>
-                          </div>
-                        </td>
                       </tr>,
                     ]
-
                     if (abierta) {
                       filas.push(
                         <tr key={`${ut.codigo}-detalle`} className="bg-slate-900/40">
-                          <td colSpan={8} className="px-6 py-4">
-                            <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+                          <td colSpan={6} className="px-6 py-3">
+                            <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
                               <p className="text-xs text-slate-400">
-                                {utDetalle.vista === 'envios' ? 'Envíos' : 'Productos/carga'} que traslada{' '}
-                                <span className="font-mono text-blue-300">{ut.codigo}</span>
+                                Envíos que traslada <span className="font-mono text-blue-300">{ut.codigo}</span>
+                                <span className="text-slate-500"> ({envios.length})</span>
                               </p>
+                              {/* T15: desglose de maletas que carga la UT */}
                               <p className="text-xs text-slate-400">
-                                Ocupación: <span className="font-mono text-slate-200">{ut.actual.toLocaleString()}</span>
+                                Maletas: <span className="font-mono text-slate-200">{ut.actual.toLocaleString()}</span>
                                 <span className="text-slate-600"> / {ut.capacidad.toLocaleString()} cap.</span>
                                 <span className="text-blue-300 ml-1">({ut.pct}%)</span>
                               </p>
                             </div>
-
-                            {utDetalle.vista === 'envios' ? (
-                              envios.length === 0 ? (
-                                <p className="text-xs text-slate-500">Sin envíos asignados a esta UT.</p>
-                              ) : (
-                                <table className="w-full text-xs">
-                                  <thead>
-                                    <tr className="text-slate-500">
-                                      <th className="text-left py-1">Envío</th>
-                                      <th className="text-left py-1">Origen → Destino</th>
-                                      <th className="text-right py-1">Maletas</th>
-                                      <th className="text-right py-1 pl-4">% UT</th>
-                                      <th className="text-left py-1 pl-4">Tipo</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody className="divide-y divide-slate-800">
-                                    {envios.map(e => (
-                                      <tr key={e.envio} className="text-slate-300">
-                                        <td className="py-1 font-mono text-blue-300">{e.envio}</td>
-                                        <td className="py-1">{e.desde} → {e.hasta}</td>
-                                        <td className="py-1 font-mono text-right">{e.maletas.toLocaleString()}</td>
-                                        <td className="py-1 font-mono text-right pl-4 text-slate-400">
-                                          {ut.actual > 0 ? Math.round((e.maletas / ut.actual) * 100) : 0}%
-                                        </td>
-                                        <td className="py-1 pl-4 text-slate-400">{e.directa ? 'Directo' : `${e.escalas} escala(s)`}</td>
-                                      </tr>
-                                    ))}
-                                  </tbody>
-                                </table>
-                              )
+                            {envios.length === 0 ? (
+                              <p className="text-xs text-slate-500">Sin envíos asignados a esta UT.</p>
                             ) : (
-                              <>
-                                <p className="text-[11px] text-amber-400/80 mb-2">
-                                  El modelo actual expone la cantidad de maletas por envío. Cuando el backend envíe productos/items, esta tabla mostrará su descripción y cantidad.
-                                </p>
-                                {productos.length === 0 ? (
-                                  <p className="text-xs text-slate-500">Sin productos o carga asignada a esta UT.</p>
-                                ) : (
-                                  <table className="w-full text-xs">
-                                    <thead>
-                                      <tr className="text-slate-500">
-                                        <th className="text-left py-1">Envío</th>
-                                        <th className="text-left py-1">Producto / carga</th>
-                                        <th className="text-right py-1">Cantidad</th>
-                                        <th className="text-right py-1 pl-4">% UT</th>
-                                      </tr>
-                                    </thead>
-                                    <tbody className="divide-y divide-slate-800">
-                                      {productos.map(p => (
-                                        <tr key={p.key} className="text-slate-300">
-                                          <td className="py-1 font-mono text-blue-300">{p.envio}</td>
-                                          <td className="py-1">{p.producto}</td>
-                                          <td className="py-1 font-mono text-right">{Number(p.cantidad ?? 0).toLocaleString()}</td>
-                                          <td className="py-1 font-mono text-right pl-4 text-slate-400">
-                                            {ut.actual > 0 ? Math.round(((p.cantidad ?? 0) / ut.actual) * 100) : 0}%
-                                          </td>
-                                        </tr>
-                                      ))}
-                                    </tbody>
-                                  </table>
-                                )}
-                              </>
+                              <table className="w-full text-xs">
+                                <thead>
+                                  <tr className="text-slate-500">
+                                    <th className="text-left py-1">Envío</th>
+                                    <th className="text-left py-1">Origen → Destino</th>
+                                    <th className="text-right py-1">Maletas</th>
+                                    <th className="text-right py-1 pl-4">% UT</th>
+                                    <th className="text-left py-1 pl-4">Tipo</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-800">
+                                  {envios.map(e => (
+                                    <tr key={e.envio} className="text-slate-300">
+                                      <td className="py-1 font-mono text-blue-300">{e.envio}</td>
+                                      <td className="py-1">{e.desde} → {e.hasta}</td>
+                                      <td className="py-1 font-mono text-right">{e.maletas.toLocaleString()}</td>
+                                      <td className="py-1 font-mono text-right pl-4 text-slate-400">
+                                        {ut.actual > 0 ? Math.round((e.maletas / ut.actual) * 100) : 0}%
+                                      </td>
+                                      <td className="py-1 pl-4 text-slate-400">{e.directa ? 'Directo' : `${e.escalas} escala(s)`}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
                             )}
                           </td>
                         </tr>,

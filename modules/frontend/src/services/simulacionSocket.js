@@ -1,10 +1,8 @@
 import { Client } from '@stomp/stompjs'
-import { WS_URL } from './backendUrl'
 
-// G06: el endpoint WebSocket se resuelve igual que la API REST (mismo host que
-// sirvió la página), para que varios visualizadores en distintos dispositivos
-// se suscriban al mismo planificador. El topic es de broadcast, así que todos
-// reciben el mismo avance de la simulación sin estorbarse.
+import SockJS from 'sockjs-client'
+
+const WS_URL = `${window.location.origin}/ws`
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Cliente STOMP ÚNICO y compartido.
@@ -38,7 +36,7 @@ function ensureClient() {
   if (client) return client
 
   client = new Client({
-    brokerURL: WS_URL,
+    webSocketFactory: () => new SockJS(WS_URL),
     reconnectDelay: 3000,
     heartbeatIncoming: 10000,
     heartbeatOutgoing: 10000,

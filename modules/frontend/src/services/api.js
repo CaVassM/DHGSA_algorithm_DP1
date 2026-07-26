@@ -1,10 +1,7 @@
 import axios from 'axios'
-import { API_URL } from './backendUrl'
 
-// G06: la base ya no está escrita a mano — se resuelve desde el host que sirvió
-// la página, para que la app funcione abierta desde otro dispositivo de la red.
 const api = axios.create({
-  baseURL: API_URL,
+  baseURL: 'api/v1',
   timeout: 600000,
 })
 
@@ -84,22 +81,6 @@ export async function getEstadoDiario() {
 export async function reiniciarDiario() {
   const { data } = await api.post('/daily/reset')
   return data
-}
-
-// G09: cierra la jornada y devuelve el reporte de la última planificación
-// estable. Tras esto el backend no admite más registros hasta reiniciar.
-export async function cerrarOperacionDiaria() {
-  const { data } = await api.post('/daily/close')
-  return data
-}
-
-// G09: reporte de la jornada ya cerrada. Devuelve null (204) si sigue abierta,
-// para que al entrar a la pantalla se recupere el cierre sin volver a cerrarlo.
-export async function getReporteCierreDiario() {
-  const { data, status } = await api.get('/daily/close', {
-    validateStatus: s => s === 200 || s === 204,
-  })
-  return status === 204 ? null : data
 }
 
 // --- Simulación de periodo en vivo (salto de algoritmo) ---

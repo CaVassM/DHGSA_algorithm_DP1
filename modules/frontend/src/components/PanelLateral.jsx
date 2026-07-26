@@ -57,18 +57,7 @@ function writePersistedBool(key, val) {
 
 // ── Component ────────────────────────────────────────────────────────────────
 
-export default function PanelLateral({
-  run,
-  runId,
-  enVuelo = [],
-  enviosOperativos,
-  ocupacionPorIcao,
-  airportFromMap,
-  flightFromMap,
-  onSelectAirport,
-  onSelectShipment,
-  onSelectFlight,
-}) {
+export default function PanelLateral({ run,runId,enVuelo=[],enviosOperativos, ocupacionPorIcao, airportFromMap, onSelectAirport, onSelectShipment }) {
   const isReal     = !!run
   const isTerminal = isReal && TERMINAL_STATUSES.has(run.status)
   const statusCfg  = isReal
@@ -76,7 +65,7 @@ export default function PanelLateral({
     : { label: 'Simulación en Curso', dotClass: 'bg-green-500 animate-pulse', textClass: 'text-green-400' }
 
   // ── Colapso del panel completo (toggle ocultar/mostrar) ─────────────────────
-  const [panelCollapsed, setPanelCollapsed] = useState(() => readPersistedBool(PANEL_COLLAPSED_KEY, true))
+  const [panelCollapsed, setPanelCollapsed] = useState(() => readPersistedBool(PANEL_COLLAPSED_KEY, false))
   useEffect(() => { writePersistedBool(PANEL_COLLAPSED_KEY, panelCollapsed) }, [panelCollapsed])
 
   // ── Log persistente ───────────────────────────────────────────────────────
@@ -166,24 +155,21 @@ export default function PanelLateral({
       {/* Listas operativas: almacenes / vuelos (UT) / envíos, con búsqueda,
           orden y scroll. Es el núcleo del "panel de control" pedido por el
           profesor. Arranca abierta porque es lo que más se va a usar. */}
-      <CollapsibleSection id="listas" title="Listas operativas" defaultOpen={true} noPadding>
+      <CollapsibleSection id="listas" title="Listas" defaultOpen={true} noPadding>
         <PanelListas
           runId={runId}
           enVuelo={enVuelo}
           ocupacionPorIcao={ocupacionPorIcao}
           enviosOperativos={enviosOperativos}
           airportFromMap={airportFromMap}
-          flightFromMap={flightFromMap}
           onSelectAirport={onSelectAirport}
           onSelectShipment={onSelectShipment}
-          onSelectFlight={onSelectFlight}
         />
       </CollapsibleSection>
 
-      {/* Estado de la simulación. Arranca contraída para dar una vista limpia. */}
+      {/* Estado de la simulación */}
       <CollapsibleSection
         id="estado"
-        defaultOpen={false}
         title={
           <span className="flex items-center gap-2 normal-case">
             <span className={`w-2.5 h-2.5 rounded-full ${statusCfg.dotClass}`} />
@@ -224,8 +210,8 @@ export default function PanelLateral({
         </div>
       </CollapsibleSection>
 
-      {/* KPIs. Arranca contraída para dar una vista limpia. */}
-      <CollapsibleSection id="kpis" title="Estado Actual" defaultOpen={false}>
+      {/* KPIs */}
+      <CollapsibleSection id="kpis" title="Estado Actual">
         <div className="space-y-2.5">
           {isReal ? (
             <>
@@ -255,10 +241,9 @@ export default function PanelLateral({
         </div>
       </CollapsibleSection>
 
-      {/* Log de eventos. Arranca contraída para dar una vista limpia. */}
+      {/* Log de eventos */}
       <CollapsibleSection
         id="log"
-        defaultOpen={false}
         title={isReal
           ? `Log de Eventos${logHistory.length > 0 ? ` (${logHistory.length})` : ''}`
           : `Log de Eventos — Día ${SIMULACION.diaActual}`}
@@ -340,4 +325,3 @@ function KpiRow({ label, value, color }) {
     </div>
   )
 }
-

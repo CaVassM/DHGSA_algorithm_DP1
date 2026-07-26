@@ -1,6 +1,5 @@
 package com.tasfb2b.backend.config;
 
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.messaging.simp.config.MessageBrokerRegistry;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
@@ -11,14 +10,6 @@ import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerCo
 @Configuration
 @EnableWebSocketMessageBroker
 public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
-
-    /**
-     * G06: orígenes autorizados a abrir el WebSocket. Comparte configuración con
-     * {@link CorsConfig} — si se acota la API en producción, el socket queda
-     * acotado igual, sin poder olvidarse uno de los dos.
-     */
-    @Value("${tasfb2b.cors.allowed-origins:*}")
-    private String[] allowedOrigins;
 
     @Override
     public void configureMessageBroker(MessageBrokerRegistry registry) {
@@ -35,8 +26,8 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
     public void registerStompEndpoints(StompEndpointRegistry registry) {
         // Endpoint WebSocket nativo (sin SockJS) y, en paralelo, con SockJS
         // como fallback para navegadores/clientes que lo prefieran.
-        registry.addEndpoint("/ws").setAllowedOriginPatterns(allowedOrigins);
-        registry.addEndpoint("/ws").setAllowedOriginPatterns(allowedOrigins).withSockJS();
+        registry.addEndpoint("/ws").setAllowedOriginPatterns("*");
+        registry.addEndpoint("/ws").setAllowedOriginPatterns("*").withSockJS();
     }
 
     private ThreadPoolTaskScheduler heartbeatScheduler() {

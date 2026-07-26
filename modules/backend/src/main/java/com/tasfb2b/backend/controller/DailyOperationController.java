@@ -1,7 +1,6 @@
 package com.tasfb2b.backend.controller;
 
 import com.tasfb2b.backend.dto.request.DailyRegisterRequest;
-import com.tasfb2b.backend.dto.response.DailyCloseReportResponse;
 import com.tasfb2b.backend.dto.response.DailyRegisterResponse;
 import com.tasfb2b.backend.dto.response.DailyStateResponse;
 import com.tasfb2b.backend.service.DailyOperationService;
@@ -48,30 +47,9 @@ public class DailyOperationController {
         return ResponseEntity.ok(dailyOperationService.estado());
     }
 
-    @PostMapping("/close")
-    @Operation(summary = "Cerrar las operaciones del día",
-            description = "G09: congela la jornada y devuelve el reporte de la última planificación "
-                    + "estable: totales, cumplimiento, estado final de la flota y detalle de envíos "
-                    + "atendidos y rechazados. Tras el cierre no se admiten más registros hasta reiniciar.")
-    public ResponseEntity<DailyCloseReportResponse> cerrar() {
-        return ResponseEntity.ok(dailyOperationService.cerrar());
-    }
-
-    @GetMapping("/close")
-    @Operation(summary = "Consultar el reporte de cierre de la jornada",
-            description = "Devuelve el reporte de la última jornada cerrada, o 204 si sigue abierta. "
-                    + "Permite que otro visualizador lo consulte sin volver a cerrarla.")
-    public ResponseEntity<DailyCloseReportResponse> reporteCierre() {
-        DailyCloseReportResponse reporte = dailyOperationService.ultimoCierre();
-        return reporte != null
-                ? ResponseEntity.ok(reporte)
-                : ResponseEntity.noContent().build();
-    }
-
     @PostMapping("/reset")
     @Operation(summary = "Reiniciar la operación día a día",
-            description = "Recarga aeropuertos y vuelos desde la BD con capacidad a tope, borra los "
-                    + "registros y descarta el reporte de cierre para abrir una jornada nueva.")
+            description = "Recarga aeropuertos y vuelos desde la BD con capacidad a tope y borra los registros.")
     public ResponseEntity<DailyStateResponse> reiniciar() {
         dailyOperationService.reiniciar();
         return ResponseEntity.ok(dailyOperationService.estado());
