@@ -32,6 +32,7 @@ const ORDEN_ALMACENES = {
 const ORDEN_VUELOS = {
   ocupacion: { label: 'Ocupación', cmp: (a, b) => compararNumero(a._pct, b._pct) },
   salida: { label: 'Hora de salida', cmp: (a, b) => compararHora(a.horaSalida, b.horaSalida) },
+  llegada: { label: 'Hora de llegada', cmp: (a, b) => compararHora(a.horaLlegada, b.horaLlegada) },
   origen: { label: 'Origen', cmp: (a, b) => compararTexto(a.origenIcao, b.origenIcao) },
   destino: { label: 'Destino', cmp: (a, b) => compararTexto(a.destinoIcao, b.destinoIcao) },
 }
@@ -88,6 +89,32 @@ function normalizarVueloId(id) {
   const texto = String(id ?? '').trim()
   const indiceSeparador = texto.indexOf('@')
   return indiceSeparador >= 0 ? texto.slice(0, indiceSeparador) : texto
+}
+
+// La API puede representar los vuelos de una ruta de tres maneras distintas,
+// según si la información viene persistida, del modo en vivo o del detalle de
+// tramos. Esta función unifica esas variantes y evita que una UT muestre carga
+// pero aparezca con 0 envíos en su detalle.
+function obtenerIdsVueloRuta(ruta) {
+  const directos = Array.isArray(ruta?.flightBusinessIds)
+    ? ruta.flightBusinessIds
+    : []
+
+  const desdeVuelos = Array.isArray(ruta?.vuelos)
+    ? ruta.vuelos.map(vuelo => vuelo?.businessId ?? vuelo?.id)
+    : []
+
+  const desdeTramos = Array.isArray(ruta?.legs)
+    ? ruta.legs.map(tramo =>
+        tramo?.flightBusinessId ?? tramo?.flightId ?? tramo?.businessId,
+      )
+    : []
+
+  return [...new Set(
+    [...directos, ...desdeVuelos, ...desdeTramos]
+      .map(normalizarVueloId)
+      .filter(Boolean),
+  )]
 }
 
 function normalizarTexto(valor) {
@@ -162,8 +189,10 @@ export default function PanelListas({
   },
   ocupacionPorIcao = {},
   airportFromMap,
+  flightFromMap,
   onSelectAirport,
   onSelectShipment,
+  onSelectFlight,
 }) {
   const [tab, setTab] = useState('almacenes')
   const [busqueda, setBusqueda] = useState('')
@@ -183,6 +212,9 @@ export default function PanelListas({
   const [filtroUtOrigen, setFiltroUtOrigen] = useState('Todos')
   const [filtroUtDestino, setFiltroUtDestino] = useState('Todos')
   const [detalleUt, setDetalleUt] = useState({ codigo: null, vista: 'envios' })
+  const [utSeleccionada, setUtSeleccionada] = useState(null)
+  const [almacenAbierto, setAlmacenAbierto] = useState(null)
+  const [envioResaltado, setEnvioResaltado] = useState(null)
 
   const [airports, setAirports] = useState([])
   const [flights, setFlights] = useState([])
@@ -237,46 +269,169 @@ export default function PanelListas({
     setBusqueda('')
   }, [tab])
 
+  // F06: un almacén elegido desde el mapa se abre y resalta en la lista.
   useEffect(() => {
     if (!airportFromMap?.icao) return
     saltoDesdeMapaRef.current = true
     setTab('almacenes')
-    setBusqueda(airportFromMap.icao)
+    setBusqueda('')
+    setAlmacenAbierto(airportFromMap.icao)
   }, [airportFromMap])
+
+  // F08: una UT elegida desde el mapa abre su detalle sin dejar la lista filtrada.
+  useEffect(() => {
+    if (!flightFromMap?.id) return
+    const codigo = normalizarVueloId(flightFromMap.id)
+    if (!codigo) return
+
+    saltoDesdeMapaRef.current = true
+    setTab('vuelos')
+    setBusqueda('')
+    setBusquedaUtOrigen('')
+    setBusquedaUtDestino('')
+    setFiltroUtOrigen('Todos')
+    setFiltroUtDestino('Todos')
+    setUtSeleccionada(codigo)
+    setEnvioResaltado(null)
+    setDetalleUt({ codigo, vista: 'envios' })
+  }, [flightFromMap])
 
   const airportMap = useMemo(
     () => new Map(airports.map(aeropuerto => [aeropuerto.codigoIcao, aeropuerto])),
     [airports],
   )
 
-  const enviosPorVuelo = useMemo(() => {
-    const resultado = new Map()
+  // E18/E21/E23: envíos que entran y salen de cada almacén.
+  const enviosPorAlmacen = useMemo(() => {
+    const resultado = {}
+    const asegurar = codigo => {
+      if (!resultado[codigo]) resultado[codigo] = { entran: [], salen: [] }
+      return resultado[codigo]
+    }
 
-    routes.forEach(ruta => {
-      const ids = ruta.flightBusinessIds ?? []
-      ids.forEach(id => {
-        const vueloId = normalizarVueloId(id)
-        if (!vueloId) return
-        const actuales = resultado.get(vueloId) ?? []
-        actuales.push({
-          envio: ruta.shipmentBusinessId,
-          desde: ruta.origenIcao,
-          hasta: ruta.destinoIcao,
-          maletas: Number(ruta.cantidadMaletas ?? 0),
-          directa: ruta.esDirecta,
-          escalas: Number(ruta.escalas ?? 0),
-          rutaOriginal: ruta,
-        })
-        resultado.set(vueloId, actuales)
-      })
-    })
+    const relevantes = [
+      ...(enviosOperativos?.planificados ?? []),
+      ...(enviosOperativos?.enVuelo ?? []),
+    ]
+    const vistos = new Set()
 
-    resultado.forEach(lista => {
-      lista.sort((a, b) => b.maletas - a.maletas || compararTexto(a.envio, b.envio))
+    relevantes.forEach(envio => {
+      const envioId = envio.shipmentId ?? envio.businessId
+      const origen = envio.origenIcao ?? envio.desde
+      const destino = envio.destinoIcao ?? envio.hasta
+      const vueloId = normalizarVueloId(envio.flightBusinessId)
+      const clave = `${envioId}-${vueloId}-${origen}-${destino}`
+      if (vistos.has(clave)) return
+      vistos.add(clave)
+
+      if (origen) asegurar(origen).salen.push(envio)
+      if (destino) asegurar(destino).entran.push(envio)
     })
 
     return resultado
-  }, [routes])
+  }, [enviosOperativos])
+
+  // Carga actual y vuelos activos informados por el mapa. El Set permite
+  // reconocer también una UT despachada vacía cuando el evento la incluye.
+  const actividadPorVuelo = useMemo(() => {
+    const carga = {}
+    const activos = new Set()
+
+    enVuelo.forEach(item => {
+      const vueloId = normalizarVueloId(item.flightBusinessId ?? item.businessId ?? item.id)
+      if (!vueloId) return
+      activos.add(vueloId)
+      carga[vueloId] = (carga[vueloId] ?? 0) + Number(
+        item.maletas ?? item.cantidadMaletas ?? item.carga ?? 0,
+      )
+    })
+
+    return { carga, activos }
+  }, [enVuelo])
+
+  const enviosPorVuelo = useMemo(() => {
+    const agrupados = new Map()
+
+    const agregar = (vueloIdOriginal, envio) => {
+      const vueloId = normalizarVueloId(vueloIdOriginal)
+      if (!vueloId) return
+
+      const envioId = envio.envio ?? envio.shipmentId ?? envio.businessId
+      if (!envioId) return
+
+      const porEnvio = agrupados.get(vueloId) ?? new Map()
+      const anterior = porEnvio.get(String(envioId))
+      porEnvio.set(String(envioId), anterior ? { ...anterior, ...envio } : envio)
+      agrupados.set(vueloId, porEnvio)
+    }
+
+    routes.forEach(ruta => {
+      const envioId =
+        ruta.shipmentBusinessId ??
+        ruta.shipmentId ??
+        ruta.envioId ??
+        ruta.idEnvio
+
+      obtenerIdsVueloRuta(ruta).forEach(vueloId => {
+        agregar(vueloId, {
+          envio: envioId,
+          desde: ruta.origenIcao ?? ruta.originIcao ?? ruta.origen ?? ruta.origin,
+          hasta: ruta.destinoIcao ?? ruta.destinationIcao ?? ruta.destino ?? ruta.destination,
+          maletas: Number(
+            ruta.cantidadMaletas ?? ruta.totalBags ?? ruta.maletas ?? 0,
+          ),
+          directa: ruta.esDirecta ?? ruta.directa ?? ruta.direct,
+          escalas: Number(ruta.escalas ?? ruta.stops ?? 0),
+          estado: 'PLANIFICADO',
+          rutaOriginal: {
+            ...ruta,
+            shipmentBusinessId: envioId,
+            cantidadMaletas: Number(
+              ruta.cantidadMaletas ?? ruta.totalBags ?? ruta.maletas ?? 0,
+            ),
+          },
+        })
+      })
+    })
+
+    // Complementa con la información operativa del mapa. Así se conservan
+    // estados actuales y se dispone de detalle incluso antes de persistir rutas.
+    const operativos = [
+      ...(enviosOperativos?.planificados ?? []),
+      ...(enviosOperativos?.enVuelo ?? []),
+      ...(enviosOperativos?.entregados4h ?? []),
+    ]
+
+    operativos.forEach(envio => {
+      const envioId = envio.shipmentId ?? envio.businessId
+      const maletas = Number(envio.cantidadMaletas ?? envio.maletas ?? 0)
+      agregar(envio.flightBusinessId, {
+        envio: envioId,
+        desde: envio.origenIcao ?? envio.desde,
+        hasta: envio.destinoIcao ?? envio.hasta,
+        maletas,
+        directa: envio.esDirecta,
+        escalas: Number(envio.escalas ?? 0),
+        estado: envio.estado,
+        rutaOriginal: {
+          shipmentBusinessId: envioId,
+          cantidadMaletas: maletas,
+          productos: envio.productos,
+          items: envio.items,
+          detalleProductos: envio.detalleProductos,
+        },
+      })
+    })
+
+    const resultado = new Map()
+    agrupados.forEach((porEnvio, vueloId) => {
+      const lista = [...porEnvio.values()]
+        .sort((a, b) => b.maletas - a.maletas || compararTexto(a.envio, b.envio))
+      resultado.set(vueloId, lista)
+    })
+
+    return resultado
+  }, [routes, enviosOperativos])
 
   const productosPorVuelo = useMemo(() => {
     const resultado = new Map()
@@ -354,20 +509,28 @@ export default function PanelListas({
       const codigo = normalizarVueloId(vuelo.businessId ?? vuelo.id)
       const origenInfo = airportMap.get(vuelo.origenIcao)
       const destinoInfo = airportMap.get(vuelo.destinoIcao)
-      const carga = Number(cargaPorVuelo[codigo] ?? 0)
+      const estaActiva = actividadPorVuelo.activos.has(codigo)
+      const cargaActual = Number(actividadPorVuelo.carga[codigo] ?? 0)
+      const cargaAsignada = Number(cargaPorVuelo[codigo] ?? 0)
+      const cargaMostrada = estaActiva ? cargaActual : cargaAsignada
       const capacidad = Number(vuelo.capacidad ?? 0)
-      const pct = capacidad > 0 ? Math.round((carga / capacidad) * 1000) / 10 : 0
+      const pct = capacidad > 0 ? Math.round((cargaMostrada / capacidad) * 1000) / 10 : 0
 
       return {
         ...vuelo,
         businessId: codigo,
-        _actual: carga,
+        _actual: cargaMostrada,
+        _cargaActual: cargaActual,
+        _cargaAsignada: cargaAsignada,
+        _enAire: estaActiva,
         _pct: pct,
         _sem: getSemaforoPorOcupacion(pct),
         _origenTexto: textoUbicacion(vuelo.origenIcao, origenInfo),
         _destinoTexto: textoUbicacion(vuelo.destinoIcao, destinoInfo),
-        _origenDetalle: origenInfo?.ciudad ?? origenInfo?.nombre ?? '',
-        _destinoDetalle: destinoInfo?.ciudad ?? destinoInfo?.nombre ?? '',
+        _origenDetalle: [origenInfo?.nombre, origenInfo?.ciudad, origenInfo?.pais]
+          .filter(Boolean).join(' · '),
+        _destinoDetalle: [destinoInfo?.nombre, destinoInfo?.ciudad, destinoInfo?.pais]
+          .filter(Boolean).join(' · '),
       }
     })
 
@@ -378,10 +541,8 @@ export default function PanelListas({
         vuelo._destinoTexto,
       ].some(valor => normalizarTexto(valor).includes(q))
 
-      const coincideOrigen =
-        !busquedaOrigen || vuelo._origenTexto.includes(busquedaOrigen)
-      const coincideDestino =
-        !busquedaDestino || vuelo._destinoTexto.includes(busquedaDestino)
+      const coincideOrigen = !busquedaOrigen || vuelo._origenTexto.includes(busquedaOrigen)
+      const coincideDestino = !busquedaDestino || vuelo._destinoTexto.includes(busquedaDestino)
       const coincideFiltroOrigen =
         filtroUtOrigen === 'Todos' || vuelo.origenIcao === filtroUtOrigen
       const coincideFiltroDestino =
@@ -392,13 +553,16 @@ export default function PanelListas({
     })
 
     const multiplicador = direccion.vuelos === 'asc' ? 1 : -1
-    return [...filtrados].sort((a, b) => {
-      const comparacion = ORDEN_VUELOS[orden.vuelos].cmp(a, b)
-      return multiplicador * comparacion || compararTexto(a.businessId, b.businessId)
-    })
+    return [...filtrados].sort((a, b) =>
+      Number(b.businessId === utSeleccionada) - Number(a.businessId === utSeleccionada) ||
+      Number(b._enAire) - Number(a._enAire) ||
+      multiplicador * ORDEN_VUELOS[orden.vuelos].cmp(a, b) ||
+      compararTexto(a.businessId, b.businessId),
+    )
   }, [
     flights,
     airportMap,
+    actividadPorVuelo,
     cargaPorVuelo,
     q,
     busquedaUtOrigen,
@@ -407,6 +571,7 @@ export default function PanelListas({
     filtroUtDestino,
     orden.vuelos,
     direccion.vuelos,
+    utSeleccionada,
   ])
 
   const fuenteEnvios = useMemo(() => {
@@ -458,15 +623,42 @@ export default function PanelListas({
   function cambiarTab(tabId) {
     setTab(tabId)
     setDetalleUt({ codigo: null, vista: 'envios' })
+
+    if (tabId !== 'vuelos') {
+      setUtSeleccionada(null)
+      onSelectFlight?.(null)
+    }
+    if (tabId !== 'almacenes') setAlmacenAbierto(null)
+  }
+
+  function seleccionarUt(codigo) {
+    const nuevaSeleccion = utSeleccionada === codigo ? null : codigo
+    setUtSeleccionada(nuevaSeleccion)
+    setEnvioResaltado(null)
+    onSelectFlight?.(nuevaSeleccion)
+
+    if (nuevaSeleccion) setDetalleUt({ codigo, vista: 'envios' })
+    else setDetalleUt({ codigo: null, vista: 'envios' })
   }
 
   function alternarDetalleUt(codigo, vista) {
+    setUtSeleccionada(codigo)
+    setEnvioResaltado(null)
+    onSelectFlight?.(codigo)
+
     setDetalleUt(actual => {
       if (actual.codigo === codigo && actual.vista === vista) {
         return { codigo: null, vista }
       }
       return { codigo, vista }
     })
+  }
+
+  function resaltarEnvio(envioId) {
+    setEnvioResaltado(envioId)
+    setUtSeleccionada(null)
+    onSelectFlight?.(null)
+    onSelectShipment?.(envioId)
   }
 
   function limpiarFiltrosUt() {
@@ -476,6 +668,8 @@ export default function PanelListas({
     setFiltroUtOrigen('Todos')
     setFiltroUtDestino('Todos')
     setDetalleUt({ codigo: null, vista: 'envios' })
+    setUtSeleccionada(null)
+    onSelectFlight?.(null)
   }
 
   return (
@@ -652,45 +846,112 @@ export default function PanelListas({
         ) : conteo === 0 ? (
           <p className="px-3 py-6 text-xs text-slate-500 text-center">Sin resultados.</p>
         ) : tab === 'almacenes' ? (
-          almacenesView.map(aeropuerto => (
-            <button
-              type="button"
-              key={aeropuerto.codigoIcao}
-              onClick={() => onSelectAirport?.(aeropuerto.codigoIcao)}
-              className="w-full text-left px-3 py-2 hover:bg-slate-800/60 transition-colors"
-            >
-              <div className="flex items-center justify-between gap-2">
-                <span className="font-mono text-sm text-blue-300">{aeropuerto.codigoIcao}</span>
-                <SemChip sem={aeropuerto._sem} pct={aeropuerto._pct} />
+          almacenesView.map(aeropuerto => {
+            const flujo = enviosPorAlmacen[aeropuerto.codigoIcao] ?? { entran: [], salen: [] }
+            const abierto = almacenAbierto === aeropuerto.codigoIcao
+            const maletasEntran = flujo.entran.reduce(
+              (total, envio) => total + Number(envio.cantidadMaletas ?? envio.maletas ?? 0),
+              0,
+            )
+            const maletasSalen = flujo.salen.reduce(
+              (total, envio) => total + Number(envio.cantidadMaletas ?? envio.maletas ?? 0),
+              0,
+            )
+
+            return (
+              <div key={aeropuerto.codigoIcao}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAlmacenAbierto(abierto ? null : aeropuerto.codigoIcao)
+                    onSelectAirport?.(aeropuerto.codigoIcao)
+                  }}
+                  className={`w-full text-left px-3 py-2 transition-colors ${
+                    airportFromMap?.icao === aeropuerto.codigoIcao
+                      ? 'bg-blue-500/15 border-l-2 border-blue-400'
+                      : abierto
+                        ? 'bg-slate-800/80'
+                        : 'hover:bg-slate-800/60'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-mono text-sm text-blue-300">
+                      {aeropuerto.codigoIcao}
+                    </span>
+                    <SemChip sem={aeropuerto._sem} pct={aeropuerto._pct} />
+                  </div>
+                  <div className="flex items-center justify-between gap-2 mt-0.5">
+                    <span className="text-xs text-slate-400 truncate">
+                      {aeropuerto.ciudad} · {aeropuerto.pais}
+                    </span>
+                    <span className="text-[11px] text-slate-500 font-mono shrink-0">
+                      {aeropuerto._actual.toLocaleString()}/
+                      {Number(aeropuerto.capacidadAlmacen ?? 0).toLocaleString()}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2 mt-1">
+                    <span className="text-[10px]">
+                      <span className="text-green-400">↓ {flujo.entran.length} entran</span>
+                      <span className="text-slate-600"> · </span>
+                      <span className="text-amber-400">↑ {flujo.salen.length} salen</span>
+                    </span>
+                    <span className="text-[10px] text-slate-500">
+                      {abierto ? '▲ cerrar' : '▼ ver envíos'}
+                    </span>
+                  </div>
+                </button>
+
+                {abierto && (
+                  <div className="bg-slate-900/70 border-t border-slate-800 px-3 py-2 space-y-2">
+                    <ListaFlujo
+                      titulo={`Entran (${flujo.entran.length} envíos · ${maletasEntran} maletas)`}
+                      color="text-green-400"
+                      envios={flujo.entran}
+                      envioResaltado={envioResaltado}
+                      onSelectShipment={resaltarEnvio}
+                    />
+                    <ListaFlujo
+                      titulo={`Salen (${flujo.salen.length} envíos · ${maletasSalen} maletas)`}
+                      color="text-amber-400"
+                      envios={flujo.salen}
+                      envioResaltado={envioResaltado}
+                      onSelectShipment={resaltarEnvio}
+                    />
+                  </div>
+                )}
               </div>
-              <div className="flex items-center justify-between gap-2 mt-0.5">
-                <span className="text-xs text-slate-400 truncate">
-                  {aeropuerto.ciudad} · {aeropuerto.pais}
-                </span>
-                <span className="text-[11px] text-slate-500 font-mono shrink-0">
-                  {aeropuerto._actual.toLocaleString()}/
-                  {Number(aeropuerto.capacidadAlmacen ?? 0).toLocaleString()}
-                </span>
-              </div>
-            </button>
-          ))
+            )
+          })
         ) : tab === 'vuelos' ? (
           vuelosView.map(vuelo => {
             const abierto = detalleUt.codigo === vuelo.businessId
+            const seleccionada = utSeleccionada === vuelo.businessId
             const envios = enviosPorVuelo.get(vuelo.businessId) ?? []
             const productos = productosPorVuelo.get(vuelo.businessId) ?? []
 
             return (
-              <div key={vuelo.businessId} className={abierto ? 'bg-slate-800/35' : ''}>
-                <div className="px-3 py-2">
+              <div
+                key={vuelo.businessId}
+                className={`${abierto ? 'bg-slate-800/35' : ''} ${
+                  seleccionada ? 'border-l-2 border-amber-400' : ''
+                }`}
+              >
+                <button
+                  type="button"
+                  onClick={() => seleccionarUt(vuelo.businessId)}
+                  className="w-full px-3 pt-2 pb-1.5 text-left hover:bg-slate-800/40 transition-colors"
+                >
                   <div className="flex items-center justify-between gap-2">
                     <div className="min-w-0">
                       <div className="flex items-center gap-1.5">
+                        {vuelo._enAire && (
+                          <span className="text-blue-400" title="UT en vuelo ahora">✈</span>
+                        )}
                         <span className="font-mono text-xs font-semibold text-blue-300 truncate">
                           {vuelo.businessId}
                         </span>
                         <span className="text-[10px] text-slate-500">
-                          {fmtHora(vuelo.horaSalida)}
+                          Sale: {fmtHora(vuelo.horaSalida)}
                         </span>
                       </div>
                       <div className="text-xs text-slate-200 mt-0.5">
@@ -705,41 +966,59 @@ export default function PanelListas({
 
                   <div className="flex items-center justify-between mt-1 text-[10px] text-slate-500">
                     <span>
-                      Carga: {vuelo._actual.toLocaleString()}/{Number(vuelo.capacidad ?? 0).toLocaleString()}
+                      {vuelo._enAire ? 'Carga actual' : 'Carga asignada'}: {' '}
+                      {vuelo._actual.toLocaleString()}/{Number(vuelo.capacidad ?? 0).toLocaleString()}
                     </span>
                     <span>Llega: {fmtHora(vuelo.horaLlegada)}</span>
                   </div>
-
-                  <div className="grid grid-cols-2 gap-1.5 mt-2">
-                    <button
-                      type="button"
-                      onClick={() => alternarDetalleUt(vuelo.businessId, 'envios')}
-                      className={`rounded border px-2 py-1 text-[10px] transition-colors ${
-                        abierto && detalleUt.vista === 'envios'
-                          ? 'border-blue-400 bg-blue-500/15 text-blue-200'
-                          : 'border-slate-600 text-slate-400 hover:text-blue-300 hover:border-blue-500/60'
-                      }`}
-                    >
-                      {abierto && detalleUt.vista === 'envios' ? 'Ocultar envíos' : `Ver envíos (${envios.length})`}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => alternarDetalleUt(vuelo.businessId, 'productos')}
-                      className={`rounded border px-2 py-1 text-[10px] transition-colors ${
-                        abierto && detalleUt.vista === 'productos'
-                          ? 'border-violet-400 bg-violet-500/15 text-violet-200'
-                          : 'border-slate-600 text-slate-400 hover:text-violet-300 hover:border-violet-500/60'
-                      }`}
-                    >
-                      {abierto && detalleUt.vista === 'productos' ? 'Ocultar productos' : `Ver productos (${productos.length})`}
-                    </button>
+                  <div className="flex items-center justify-between mt-1 text-[10px]">
+                    <span className="text-blue-300">
+                      {envios.length} envío{envios.length === 1 ? '' : 's'} · {' '}
+                      {envios.reduce((total, envio) => total + envio.maletas, 0)} maletas
+                    </span>
+                    <span className={seleccionada ? 'text-amber-300' : 'text-slate-500'}>
+                      {seleccionada ? 'Seleccionada en mapa' : 'Seleccionar en mapa'}
+                    </span>
                   </div>
+                </button>
+
+                <div className="grid grid-cols-2 gap-1.5 px-3 pb-2">
+                  <button
+                    type="button"
+                    onClick={() => alternarDetalleUt(vuelo.businessId, 'envios')}
+                    className={`rounded border px-2 py-1 text-[10px] transition-colors ${
+                      abierto && detalleUt.vista === 'envios'
+                        ? 'border-blue-400 bg-blue-500/15 text-blue-200'
+                        : 'border-slate-600 text-slate-400 hover:text-blue-300 hover:border-blue-500/60'
+                    }`}
+                  >
+                    {abierto && detalleUt.vista === 'envios'
+                      ? 'Ocultar envíos'
+                      : `Ver envíos (${envios.length})`}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => alternarDetalleUt(vuelo.businessId, 'productos')}
+                    className={`rounded border px-2 py-1 text-[10px] transition-colors ${
+                      abierto && detalleUt.vista === 'productos'
+                        ? 'border-violet-400 bg-violet-500/15 text-violet-200'
+                        : 'border-slate-600 text-slate-400 hover:text-violet-300 hover:border-violet-500/60'
+                    }`}
+                  >
+                    {abierto && detalleUt.vista === 'productos'
+                      ? 'Ocultar productos'
+                      : `Ver productos (${productos.length})`}
+                  </button>
                 </div>
 
                 {abierto && (
                   <div className="border-t border-slate-700 bg-slate-950/45 px-3 py-2">
                     {detalleUt.vista === 'envios' ? (
-                      <DetalleEnviosUT envios={envios} onSelectShipment={onSelectShipment} />
+                      <DetalleEnviosUT
+                        envios={envios}
+                        envioResaltado={envioResaltado}
+                        onSelectShipment={resaltarEnvio}
+                      />
                     ) : (
                       <DetalleProductosUT productos={productos} />
                     )}
@@ -758,8 +1037,12 @@ export default function PanelListas({
               <button
                 type="button"
                 key={`${envioId}-${envio.flightBusinessId ?? 'sin-ut'}-${index}`}
-                onClick={() => onSelectShipment?.(envioId)}
-                className="w-full text-left px-3 py-2 hover:bg-slate-800/60 transition-colors"
+                onClick={() => resaltarEnvio(envioId)}
+                className={`w-full text-left px-3 py-2 transition-colors ${
+                  envioResaltado === envioId
+                    ? 'bg-amber-500/15 border-l-2 border-amber-400'
+                    : 'hover:bg-slate-800/60'
+                }`}
               >
                 <div className="flex items-center justify-between gap-2">
                   <span className="font-mono text-sm text-blue-300">{envioId}</span>
@@ -794,7 +1077,63 @@ export default function PanelListas({
   )
 }
 
-function DetalleEnviosUT({ envios, onSelectShipment }) {
+// E18/E21/E23: lista de envíos que entran o salen de un almacén.
+function ListaFlujo({ titulo, color, envios, envioResaltado, onSelectShipment }) {
+  return (
+    <div>
+      <div className={`text-[10px] font-semibold uppercase tracking-wider mb-1 ${color}`}>
+        {titulo}
+      </div>
+      {envios.length === 0 ? (
+        <p className="text-[11px] text-slate-500 pb-1">Sin envíos planificados.</p>
+      ) : (
+        <ul className="space-y-1 max-h-36 overflow-y-auto">
+          {envios.slice(0, 40).map((envio, indice) => {
+            const envioId = envio.shipmentId ?? envio.businessId
+            const marcado = envioResaltado === envioId
+            return (
+              <li key={`${envioId}-${indice}`}>
+                <button
+                  type="button"
+                  onClick={() => onSelectShipment?.(envioId)}
+                  className={`w-full text-left rounded px-2 py-1 transition-colors ${
+                    marcado
+                      ? 'bg-amber-500/20 border-l-2 border-amber-400'
+                      : 'bg-slate-800/60 hover:bg-slate-700/60'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-mono text-[11px] text-blue-300 truncate">
+                      {envioId}
+                    </span>
+                    <span className="font-mono text-[11px] text-slate-300 shrink-0">
+                      {Number(envio.cantidadMaletas ?? envio.maletas ?? 0)} mal.
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-2 text-[10px] text-slate-400 mt-0.5">
+                    <span>
+                      {envio.origenIcao ?? envio.desde} → {envio.destinoIcao ?? envio.hasta}
+                    </span>
+                    <span className="text-slate-500 font-mono">
+                      {normalizarVueloId(envio.flightBusinessId)}
+                    </span>
+                  </div>
+                </button>
+              </li>
+            )
+          })}
+          {envios.length > 40 && (
+            <li className="text-[10px] text-slate-500 px-2 pt-1">
+              …y {envios.length - 40} envíos más
+            </li>
+          )}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+function DetalleEnviosUT({ envios, envioResaltado, onSelectShipment }) {
   if (envios.length === 0) {
     return <p className="text-[11px] text-slate-500">Sin envíos asociados a esta UT.</p>
   }
@@ -805,12 +1144,18 @@ function DetalleEnviosUT({ envios, onSelectShipment }) {
         Envíos que traslada
       </p>
       <div className="space-y-1.5">
-        {envios.map((envio, index) => (
+        {envios.map((envio, index) => {
+          const marcado = envioResaltado === envio.envio
+          return (
           <button
             type="button"
             key={`${envio.envio}-${index}`}
             onClick={() => onSelectShipment?.(envio.envio)}
-            className="w-full rounded border border-slate-800 bg-slate-900/60 px-2 py-1.5 text-left hover:border-blue-500/50"
+            className={`w-full rounded border px-2 py-1.5 text-left transition-colors ${
+              marcado
+                ? 'border-amber-400 bg-amber-500/15'
+                : 'border-slate-800 bg-slate-900/60 hover:border-blue-500/50'
+            }`}
           >
             <div className="flex justify-between gap-2">
               <span className="font-mono text-[11px] text-blue-300">{envio.envio}</span>
@@ -821,7 +1166,8 @@ function DetalleEnviosUT({ envios, onSelectShipment }) {
               <span>{envio.directa ? 'Directo' : `${envio.escalas} escala(s)`}</span>
             </div>
           </button>
-        ))}
+          )
+        })}
       </div>
     </div>
   )
@@ -838,11 +1184,11 @@ function DetalleProductosUT({ productos }) {
     <div>
       <div className="mb-1.5">
         <p className="text-[10px] uppercase tracking-wider text-slate-500">Productos que traslada</p>
-       {/*  {usaFallback && (
+        {usaFallback && (
           <p className="mt-0.5 text-[10px] text-amber-400/80">
             El backend aún no expone productos; se muestra la carga en maletas.
           </p>
-        )} */}
+        )}
       </div>
       <div className="space-y-1.5">
         {productos.map(producto => (

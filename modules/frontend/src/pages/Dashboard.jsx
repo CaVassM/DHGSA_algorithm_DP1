@@ -185,7 +185,7 @@ export default function Dashboard() {
               aquí — ese dato lo da la tarjeta de tiempos del mapa; este cartel
               solo aporta lo que el mapa no muestra: nº de época y asignados. */}
           {eventoSimulacion?.tipo === 'EPOCA' && (
-            <div className="absolute top-40 left-3 z-[1000] w-52 bg-slate-900/90 border border-blue-500/40 rounded-xl px-3 py-2 shadow-lg">
+            <div className="absolute top-60 left-3 z-[1000] w-52 bg-slate-900/90 border border-blue-500/40 rounded-xl px-3 py-2 shadow-lg">
               <div className="text-[10px] text-blue-300 uppercase tracking-widest font-semibold">
                 Simulación en vivo
               </div>
@@ -203,8 +203,8 @@ export default function Dashboard() {
               que existía la pestaña "Reporte"; ahora el cierre del escenario
               lleva al reporte sin buscarlo. */}
           {eventoSimulacion?.tipo === 'FIN' && (
-            <div className="absolute top-40 left-3 z-[1000] w-64 bg-slate-900/95 border border-green-500/40 rounded-xl px-3 py-2.5 shadow-lg">
-              <div className="text-[10px] text-green-300 uppercase tracking-widest font-semibold">
+            <div className="absolute top-60 left-3 z-[1000] w-64 bg-slate-900/95 border border-green-500/40 rounded-xl px-3 py-2.5 shadow-lg">
+              <div className="text-[10px] text-green-300 uppercase tracking-widest font-semibold">  
                 Simulación de periodo finalizada
               </div>
               <div className="text-xs text-slate-300 mt-1 mb-2">

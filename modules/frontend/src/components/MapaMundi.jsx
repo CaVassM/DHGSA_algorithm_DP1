@@ -935,15 +935,20 @@ export default function MapaMundi({
 
   const activeDots = [...Object.values(activeDotMap), ...vuelosVaciosEnAire]
 
-  // F07: tramo del vuelo resaltado desde el panel, para pintar su ruta. Si el
-  // avión ya aterrizó deja de existir en `activeDots` y el resaltado se
-  // descarta solo, en vez de dejar un tramo amarillo huérfano en el mapa.
+  // F07: tramo de la UT resaltada desde el panel. Si está en el aire usamos
+  // su posición activa; si todavía no despega o ya aterrizó, usamos el catálogo
+  // para mantener visible el origen/destino y poder centrar igualmente el mapa.
   const tramoVueloResaltado = useMemo(() => {
     if (!vueloResaltado) return null
+
     const dot = activeDots.find(d => d.flightBusinessId === vueloResaltado)
-    return dot ? `${dot.desde}-${dot.hasta}` : null
+    if (dot) return `${dot.desde}-${dot.hasta}`
+
+    const vuelo = flights.find(f => String(f.businessId ?? f.id) === String(vueloResaltado))
+    if (!vuelo?.origenIcao || !vuelo?.destinoIcao) return null
+    return `${vuelo.origenIcao}-${vuelo.destinoIcao}`
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [vueloResaltado, activeDotMap, vuelosVaciosEnAire])
+  }, [vueloResaltado, activeDotMap, vuelosVaciosEnAire, flights])
 
   // Tramos que ahora mismo tienen un avión encima: su línea debe verse siempre.
   const tramosConAvion = useMemo(
@@ -1129,14 +1134,31 @@ export default function MapaMundi({
     // Excluyente con el resaltado de envío (ver highlightShipment).
     setEnvioBuscado('')
     setBusquedaInput('')
+    if (!mapInstance) return
+
     const dot = activeDots.find(d => d.flightBusinessId === focusFlight.id)
-    if (!dot || !mapInstance) return
-    const a = coords[dot.desde]
-    const b = coords[dot.hasta]
+    if (dot) {
+      const a = coords[dot.desde]
+      const b = coords[dot.hasta]
+      if (!a || !b) return
+      const lat = a.lat + (b.lat - a.lat) * dot.progreso
+      const lng = a.lng + (b.lng - a.lng) * dot.progreso
+      mapInstance.flyTo([lat, lng], Math.max(mapInstance.getZoom(), 4), { duration: 0.8 })
+      return
+    }
+
+    // La UT puede estar planificada pero todavía no aparecer como avión activo.
+    // En ese caso centramos el mapa en el punto medio de su tramo.
+    const vuelo = flights.find(f => String(f.businessId ?? f.id) === String(focusFlight.id))
+    if (!vuelo) return
+    const a = coords[vuelo.origenIcao]
+    const b = coords[vuelo.destinoIcao]
     if (!a || !b) return
-    const lat = a.lat + (b.lat - a.lat) * dot.progreso
-    const lng = a.lng + (b.lng - a.lng) * dot.progreso
-    mapInstance.flyTo([lat, lng], Math.max(mapInstance.getZoom(), 4), { duration: 0.8 })
+    mapInstance.flyTo(
+      [(a.lat + b.lat) / 2, (a.lng + b.lng) / 2],
+      Math.max(mapInstance.getZoom(), 4),
+      { duration: 0.8 },
+    )
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusFlight])
 
@@ -1159,6 +1181,7 @@ export default function MapaMundi({
 
         {rutasLineas
           .filter(r => tramosEnvioBuscado?.has(`${r.desde}-${r.hasta}`)
+            || tramoVueloResaltado === `${r.desde}-${r.hasta}`
             || !r.revealAt || !simTime || simTime >= r.revealAt
             // Si hay un avión (aunque vaya vacío) recorriendo el tramo ahora,
             // su línea debe estar dibujada: un avión sin trayectoria confunde.
@@ -1490,7 +1513,7 @@ export default function MapaMundi({
           NO va en la esquina inferior-izquierda: ahí tapa el sur de
           Sudamérica (Argentina/Chile), que el profesor pidió mantener visible;
           por eso el tope de altura queda acotado para no llegar a esa esquina. */}
-      <div className="absolute top-72 left-3 z-[1000] bg-slate-900/92 backdrop-blur border border-slate-700 rounded-xl shadow-lg w-44">
+      <div className="absolute top-[23rem] left-3 z-[1000] bg-slate-900/92 backdrop-blur border border-slate-700 rounded-xl shadow-lg w-44">
         <button
           onClick={() => setFiltrosAbiertos(a => !a)}
           className="w-full px-3 py-2 text-xs font-semibold text-slate-300 hover:text-white transition-colors text-left"
