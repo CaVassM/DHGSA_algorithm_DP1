@@ -85,39 +85,68 @@ public class AdminImportService {
     public ImportSummaryResponse importFlights(MultipartFile file) {
         Path tmp = writeTemp(file, "flights", ".txt");
         try {
-            Map<String, AirportEntity> entitiesByIcao = loadAirportEntitiesByIcao();
-            Map<String, Aeropuerto> domainByIcao = new HashMap<>();
-            entitiesByIcao.forEach((icao, ent) -> domainByIcao.put(icao, DomainMapper.airportToDomain(ent)));
-
-            var vuelos = vueloParser.parsear(tmp, domainByIcao);
-            Set<String> existentes = new HashSet<>(flightRepository.findAllBusinessIds());
-            int inserted = 0;
-            int updated = 0;
-            int skipped = 0;
-            for (Vuelo src : vuelos) {
-                AirportEntity origen = entitiesByIcao.get(src.getAeropuertoOrigen().getCodigoICAO());
-                AirportEntity destino = entitiesByIcao.get(src.getAeropuertoDestino().getCodigoICAO());
-                if (origen == null || destino == null) {
-                    skipped++;
-                    continue;
-                }
-                if (existentes.contains(src.getId())) {
-                    FlightEntity e = flightRepository.findByBusinessId(src.getId()).orElse(null);
-                    if (e != null) {
-                        DomainMapper.updateFlightEntity(e, src, origen, destino);
-                        flightRepository.save(e);
-                        updated++;
-                    }
-                } else {
-                    flightRepository.save(DomainMapper.flightToEntity(src, origen, destino));
-                    existentes.add(src.getId());
-                    inserted++;
-                }
-            }
-            return new ImportSummaryResponse("flights", vuelos.size(), inserted, updated, skipped);
+            return importFlightsFrom(tmp);
         } finally {
             deleteSilently(tmp);
         }
+    }
+
+    /**
+     * Importa planes de vuelo desde texto en vez de desde un archivo subido.
+     *
+     * <p>Lo usa la preparación del escenario día a día, que genera los vuelos de
+     * la prueba a partir de la hora de la presentación: obligar a materializar
+     * un archivo y volver a subirlo solo para reutilizar este import no aporta
+     * nada, y son minutos que en esa sesión no sobran.
+     */
+    @Transactional
+    public ImportSummaryResponse importFlightsFromText(String contenido) {
+        Path tmp;
+        try {
+            tmp = Files.createTempFile("flights-", ".txt");
+            Files.writeString(tmp, contenido);
+        } catch (IOException e) {
+            throw new IllegalStateException("No se pudo escribir archivo temporal de import", e);
+        }
+        try {
+            return importFlightsFrom(tmp);
+        } finally {
+            deleteSilently(tmp);
+        }
+    }
+
+    /** Cuerpo común del import de vuelos: upsert por businessId. */
+    private ImportSummaryResponse importFlightsFrom(Path archivo) {
+        Map<String, AirportEntity> entitiesByIcao = loadAirportEntitiesByIcao();
+        Map<String, Aeropuerto> domainByIcao = new HashMap<>();
+        entitiesByIcao.forEach((icao, ent) -> domainByIcao.put(icao, DomainMapper.airportToDomain(ent)));
+
+        var vuelos = vueloParser.parsear(archivo, domainByIcao);
+        Set<String> existentes = new HashSet<>(flightRepository.findAllBusinessIds());
+        int inserted = 0;
+        int updated = 0;
+        int skipped = 0;
+        for (Vuelo src : vuelos) {
+            AirportEntity origen = entitiesByIcao.get(src.getAeropuertoOrigen().getCodigoICAO());
+            AirportEntity destino = entitiesByIcao.get(src.getAeropuertoDestino().getCodigoICAO());
+            if (origen == null || destino == null) {
+                skipped++;
+                continue;
+            }
+            if (existentes.contains(src.getId())) {
+                FlightEntity e = flightRepository.findByBusinessId(src.getId()).orElse(null);
+                if (e != null) {
+                    DomainMapper.updateFlightEntity(e, src, origen, destino);
+                    flightRepository.save(e);
+                    updated++;
+                }
+            } else {
+                flightRepository.save(DomainMapper.flightToEntity(src, origen, destino));
+                existentes.add(src.getId());
+                inserted++;
+            }
+        }
+        return new ImportSummaryResponse("flights", vuelos.size(), inserted, updated, skipped);
     }
 
     @Transactional

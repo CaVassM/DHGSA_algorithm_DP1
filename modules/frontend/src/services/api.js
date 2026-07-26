@@ -120,6 +120,45 @@ export async function reiniciarDiario() {
   return data
 }
 
+// --- Preparación del escenario de la prueba ---
+//
+// El enunciado pide dos cambios antes de empezar: capacidad 999 en las cuatro
+// sedes y unos planes de vuelo ajustados a la hora de la sesión. Se exponen
+// desde la propia pantalla para no depender de tener acceso de consola a la
+// base del despliegue, que es justo lo que no se tiene ese día.
+
+/** Capacidad actual de las sedes; dice si el entorno ya está preparado. */
+export async function getEstadoPreparacion() {
+  const { data } = await api.get('/daily/setup')
+  return data
+}
+
+/** Sube a 999 la capacidad de las cuatro sedes y reinicia la operación. */
+export async function prepararEscenarioDiario() {
+  const { data } = await api.post('/daily/setup')
+  return data
+}
+
+/** Devuelve las capacidades originales (SPIM:440, SABE:460, EKCH/VIDP:480). */
+export async function revertirEscenarioDiario() {
+  const { data } = await api.post('/daily/setup/revert')
+  return data
+}
+
+/**
+ * Genera los planes de vuelo de la prueba para una hora de inicio dada.
+ *
+ * @param hora    hora de inicio en hora de Lima, "HH:mm"
+ * @param revisar true para obtenerlos sin guardar nada; el enunciado pide
+ *                presentar el archivo antes de agregarlo
+ */
+export async function generarVuelosPrueba(hora, revisar = false) {
+  const { data } = await api.post('/daily/setup/flights', null, {
+    params: { hora, revisar },
+  })
+  return data
+}
+
 // G09: cierra la jornada y devuelve el reporte de la última planificación
 // estable. Tras esto el backend no admite más registros hasta reiniciar.
 export async function cerrarOperacionDiaria() {

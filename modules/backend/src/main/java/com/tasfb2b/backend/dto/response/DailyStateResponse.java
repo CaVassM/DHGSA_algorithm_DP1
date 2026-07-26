@@ -27,6 +27,26 @@ public class DailyStateResponse {
 
     private List<FlightLoad> vuelos;
 
+    /**
+     * Capacidad de almacén de las cuatro sedes de la prueba.
+     *
+     * <p>La preparación del escenario las sube a 999 y eso hay que poder
+     * enseñarlo: el enunciado lo pide como parte de la fase de preparación. Sin
+     * esto no aparecía en ninguna pantalla — la tabla de vuelos muestra la
+     * capacidad de cada VUELO (300-360), que es otra cosa.
+     */
+    private List<WarehouseCapacity> almacenes;
+
+    @Data
+    @Builder
+    public static class WarehouseCapacity {
+        private String icao;
+        private String ciudad;
+        private int capacidad;
+        /** true si está en el valor que la prueba exige (999). */
+        private boolean preparado;
+    }
+
     @Data
     @Builder
     public static class FlightLoad {

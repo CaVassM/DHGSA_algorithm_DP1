@@ -8,6 +8,7 @@ import com.tasfb2b.backend.dto.response.DailyCloseReportResponse;
 import com.tasfb2b.backend.dto.response.DailyRegisterResponse;
 import com.tasfb2b.backend.dto.response.DailyStateResponse;
 import com.tasfb2b.backend.service.DailyOperationService;
+import com.tasfb2b.backend.service.DailyScenarioSetupService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -25,6 +26,7 @@ import org.springframework.web.multipart.MultipartFile;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Operación día a día (escenario REAL_TIME): registro manual de envíos uno a
@@ -39,6 +41,7 @@ import java.util.List;
 public class DailyOperationController {
 
     private final DailyOperationService dailyOperationService;
+    private final DailyScenarioSetupService dailyScenarioSetupService;
 
     @PostMapping("/shipments")
     @Operation(summary = "Registrar un envío manual",
@@ -124,5 +127,44 @@ public class DailyOperationController {
     public ResponseEntity<DailyStateResponse> reiniciar() {
         dailyOperationService.reiniciar();
         return ResponseEntity.ok(dailyOperationService.estado());
+    }
+
+    @GetMapping("/setup")
+    @Operation(summary = "Comprobar si el entorno está preparado para la prueba",
+            description = "Capacidad actual de SPIM, SABE, EKCH y VIDP. 'preparado' es true cuando "
+                    + "las cuatro están en 999, que es lo que el enunciado pide antes de empezar.")
+    public ResponseEntity<Map<String, Object>> estadoPreparacion() {
+        return ResponseEntity.ok(dailyScenarioSetupService.estadoPreparacion());
+    }
+
+    @PostMapping("/setup")
+    @Operation(summary = "Preparar el entorno para la prueba día a día",
+            description = "Sube a 999 la capacidad de SPIM, SABE, EKCH y VIDP y reinicia la "
+                    + "operación. Evita tener que entrar por SQL a la base del despliegue. Los "
+                    + "planes de vuelo adicionales van aparte, por /api/v1/admin/imports/flights.")
+    public ResponseEntity<DailyScenarioSetupService.ResultadoPreparacion> preparar() {
+        return ResponseEntity.ok(dailyScenarioSetupService.preparar());
+    }
+
+    @PostMapping("/setup/flights")
+    @Operation(summary = "Generar y cargar los planes de vuelo adicionales de la prueba",
+            description = "Genera los 48 vuelos de la plantilla del enunciado ajustados a la hora "
+                    + "de la presentación (HD = HO + duración + diferencia de husos) y los añade a "
+                    + "los existentes. Con revisar=true solo los devuelve, sin guardar nada, que es "
+                    + "lo que pide el enunciado antes de agregarlos.")
+    public ResponseEntity<DailyScenarioSetupService.ResultadoVuelos> generarVuelos(
+            @RequestParam("hora") String hora,
+            @RequestParam(value = "revisar", defaultValue = "false") boolean revisar
+    ) {
+        return ResponseEntity.ok(
+                dailyScenarioSetupService.generarVuelosAdicionales(hora, !revisar));
+    }
+
+    @PostMapping("/setup/revert")
+    @Operation(summary = "Devolver las capacidades originales al terminar la prueba",
+            description = "SPIM:440, SABE:460, EKCH:480, VIDP:480, como pide el cierre del "
+                    + "escenario. No borra los planes de vuelo añadidos.")
+    public ResponseEntity<DailyScenarioSetupService.ResultadoPreparacion> revertir() {
+        return ResponseEntity.ok(dailyScenarioSetupService.revertir());
     }
 }
