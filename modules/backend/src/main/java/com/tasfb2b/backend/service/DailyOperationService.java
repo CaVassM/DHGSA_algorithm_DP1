@@ -370,8 +370,8 @@ public class DailyOperationService {
                             .destinoIcao(d.getCodigoICAO())
                             .salidaUtc(salida)
                             .llegadaUtc(llegada)
-                            .salidaLocal(HoraLocal.aLocal(salida, o))
-                            .llegadaLocal(HoraLocal.aLocal(llegada, d))
+                            .salidaLocal(salida)
+                            .llegadaLocal(llegada)
                             .gmtOrigen(HoraLocal.etiquetaGmt(o))
                             .gmtDestino(HoraLocal.etiquetaGmt(d))
                             .esperaMinutos(llegadaPrevia != null && salida != null
