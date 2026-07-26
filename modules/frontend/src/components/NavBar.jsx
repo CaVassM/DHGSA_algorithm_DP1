@@ -6,6 +6,7 @@ export default function NavBar() {
   const esDashboard = location.pathname === '/dashboard'
   const esIndicadores = location.pathname === '/indicadores'
   const esDiaADia = location.pathname === '/dia-a-dia'
+  const esMapaDiaADia = location.pathname === '/dia-a-dia/mapa'
   const esSimVivo = location.pathname === '/simulacion-vivo'
   const esColapso = location.pathname === '/colapso'
   const esReporte = location.pathname === '/reporte'
@@ -56,6 +57,19 @@ export default function NavBar() {
           }`}
         >
           Operación Día a Día
+        </button>
+        {/* El mapa de la operación es una pantalla aparte de la de registro: el
+            empleado que recepciona maletas no necesita el mapa, y quien sigue la
+            operación no registra. */}
+        <button
+          onClick={() => navigate('/dia-a-dia/mapa')}
+          className={`px-4 py-1.5 rounded text-sm font-medium transition-colors ${
+            esMapaDiaADia
+              ? 'bg-blue-600 text-white'
+              : 'text-slate-400 hover:text-white hover:bg-slate-700'
+          }`}
+        >
+          Mapa Día a Día
         </button>
         <button
           onClick={() => navigate('/colapso')}

@@ -117,6 +117,52 @@
   filter: drop-shadow(0 3px 6px rgba(2, 6, 23, 0.7));
 }
 
+/* Mapa día a día: posición actual de la maleta. El halo late para distinguirla
+   de los aeropuertos, que son fijos; el color lo pone el estado (en almacén, en
+   vuelo, en escala). */
+.tasf-daily-bag {
+  background: transparent;
+  border: 0;
+}
+
+.tasf-daily-bag-dot {
+  width: 14px;
+  height: 14px;
+  margin: 2px;
+  border-radius: 50%;
+  background: var(--bag-color);
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 0 var(--bag-color);
+  animation: tasf-bag-pulse 2s ease-out infinite;
+}
+
+@keyframes tasf-bag-pulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--bag-color) 70%, transparent); }
+  70% { box-shadow: 0 0 0 12px color-mix(in srgb, var(--bag-color) 0%, transparent); }
+  100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--bag-color) 0%, transparent); }
+}
+
+/* D14: marca de vuelo cancelado. El latido la separa de los elementos estáticos
+   del mapa — una cruz quieta se confunde con un icono más del aeropuerto. */
+.tasf-cancel-icon-wrapper {
+  background: transparent;
+  border: 0;
+}
+
+.tasf-cancel-icon {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  filter: drop-shadow(0 2px 5px rgba(2, 6, 23, 0.8));
+  animation: tasf-cancel-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes tasf-cancel-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.18); opacity: 0.75; }
+}
+
 /* La rotación se aplica SOLO al avión (SVG), no al contenedor: si rotáramos el
    contenedor, el badge del número giraría con él y se vería invertido cuando el
    avión apunta hacia la izquierda/abajo. */

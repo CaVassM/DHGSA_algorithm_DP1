@@ -31,6 +31,7 @@ import com.tasfb2b.dhgs.demo.domain.model.Envio;
 import com.tasfb2b.dhgs.demo.domain.model.InstanciaVuelo;
 import com.tasfb2b.dhgs.demo.domain.model.RutaEnvio;
 import com.tasfb2b.dhgs.demo.domain.model.Vuelo;
+import com.tasfb2b.dhgs.demo.domain.service.CancelacionVuelos;
 import com.tasfb2b.dhgs.demo.domain.service.EpocaData;
 import com.tasfb2b.dhgs.demo.domain.service.SimuladorEpocas;
 import com.tasfb2b.backend.service.PlanningRoutePersistenceService;
@@ -50,6 +51,7 @@ import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -57,7 +59,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
@@ -109,12 +113,54 @@ public class SimulacionEnVivoService {
     private final Map<Long, AtomicBoolean> cancelaciones = new ConcurrentHashMap<>();
 
     /**
+     * Estado vivo de la corrida en curso, para poder cancelar vuelos mientras
+     * transcurre (P&R P9). La cancelación llega por REST desde otro hilo, así que
+     * necesita alcanzar el reloj simulado y la solución de la época actual.
+     *
+     * <p>Solo hay una corrida a la vez ({@code simulacionLock}), de ahí que baste
+     * una única referencia en vez de un mapa por runId.
+     */
+    private final AtomicReference<CorridaEnCurso> corridaActual = new AtomicReference<>();
+
+    /**
+     * Punto de encuentro entre el hilo de la simulación y las peticiones de
+     * cancelación. El reloj simulado y la solución vigente cambian en cada época;
+     * las peticiones los leen a través de esta referencia.
+     */
+    private static final class CorridaEnCurso {
+        private final Long runId;
+        private final String topic;
+        /** Fin de la última época procesada: el "ahora" de la operación simulada. */
+        private volatile LocalDateTime relojSimulado;
+        /** Solución de la época en curso, de donde se retiran los envíos afectados. */
+        private volatile Individuo solucionVigente;
+        /** Envíos liberados por cancelaciones, a replanificar en la próxima época. */
+        private final List<Envio> liberadosPendientes = Collections.synchronizedList(new ArrayList<>());
+
+        CorridaEnCurso(Long runId, String topic, LocalDateTime relojInicial) {
+            this.runId = runId;
+            this.topic = topic;
+            this.relojSimulado = relojInicial;
+        }
+    }
+
+    /**
      * Serializa las simulaciones: SimuladorEpocas y GrafoVuelos son beans
      * singleton con estado mutable compartido. Dos simulaciones a la vez se
      * corromperían entre sí (p.ej. organizarEnEpocas hace historial.clear()).
      * El lock garantiza una simulación a la vez; las demás esperan su turno.
      */
     private final ReentrantLock simulacionLock = new ReentrantLock();
+
+    /**
+     * Segundos que una corrida nueva espera a que la anterior suelte el turno.
+     *
+     * <p>Generoso a propósito: la previa tiene que terminar la época que esté
+     * calculando, y con decenas de miles de envíos una época puede tardar
+     * bastante. Pasado ese margen es mejor avisar que seguir esperando en
+     * silencio.
+     */
+    private static final long ESPERA_MAXIMA_TURNO_SEGUNDOS = 90;
 
     /** Parámetros de una corrida en vivo. */
     public record LiveParams(
@@ -196,6 +242,71 @@ private OptimizationAlgorithm resolverOptimizationAlgorithm(String rawAlgorithm)
     }
 
     /**
+     * Cancela un vuelo durante la simulación en curso (P&R P9).
+     *
+     * <p>La antelación se mide contra el <b>reloj simulado</b>, no contra la hora
+     * real: si la simulación va por el 15-jul a las 02:00, cancelar un vuelo de
+     * las 09:00 de ese día debe alcanzarlo, aunque en tiempo real hayan pasado
+     * apenas unos minutos desde que arrancó la corrida.
+     *
+     * <p>Los envíos que iban en el vuelo quedan a la espera y entran como
+     * pendientes en la siguiente época, que es la que los replanifica.
+     *
+     * @param idVuelo identificador del vuelo recurrente (business id)
+     * @return descripción de lo ocurrido, para responder al operador
+     */
+    public CancelacionVueloResultado cancelarVuelo(String idVuelo) {
+        CorridaEnCurso corrida = corridaActual.get();
+        if (corrida == null) {
+            return new CancelacionVueloResultado(false, null, null, 0, 0,
+                    "No hay una simulación en curso sobre la que cancelar.");
+        }
+
+        CancelacionVuelos.Resultado resultado = CancelacionVuelos.cancelar(
+                grafoVuelos, idVuelo, corrida.relojSimulado, corrida.solucionVigente);
+
+        if (!resultado.seAplico()) {
+            return new CancelacionVueloResultado(false, idVuelo, null, 0, 0,
+                    "No hay ninguna salida de " + idVuelo + " que pueda cancelarse:"
+                            + " o el vuelo no existe, o sus salidas restantes están dentro"
+                            + " de la hora previa (o ya canceladas).");
+        }
+
+        corrida.liberadosPendientes.addAll(resultado.enviosLiberados());
+        InstanciaVuelo instancia = resultado.instancia();
+
+        log.info("Cancelación: vuelo {} del {} ({} envíos liberados, {} maletas). Reloj simulado {}.",
+                idVuelo, instancia.getFechaOperacion(), resultado.enviosLiberados().size(),
+                resultado.maletasLiberadas(), corrida.relojSimulado);
+
+        emitir(corrida.topic, SimulationEventResponse.builder()
+                .tipo("CANCELACION").runId(corrida.runId)
+                .relojSimulado(corrida.relojSimulado)
+                .vueloCancelado(instancia.getId())
+                .mensaje(String.format(
+                        "Vuelo %s del %s cancelado: %d envío(s) liberados (%d maletas) a replanificar.",
+                        idVuelo, instancia.getFechaOperacion(),
+                        resultado.enviosLiberados().size(), resultado.maletasLiberadas()))
+                .build());
+
+        return new CancelacionVueloResultado(true, idVuelo, instancia.getId(),
+                resultado.enviosLiberados().size(), resultado.maletasLiberadas(),
+                String.format("Cancelada la salida del %s a las %s. %d envío(s) quedan a replanificar.",
+                        instancia.getFechaOperacion(), instancia.getHoraSalida(),
+                        resultado.enviosLiberados().size()));
+    }
+
+    /** Respuesta de una cancelación de vuelo. */
+    public record CancelacionVueloResultado(
+            boolean aplicada,
+            String idVuelo,
+            String idInstancia,
+            int enviosLiberados,
+            int maletasLiberadas,
+            String mensaje
+    ) {}
+
+    /**
      * Arranca la simulación en vivo en background. Carga datos de BD, organiza
      * épocas y las procesa con ritmo controlado emitiendo por WebSocket.
      */
@@ -218,8 +329,37 @@ private OptimizationAlgorithm resolverOptimizationAlgorithm(String rawAlgorithm)
         }
         cancelaciones.put(runId, cancelado);
         String topic = "/topic/simulacion/" + runId;
+
         // Una simulación a la vez: protege el estado mutable de los singletons.
-        simulacionLock.lock();
+        //
+        // La espera es ACOTADA. Marcar la corrida previa como cancelada no la
+        // detiene en el acto: termina la época que estuviera calculando, y con
+        // decenas de miles de envíos eso puede llevar bastantes segundos. Con un
+        // lock() sin límite, la nueva corrida se quedaba esperando en silencio y
+        // el front mostraba la anterior congelada a media barra, sin saber que
+        // había una detrás haciendo cola.
+        boolean turno;
+        try {
+            turno = simulacionLock.tryLock(ESPERA_MAXIMA_TURNO_SEGUNDOS, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            cancelaciones.remove(runId);
+            return;
+        }
+        if (!turno) {
+            log.warn("Simulación {}: la corrida anterior no liberó el turno en {} s.",
+                    runId, ESPERA_MAXIMA_TURNO_SEGUNDOS);
+            emitir(topic, SimulationEventResponse.builder()
+                    .tipo("ERROR").runId(runId)
+                    .mensaje("Hay otra simulación terminando de cerrarse y no liberó el turno a tiempo."
+                            + " Espera unos segundos y vuelve a iniciar.")
+                    .build());
+            finalizarRun(runId, PlanningRunStatus.FAILED,
+                    "No se pudo tomar el turno: otra simulación seguía en curso.", 0, 0, 0.0);
+            cancelaciones.remove(runId);
+            return;
+        }
+
         try {
             if (cancelado.get()) {
                 return; // cancelada mientras esperaba turno
@@ -285,9 +425,25 @@ private OptimizationAlgorithm resolverOptimizationAlgorithm(String rawAlgorithm)
                     params.epochHours(), params.horizonDays()));
 
             if (epocas.isEmpty()) {
+                // Decir solo "¿hay envíos en el rango?" deja al operador
+                // adivinando cuál es el rango bueno. Con la base cargada por
+                // partes (o a medio importar) es fácil elegir una fecha vacía,
+                // así que se informa qué periodo tiene datos.
+                ShipmentEntity primero = shipmentRepository
+                        .findFirstByOrderByFechaHoraCreacionAsc().orElse(null);
+                ShipmentEntity ultimo = shipmentRepository
+                        .findFirstByOrderByFechaHoraCreacionDesc().orElse(null);
+                String rango = (primero == null || ultimo == null)
+                        ? " La tabla de envíos está vacía: importa datos antes de simular."
+                        : String.format(" La base tiene envíos entre %s y %s.",
+                                primero.getFechaHoraCreacion().toLocalDate(),
+                                ultimo.getFechaHoraCreacion().toLocalDate());
+
                 emitir(topic, SimulationEventResponse.builder()
                         .tipo("ERROR").runId(runId)
-                        .mensaje("No hay épocas que simular (¿hay envíos en el rango?).")
+                        .mensaje(String.format(
+                                "No hay envíos entre %s y %s, así que no hay nada que simular.%s",
+                                ventanaInicio.toLocalDate(), ventanaFin.toLocalDate(), rango))
                         .build());
                 return;
             }
@@ -323,6 +479,12 @@ private OptimizationAlgorithm resolverOptimizationAlgorithm(String rawAlgorithm)
             int totalAsignados = 0;
             boolean colapsoDetectado = false;
             Map<String, Double> ultimaOcupacion = new HashMap<>();
+
+            // P&R P9: a partir de aquí la corrida acepta cancelaciones de vuelo.
+            // El reloj arranca al inicio de la primera época: cancelar antes de
+            // que termine la primera todavía puede alcanzar a vuelos de ese día.
+            CorridaEnCurso corrida = new CorridaEnCurso(runId, topic, epocas.get(0).getInicio());
+            corridaActual.set(corrida);
 
             for (EpocaData epoca : epocas) {
                 if (cancelado.get()) {
@@ -362,6 +524,18 @@ private OptimizationAlgorithm resolverOptimizationAlgorithm(String rawAlgorithm)
                 // producía esperar la pausa completa DESPUÉS del cómputo.
                 long inicioCicloMs = System.currentTimeMillis();
 
+                // P&R P9: los envíos que perdieron su vuelo por una cancelación
+                // entran a esta época como pendientes — es lo que significa que
+                // "quedan disponibles para ser nuevamente planificados".
+                synchronized (corrida.liberadosPendientes) {
+                    if (!corrida.liberadosPendientes.isEmpty()) {
+                        log.info("Época {}: {} envío(s) liberados por cancelación entran a replanificar.",
+                                epoca.getNumeroEpoca(), corrida.liberadosPendientes.size());
+                        pendientes.addAll(corrida.liberadosPendientes);
+                        corrida.liberadosPendientes.clear();
+                    }
+                }
+
                 simuladorEpocas.prepararEpoca(epoca, pendientes);
                 List<Envio> enviosEpoca = epoca.getTodosLosEnvios();
 
@@ -375,13 +549,43 @@ private OptimizationAlgorithm resolverOptimizationAlgorithm(String rawAlgorithm)
                                 params.populationSize(), limite);
                 }
 
+                // Corte inmediato tras planificar: si mientras se calculaba esta
+                // época llegó una cancelación (o una corrida nueva pidiendo el
+                // turno), no tiene sentido persistir rutas ni emitir eventos de
+                // una simulación que ya nadie mira. Sin esto, el trabajo restante
+                // de la época retenía el lock varios segundos más.
+                if (cancelado.get()) {
+                    log.info("Simulación {}: cancelada durante la época {}; libera el turno.",
+                            runId, epoca.getNumeroEpoca());
+                    emitir(topic, SimulationEventResponse.builder()
+                            .tipo("FIN").runId(runId)
+                            .mensaje("Simulación cancelada por el usuario.")
+                            .totalAsignadosAcumulado(totalAsignados)
+                            .costoAcumulado(simuladorEpocas.getCostoAcumulado())
+                            .build());
+                    finalizarRun(runId, PlanningRunStatus.FAILED,
+                            "Simulación cancelada por el usuario.",
+                            totalAsignados, pendientes.size(),
+                            simuladorEpocas.getCostoAcumulado());
+                    return;
+                }
+
                 pendientes = simuladorEpocas.finalizarEpoca(epoca, mejor);
+
+                // Estado visible para las cancelaciones que lleguen mientras se
+                // reproduce esta época: el reloj avanza al final de la ventana ya
+                // planificada, y la solución es de donde se retiran los envíos
+                // que viajaban en el vuelo cancelado.
+                corrida.solucionVigente = mejor;
+                corrida.relojSimulado = epoca.getFin();
 
                 List<RutaDTO> rutas = new ArrayList<>();
                 if (mejor != null && mejor.getEnviosAsignados() != null && !mejor.getEnviosAsignados().isEmpty()) {
                     totalAsignados += mejor.getEnviosAsignados().size();
 
-                    planningRoutePersistenceService.guardarRutasDeEpoca(
+                    // C29: en segundo plano. La animación no espera a la BD; el
+                    // colapso se detecta sobre el Individuo en memoria.
+                    planningRoutePersistenceService.guardarRutasDeEpocaAsync(
                             runId,
                             epoca.getNumeroEpoca(),
                             mejor
@@ -422,21 +626,36 @@ private OptimizationAlgorithm resolverOptimizationAlgorithm(String rawAlgorithm)
                 );
                 
                 // --- Detección de colapso ---
+                //
+                // El enunciado lo define sin ambigüedad: el colapso es que "el
+                // sistema logístico de la empresa ya no cumpla con entregar AL
+                // MENOS UNA MALETA". No es un porcentaje de carga pendiente: un
+                // envío postpuesto a la época siguiente todavía puede llegar a
+                // tiempo, y contarlo como fallo daría una fecha de colapso
+                // demasiado temprana.
+                //
+                // Lo que sí es un incumplimiento es una maleta que ya no puede
+                // entregarse dentro de su plazo. Se detectan dos formas:
+                //   - una ruta planificada que entrega DESPUÉS del deadline;
+                //   - un envío pendiente cuyo deadline ya venció mientras esperaba.
                 if (params.modoColapso()) {
+                    IncumplimientoPlazo incumplimiento =
+                            detectarIncumplimiento(mejor, pendientes, epoca.getFin());
                     boolean almacenSaturado = ultimaOcupacion.values().stream()
                             .anyMatch(pct -> pct >= 100.0);
-                    int totalConsiderado = totalAsignados + pendientes.size();
-                    double pctSinAtender = totalConsiderado > 0
-                            ? (pendientes.size() * 100.0) / totalConsiderado : 0.0;
-                    if (almacenSaturado || pctSinAtender >= params.umbralColapso()) {
+
+                    if (incumplimiento != null || almacenSaturado) {
                         colapsoDetectado = true;
+                        String motivo = incumplimiento != null
+                                ? incumplimiento.descripcion()
+                                : "Almacén saturado: la capacidad de un aeropuerto quedó excedida.";
                         CollapseReportResponse reporte = construirReporte(
                                 true, params.factorCarga(), epoca.getNumeroEpoca(), epoca.getFin(),
-                                almacenSaturado ? "Almacén saturado (capacidad excedida)."
-                                        : String.format("%.0f%% de envíos sin atender (umbral %.0f%%).",
-                                                pctSinAtender, params.umbralColapso()),
+                                motivo,
                                 totalEnviosOriginal * Math.max(1, params.factorCarga()),
                                 totalAsignados, pendientes.size(), ultimaOcupacion);
+                        reporte.setEnvioIncumplido(
+                                incumplimiento != null ? incumplimiento.envioId() : null);
                         emitir(topic, SimulationEventResponse.builder()
                                 .tipo("COLAPSO").runId(runId)
                                 .numeroEpoca(epoca.getNumeroEpoca())
@@ -448,10 +667,15 @@ private OptimizationAlgorithm resolverOptimizationAlgorithm(String rawAlgorithm)
                                 .mensaje("⚠ COLAPSO detectado: " + reporte.getMotivo())
                                 .build());
                         
+                        // La fecha va PRIMERO en el mensaje: es el dato que la
+                        // entrega pide mostrar, y el reporte persistido (que se
+                        // consulta después, ya sin el evento WebSocket) solo
+                        // conserva este texto.
                         finalizarRun(
                                 runId,
                                 PlanningRunStatus.COMPLETED_WITH_PENDING_SHIPMENTS,
-                                "COLAPSO detectado: " + reporte.getMotivo(),
+                                String.format("COLAPSO LOGÍSTICO el %s. %s",
+                                        epoca.getFin(), reporte.getMotivo()),
                                 totalAsignados,
                                 pendientes.size(),
                                 simuladorEpocas.getCostoAcumulado()
@@ -532,6 +756,11 @@ private OptimizationAlgorithm resolverOptimizationAlgorithm(String rawAlgorithm)
             );
         } finally {
             cancelaciones.remove(runId);
+            // Deja de aceptar cancelaciones de vuelo salvo que la corrida que
+            // publicó el estado sea otra (una simulación posterior ya tomó el
+            // relevo y su estado no debe borrarse aquí).
+            corridaActual.updateAndGet(actual ->
+                    actual != null && runId.equals(actual.runId) ? null : actual);
             simulacionLock.unlock();
         }
     }
@@ -653,6 +882,75 @@ private OptimizationAlgorithm resolverOptimizationAlgorithm(String rawAlgorithm)
                 .maletas(0)
                 .envios(0)
                 .build();
+    }
+
+    /** Primera maleta que el sistema ya no puede entregar dentro de su plazo. */
+    private record IncumplimientoPlazo(String envioId, String descripcion) {
+    }
+
+    /**
+     * Busca la primera maleta que incumple su plazo, que es como el enunciado
+     * define el colapso: "hasta que el sistema logístico de la empresa ya no
+     * cumpla con entregar al menos una maleta".
+     *
+     * <p>Se miran las dos formas en que eso ocurre:
+     * <ul>
+     *   <li><b>Ruta tardía</b>: la planificación asignó el envío, pero la entrega
+     *       (llegada del último vuelo + recojo) cae después del deadline. La
+     *       propia {@code RutaEnvio} ya sabe calcular ese retraso.</li>
+     *   <li><b>Pendiente vencido</b>: el envío sigue sin ruta y su deadline ya
+     *       pasó. No hace falta esperar a que se le asigne nada: esa maleta ya
+     *       no llega a tiempo.</li>
+     * </ul>
+     *
+     * <p>Un envío meramente postpuesto NO cuenta: pasar a la época siguiente es
+     * el funcionamiento normal del simulador y todavía puede entregarse dentro
+     * de plazo.
+     *
+     * @return el primer incumplimiento encontrado, o {@code null} si no hay
+     */
+    private IncumplimientoPlazo detectarIncumplimiento(
+            Individuo solucion, List<Envio> pendientes, LocalDateTime relojEpoca) {
+
+        if (solucion != null && solucion.getEnviosAsignados() != null) {
+            for (Map.Entry<Envio, RutaEnvio> e : solucion.getEnviosAsignados().entrySet()) {
+                RutaEnvio ruta = e.getValue();
+                if (ruta == null) continue;
+                long retraso = ruta.getRetraso();
+                if (retraso > 0) {
+                    Envio envio = e.getKey();
+                    return new IncumplimientoPlazo(envio.getId(), String.format(
+                            "El envío %s (%s → %s, %d maletas) no llega a tiempo: se entrega %d h %d min"
+                                    + " después de su plazo. El sistema ya no cumple con entregar al"
+                                    + " menos una maleta.",
+                            envio.getId(),
+                            envio.getAeropuertoOrigen().getCodigoICAO(),
+                            envio.getAeropuertoDestino().getCodigoICAO(),
+                            envio.getCantidadMaletas(),
+                            retraso / 60, retraso % 60));
+                }
+            }
+        }
+
+        if (pendientes != null) {
+            for (Envio envio : pendientes) {
+                LocalDateTime deadline = envio.getDeadline() != null
+                        ? envio.getDeadline()
+                        : envio.calcularDeadline();
+                if (deadline != null && relojEpoca.isAfter(deadline)) {
+                    return new IncumplimientoPlazo(envio.getId(), String.format(
+                            "El envío %s (%s → %s, %d maletas) venció sin ruta asignada: su plazo"
+                                    + " terminó el %s y sigue sin poder despacharse. El sistema ya no"
+                                    + " cumple con entregar al menos una maleta.",
+                            envio.getId(),
+                            envio.getAeropuertoOrigen().getCodigoICAO(),
+                            envio.getAeropuertoDestino().getCodigoICAO(),
+                            envio.getCantidadMaletas(),
+                            deadline));
+                }
+            }
+        }
+        return null;
     }
 
     private Map<String, Double> ocupacionDe(EpocaData epoca) {

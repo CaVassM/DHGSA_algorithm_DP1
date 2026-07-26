@@ -26,7 +26,17 @@ public class CollapseReportResponse {
 
     /** Época y momento simulado en que se detectó el colapso (null si no colapsó). */
     private Integer epocaColapso;
+
+    /**
+     * Fecha y hora simuladas del colapso. Es el dato que la entrega del escenario
+     * pide mostrar ("en el video debe mostrarse claramente la fecha del colapso
+     * logístico"), así que la pantalla lo presenta destacado y no como una línea
+     * más del reporte.
+     */
     private LocalDateTime momentoColapso;
+
+    /** Identificador del envío cuya maleta no llegó a tiempo. */
+    private String envioIncumplido;
 
     /** Motivo del colapso (texto legible). */
     private String motivo;

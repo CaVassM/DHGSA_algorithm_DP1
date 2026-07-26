@@ -3,6 +3,7 @@ package com.tasfb2b.dhgs.demo.infraestructure.util;
 import com.tasfb2b.dhgs.demo.domain.model.Aeropuerto;
 import com.tasfb2b.dhgs.demo.domain.model.InstanciaVuelo;
 import com.tasfb2b.dhgs.demo.domain.model.Vuelo;
+import com.tasfb2b.dhgs.demo.domain.valueobject.TiemposOperacion;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDate;
@@ -116,12 +117,16 @@ public class GrafoVuelos {
 
     public List<Vuelo> obtenerVuelosSalientes(String codigoICAO, int cargaRequerida) {
         return adyacencia.getOrDefault(codigoICAO, Collections.emptyList()).stream()
+                .filter(Vuelo::estaOperable)
                 .filter(v -> v.estaDisponiblePara(cargaRequerida))
                 .toList();
     }
 
     private List<Vuelo> obtenerVuelosSalientes(String codigoICAO, int cargaRequerida, LocalDateTime noAntesDe) {
         return adyacencia.getOrDefault(codigoICAO, Collections.emptyList()).stream()
+                // Un vuelo cancelado no opera: se descarta antes que nada, de modo
+                // que ninguna ruta nueva pueda pasar por él (P&R P9).
+                .filter(Vuelo::estaOperable)
                 .filter(v -> v.estaDisponiblePara(cargaRequerida))
                 .filter(v -> {
                     LocalDateTime salida = obtenerSalidaProgramada(v, noAntesDe);
@@ -320,6 +325,54 @@ public class GrafoVuelos {
             }
         }
         return java.time.Duration.between(salida, llegada).toMinutes();
+    }
+
+    /**
+     * Instancia de {@code idPlantilla} sobre la que recae una cancelación pedida
+     * en el momento {@code ahora} (P&R P9).
+     *
+     * <p>Se elige la primera ocurrencia que despega con al menos
+     * {@link TiemposOperacion#ANTELACION_MINIMA_CANCELACION} de margen: pedirla
+     * más tarde ya no alcanza a ese vuelo y recae sobre el del día siguiente.
+     * Las ocurrencias ya canceladas se saltan, así cancelar dos veces seguidas
+     * afecta a dos días distintos en vez de repetir el mismo.
+     *
+     * @return la instancia afectada, o {@code null} si ninguna cumple (vuelo
+     *         inexistente, o todas sus ocurrencias del horizonte ya pasaron o
+     *         están canceladas).
+     */
+    public InstanciaVuelo resolverInstanciaACancelar(String idPlantilla, LocalDateTime ahora) {
+        if (idPlantilla == null || ahora == null) {
+            return null;
+        }
+        LocalDateTime limite = ahora.plus(TiemposOperacion.ANTELACION_MINIMA_CANCELACION);
+
+        return adyacencia.values().stream()
+                .flatMap(Collection::stream)
+                .filter(InstanciaVuelo.class::isInstance)
+                .map(InstanciaVuelo.class::cast)
+                .filter(i -> idPlantilla.equals(i.getIdPlantilla()))
+                .filter(i -> !i.isCancelado())
+                .filter(i -> i.getFechaHoraSalida() != null)
+                // "Al menos 1 hora antes" incluye la hora exacta: cancelar a las
+                // 17:25 un vuelo de las 18:25 alcanza al de hoy (P&R P9, caso 3a).
+                .filter(i -> !i.getFechaHoraSalida().isBefore(limite))
+                .min(Comparator.comparing(InstanciaVuelo::getFechaHoraSalida))
+                .orElse(null);
+    }
+
+    /** Instancia concreta por su id ({@code plantilla@fecha}), o {@code null}. */
+    public InstanciaVuelo buscarInstancia(String idInstancia) {
+        if (idInstancia == null) {
+            return null;
+        }
+        return adyacencia.values().stream()
+                .flatMap(Collection::stream)
+                .filter(InstanciaVuelo.class::isInstance)
+                .map(InstanciaVuelo.class::cast)
+                .filter(i -> idInstancia.equals(i.getId()))
+                .findFirst()
+                .orElse(null);
     }
 
     private LocalDateTime referenciaOperativa() {

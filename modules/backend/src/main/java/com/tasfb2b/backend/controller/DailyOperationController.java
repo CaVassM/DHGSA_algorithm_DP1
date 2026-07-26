@@ -1,20 +1,32 @@
 package com.tasfb2b.backend.controller;
 
 import com.tasfb2b.backend.dto.request.DailyRegisterRequest;
+import com.tasfb2b.backend.dto.response.DailyBulkUploadResponse;
+import com.tasfb2b.backend.dto.response.DailyCancelResponse;
+import com.tasfb2b.backend.dto.response.DailyShipmentRouteResponse;
 import com.tasfb2b.backend.dto.response.DailyCloseReportResponse;
 import com.tasfb2b.backend.dto.response.DailyRegisterResponse;
 import com.tasfb2b.backend.dto.response.DailyStateResponse;
 import com.tasfb2b.backend.service.DailyOperationService;
+import com.tasfb2b.backend.service.DailyScenarioSetupService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.Map;
 
 /**
  * Operación día a día (escenario REAL_TIME): registro manual de envíos uno a
@@ -29,6 +41,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class DailyOperationController {
 
     private final DailyOperationService dailyOperationService;
+    private final DailyScenarioSetupService dailyScenarioSetupService;
 
     @PostMapping("/shipments")
     @Operation(summary = "Registrar un envío manual",
@@ -46,6 +59,45 @@ public class DailyOperationController {
             description = "Muestra cómo se van llenando los vuelos y si se alcanzó el colapso total.")
     public ResponseEntity<DailyStateResponse> estado() {
         return ResponseEntity.ok(dailyOperationService.estado());
+    }
+
+    @GetMapping("/shipments")
+    @Operation(summary = "Envíos registrados con su ruta",
+            description = "Lista los envíos aceptados con los tramos que siguen, cada uno con sus "
+                    + "horas en UTC y en la hora local de su aeropuerto. Es lo que el mapa necesita "
+                    + "para dibujar gráficamente todas las rutas de un envío. Un envío reasignado "
+                    + "tras una cancelación aparece con la ruta que realmente sigue.")
+    public ResponseEntity<List<DailyShipmentRouteResponse>> enviosConRuta() {
+        return ResponseEntity.ok(dailyOperationService.enviosConRuta());
+    }
+
+    @PostMapping("/shipments/upload")
+    @Operation(summary = "Cargar un archivo de envíos",
+            description = "Registra en lote los envíos de un archivo de texto con el formato de la "
+                    + "data histórica (id-AAAAMMDD-HH-mm-DESTINO-maletas-cliente). Cada línea pasa "
+                    + "por el mismo registro que un envío manual: valida ruta, descuenta capacidad y "
+                    + "aplica el huso del aeropuerto. La fecha y hora se leen como hora local del "
+                    + "origen.")
+    public ResponseEntity<DailyBulkUploadResponse> cargarArchivo(
+            @RequestParam String origenIcao,
+            @RequestParam("file") MultipartFile file
+    ) throws IOException {
+        String contenido = new String(file.getBytes(), StandardCharsets.UTF_8);
+        return ResponseEntity.ok(
+                dailyOperationService.cargarLote(origenIcao.trim().toUpperCase(), contenido));
+    }
+
+    @PostMapping("/flights/{idVuelo}/cancel")
+    @Operation(summary = "Cancelar un vuelo y reasignar sus maletas",
+            description = "P&R P9: cancela la próxima salida del vuelo que despegue con al menos una "
+                    + "hora de margen y busca ruta alternativa para cada envío que la usaba. La "
+                    + "reasignación es inmediata (la operación es continua, no hay épocas). Devuelve "
+                    + "qué envíos se recolocaron y cuáles quedaron sin ruta.")
+    public ResponseEntity<DailyCancelResponse> cancelarVuelo(@PathVariable String idVuelo) {
+        DailyCancelResponse respuesta = dailyOperationService.cancelarVuelo(idVuelo);
+        return respuesta.isAplicada()
+                ? ResponseEntity.ok(respuesta)
+                : ResponseEntity.unprocessableEntity().body(respuesta);
     }
 
     @PostMapping("/close")
@@ -75,5 +127,44 @@ public class DailyOperationController {
     public ResponseEntity<DailyStateResponse> reiniciar() {
         dailyOperationService.reiniciar();
         return ResponseEntity.ok(dailyOperationService.estado());
+    }
+
+    @GetMapping("/setup")
+    @Operation(summary = "Comprobar si el entorno está preparado para la prueba",
+            description = "Capacidad actual de SPIM, SABE, EKCH y VIDP. 'preparado' es true cuando "
+                    + "las cuatro están en 999, que es lo que el enunciado pide antes de empezar.")
+    public ResponseEntity<Map<String, Object>> estadoPreparacion() {
+        return ResponseEntity.ok(dailyScenarioSetupService.estadoPreparacion());
+    }
+
+    @PostMapping("/setup")
+    @Operation(summary = "Preparar el entorno para la prueba día a día",
+            description = "Sube a 999 la capacidad de SPIM, SABE, EKCH y VIDP y reinicia la "
+                    + "operación. Evita tener que entrar por SQL a la base del despliegue. Los "
+                    + "planes de vuelo adicionales van aparte, por /api/v1/admin/imports/flights.")
+    public ResponseEntity<DailyScenarioSetupService.ResultadoPreparacion> preparar() {
+        return ResponseEntity.ok(dailyScenarioSetupService.preparar());
+    }
+
+    @PostMapping("/setup/flights")
+    @Operation(summary = "Generar y cargar los planes de vuelo adicionales de la prueba",
+            description = "Genera los 48 vuelos de la plantilla del enunciado ajustados a la hora "
+                    + "de la presentación (HD = HO + duración + diferencia de husos) y los añade a "
+                    + "los existentes. Con revisar=true solo los devuelve, sin guardar nada, que es "
+                    + "lo que pide el enunciado antes de agregarlos.")
+    public ResponseEntity<DailyScenarioSetupService.ResultadoVuelos> generarVuelos(
+            @RequestParam("hora") String hora,
+            @RequestParam(value = "revisar", defaultValue = "false") boolean revisar
+    ) {
+        return ResponseEntity.ok(
+                dailyScenarioSetupService.generarVuelosAdicionales(hora, !revisar));
+    }
+
+    @PostMapping("/setup/revert")
+    @Operation(summary = "Devolver las capacidades originales al terminar la prueba",
+            description = "SPIM:440, SABE:460, EKCH:480, VIDP:480, como pide el cierre del "
+                    + "escenario. No borra los planes de vuelo añadidos.")
+    public ResponseEntity<DailyScenarioSetupService.ResultadoPreparacion> revertir() {
+        return ResponseEntity.ok(dailyScenarioSetupService.revertir());
     }
 }
