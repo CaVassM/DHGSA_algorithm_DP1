@@ -63,6 +63,13 @@ public class DailyOperationService {
     private GrafoVuelos grafo;
     private boolean inicializado = false;
 
+    /**
+     * Aeropuertos cargados, por ICAO. Se guardan para poder informar de la
+     * capacidad de almacén de las sedes: la preparación de la prueba las sube a
+     * 999 y el enunciado pide poder enseñarlo.
+     */
+    private Map<String, Aeropuerto> aeropuertos = new HashMap<>();
+
     private final AtomicInteger secuenciaEnvio = new AtomicInteger(0);
     private int totalRegistrados = 0;
     private int totalAceptados = 0;
@@ -150,6 +157,7 @@ public class DailyOperationService {
             nuevoGrafo.construir(new ArrayList<>(aeropuertosByIcao.values()), vuelos, hoy, 2);
 
             this.grafo = nuevoGrafo;
+            this.aeropuertos = aeropuertosByIcao;
             this.inicializado = true;
             this.secuenciaEnvio.set(0);
             this.totalRegistrados = 0;
@@ -409,9 +417,15 @@ public class DailyOperationService {
      * como <b>hora local del aeropuerto de origen</b>, que es como las anota el
      * mostrador que las recibió.
      *
+     * <p>Lleva su propia transacción: aunque {@link #registrar} declare la suya,
+     * llamarlo desde aquí no pasa por el proxy de Spring y no la abriría. Sin
+     * ella, cargar el archivo con el grafo aún sin construir reventaba con
+     * {@code LazyInitializationException} al leer los aeropuertos de cada vuelo.
+     *
      * @param origenIcao aeropuerto de la terminal que sube el archivo
      * @param contenido  texto completo del archivo
      */
+    @Transactional(readOnly = true)
     public DailyBulkUploadResponse cargarLote(String origenIcao, String contenido) {
         List<DailyRegisterResponse> resultados = new ArrayList<>();
         List<String> errores = new ArrayList<>();
@@ -424,32 +438,49 @@ public class DailyOperationService {
                 continue;
             }
 
-            String[] p = limpia.split("-");
-            if (p.length < 7) {
-                errores.add("Línea " + lineaNum + ": se esperan 7 campos separados por '-', llegaron "
-                        + p.length + " ('" + limpia + "').");
+            // El enunciado da la estructura como
+            //   id_envío-aaaammdd-hh-mm-dest-###-IdClien
+            // pero anota que el id "PUEDE SER OMITIDO según su solución". Se
+            // aceptan las dos formas: con 7 campos el primero es el id (se
+            // ignora, el id lo asigna esta solución), y con 6 la línea empieza
+            // directamente por la fecha.
+            String[] campos = limpia.split("-");
+            int base;
+            if (campos.length >= 7) {
+                base = 1;
+            } else if (campos.length == 6) {
+                base = 0;
+            } else {
+                errores.add("Línea " + lineaNum + ": se esperan 6 o 7 campos separados por '-'"
+                        + " (aaaammdd-hh-mm-dest-###-cliente, con id opcional delante), llegaron "
+                        + campos.length + " ('" + limpia + "').");
                 continue;
             }
 
             try {
-                String fecha = p[1].trim();               // AAAAMMDD
+                String fecha = campos[base].trim();               // AAAAMMDD
                 LocalDateTime horaLocal = LocalDateTime.of(
                         Integer.parseInt(fecha.substring(0, 4)),
                         Integer.parseInt(fecha.substring(4, 6)),
                         Integer.parseInt(fecha.substring(6, 8)),
-                        Integer.parseInt(p[2].trim()),    // HH
-                        Integer.parseInt(p[3].trim()));   // mm
+                        Integer.parseInt(campos[base + 1].trim()),    // HH
+                        Integer.parseInt(campos[base + 2].trim()));   // mm
 
                 DailyRegisterRequest req = new DailyRegisterRequest();
                 req.setOrigenIcao(origenIcao);
-                req.setDestinoIcao(p[4].trim());
-                req.setCantidadMaletas(Integer.parseInt(p[5].trim()));
-                req.setIdCliente(p[6].trim());
+                req.setDestinoIcao(campos[base + 3].trim());
+                req.setCantidadMaletas(Integer.parseInt(campos[base + 4].trim()));
+                req.setIdCliente(campos[base + 5].trim());
                 req.setFechaHoraLocal(horaLocal.toString());
 
                 resultados.add(registrar(req));
             } catch (RuntimeException e) {
-                errores.add("Línea " + lineaNum + ": no se pudo leer ('" + limpia + "').");
+                // Con el motivo: durante la prueba hay que poder corregir el
+                // archivo en el momento, y "no se pudo leer" no dice qué falla.
+                errores.add("Línea " + lineaNum + ": no se pudo leer ('" + limpia + "') — "
+                        + e.getClass().getSimpleName()
+                        + (e.getMessage() != null ? ": " + e.getMessage() : ""));
+                log.warn("Día a día: línea {} ilegible ('{}')", lineaNum, limpia, e);
             }
         }
 
@@ -622,6 +653,35 @@ public class DailyOperationService {
     }
 
     /**
+     * Capacidad de almacén de las cuatro sedes, tal como está cargada en
+     * memoria.
+     *
+     * <p>La preparación del escenario las pone al valor que pide el enunciado y
+     * eso hay que poder enseñarlo en pantalla. Se lee del grafo vivo, no de la
+     * base: así también delata el caso de haber cambiado la BD sin reiniciar la
+     * operación, que dejaría la pantalla mostrando las capacidades viejas.
+     *
+     * <p>Las sedes y la capacidad esperada salen de
+     * {@link DailyScenarioSetupService}, que es quien las aplica; repetirlas
+     * aquí llevaría a que un cambio en el enunciado solo se recogiera a medias.
+     */
+    private List<DailyStateResponse.WarehouseCapacity> capacidadDeLasSedes() {
+        List<DailyStateResponse.WarehouseCapacity> sedes = new ArrayList<>();
+        for (String icao : DailyScenarioSetupService.SEDES) {
+            Aeropuerto a = aeropuertos.get(icao);
+            if (a == null) continue;
+            sedes.add(DailyStateResponse.WarehouseCapacity.builder()
+                    .icao(icao)
+                    .ciudad(a.getCiudad())
+                    .capacidad(a.getCapacidadAlmacen())
+                    .preparado(a.getCapacidadAlmacen()
+                            == DailyScenarioSetupService.CAPACIDAD_PRUEBA)
+                    .build());
+        }
+        return sedes;
+    }
+
+    /**
      * Cálculo del estado sin tomar el lock ni inicializar: lo usan {@link #estado()}
      * y {@link #cerrar()}, que ya lo hicieron. Separado para que el cierre pueda
      * reutilizar exactamente la misma foto de la flota que ve la pantalla.
@@ -670,6 +730,7 @@ public class DailyOperationService {
                     .ocupacionFlotaPorcentaje(redondear(ocupacionFlota))
                     .colapsoTotal(!algunoConCupo && !cargas.isEmpty())
                     .vuelos(cargas)
+                    .almacenes(capacidadDeLasSedes())
                     .build();
     }
 
