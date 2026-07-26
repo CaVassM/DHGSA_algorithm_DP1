@@ -29,13 +29,25 @@ function getHeadingAngle(from, to) {
   return Math.atan2(-dy, dx) * (180 / Math.PI)
 }
 
+/**
+ * Colores del avión según % de ocupación — MISMO semáforo que usa MapaMundi
+ * para sus UT (gris vacío, verde, ámbar >=60%, rojo >85%). Es "el modelo"
+ * pedido: un avión de día a día debe leerse igual que uno del mapa en vivo.
+ */
+function getPlaneColors(pct) {
+  if (pct <= 0) return { fill: '#94a3b8', stroke: '#cbd5e1' }
+  if (pct > 85) return { fill: '#f87171', stroke: '#fecaca' }
+  if (pct >= 60) return { fill: '#fbbf24', stroke: '#fde68a' }
+  return { fill: '#4ade80', stroke: '#bbf7d0' }
+}
+
 // Cacheados: sin esto, el mapa se re-renderiza cada segundo (reloj en vivo) y
 // cada render creaba un ícono nuevo, forzando a Leaflet a reemplazar el DOM
 // del marcador — lo que deja los tooltips de hover pegados abiertos.
 const avionIconCache = new Map()
-/** Avión en pleno vuelo (mismo dibujo que usa MapaMundi para sus UT). */
-function crearIconoAvion(color, angle, count) {
-  const key = `${color}|${angle.toFixed(0)}|${count}`
+/** Avión en pleno vuelo — mismo dibujo (SVG) y misma firma que MapaMundi. */
+function crearIconoAvion({ fill, stroke, angle, count }) {
+  const key = `${fill}|${stroke}|${angle.toFixed(0)}|${count}`
   const cached = avionIconCache.get(key)
   if (cached) return cached
   const badge = count > 1 ? `<div class="tasf-plane-badge">${count}</div>` : ''
@@ -46,7 +58,7 @@ function crearIconoAvion(color, angle, count) {
         <svg viewBox="-8 -8 16 16" width="26" height="26" aria-hidden="true">
           <path
             d="M 7,0 L 2,-1.6 L 0,-5 L -2,-2.6 L -3.6,-3.5 L -4.6,-2 L -5,-1 L -5,1 L -4.6,2 L -3.6,3.5 L -2,2.6 L 0,5 L 2,1.6 Z"
-            fill="${color}" stroke="#ffffff" stroke-width="1"
+            fill="${fill}" stroke="${stroke}" stroke-width="1"
           />
         </svg>
         ${badge}
@@ -337,6 +349,7 @@ export default function MapaDiaADia() {
           progreso: est.progreso,
           llegadaLocal: t.llegadaLocal,
           gmtDestino: t.gmtDestino,
+          capacidad: t.capacidad ?? 0,
           count: 0,
           maletas: 0,
           envioIds: [],
@@ -349,7 +362,12 @@ export default function MapaDiaADia() {
       g.envioIds.push(e.envioId)
       if (e.envioId === seleccionado) g.seleccionado = true
     })
-    return Array.from(grupos.values())
+    // % de ocupación del vuelo FÍSICO (todas las maletas que lleva, no solo las
+    // de un envío): mismo cálculo que MapaMundi usa para su semáforo de UT.
+    return Array.from(grupos.values()).map(g => ({
+      ...g,
+      ocupacionPct: g.capacidad > 0 ? (g.maletas / g.capacidad) * 100 : 0,
+    }))
   }, [envios, estadosPorEnvio, seleccionado])
 
   const enviosFiltrados = useMemo(() => {
@@ -524,11 +542,18 @@ export default function MapaDiaADia() {
               )
             ))}
 
-            {/* Tramos del envío seleccionado, en orden de vuelo. */}
+            {/* Tramos del envío seleccionado, en orden de vuelo. Mismo criterio
+                que MapaMundi para sus rutas ("revealAt"): un tramo que TODAVÍA
+                no despegó no se dibuja — mostrarlo daría a entender que ya hay
+                un vuelo en curso cuando en realidad ni salió. Se muestra recién
+                al llegar su hora de salida (o si fue cancelado, que sí es
+                información vigente aunque su salida sea futura). */}
             {envio?.tramos?.map((t, i) => {
               const a = coords[t.origenIcao]
               const b = coords[t.destinoIcao]
               if (!a || !b) return null
+              const yaSalio = t.salidaUtc && ahoraUtc >= new Date(t.salidaUtc)
+              if (!yaSalio && !t.cancelado) return null
               // El tramo que la maleta está volando ahora se destaca; los que ya
               // quedaron atrás se atenúan. Así se lee de un vistazo por dónde va
               // el viaje sin necesidad de animar nada.
@@ -583,27 +608,37 @@ export default function MapaDiaADia() {
               const lat = a.lat + (b.lat - a.lat) * v.progreso
               const lng = a.lng + (b.lng - a.lng) * v.progreso
               const angle = getHeadingAngle(a, b)
-              const color = v.seleccionado ? '#93c5fd' : '#3b82f6'
+              // El avión del envío elegido se pinta en amarillo para ubicarlo,
+              // igual que MapaMundi hace con el vuelo resaltado desde el panel.
+              const tono = getPlaneColors(v.ocupacionPct)
+              const fill = v.seleccionado ? '#facc15' : tono.fill
+              const stroke = v.seleccionado ? '#fde047' : tono.stroke
               return (
                 <Marker
                   key={v.key}
                   position={[lat, lng]}
-                  icon={crearIconoAvion(color, angle, v.count)}
+                  icon={crearIconoAvion({ fill, stroke, angle, count: v.count })}
                   zIndexOffset={v.seleccionado ? 2500 : 1500}
                   eventHandlers={{ click: () => setSeleccionado(v.envioIds[0]) }}
                 >
                   <Tooltip direction="top" offset={[0, -12]} className="tasf-tooltip" opacity={1}>
                     <div className="text-xs">
-                      <div className="font-bold text-white font-mono">{v.vueloId.split('@')[0]}</div>
-                      <div className="text-slate-300">{v.origenIcao} → {v.destinoIcao}</div>
-                      <div className="text-slate-400">
-                        {Math.round(v.progreso * 100)}% · llega {hhmm(v.llegadaLocal)} {v.gmtDestino}
+                      <div className="font-bold text-white mb-1">{v.origenIcao} → {v.destinoIcao}</div>
+                      <div className="font-mono text-[10px] text-slate-400 mb-1">{v.vueloId.split('@')[0]}</div>
+                      <div className="text-slate-300">Envíos: <span className="text-blue-300 font-semibold">{v.count}</span></div>
+                      <div className="text-slate-300">
+                        Maletas: <span className="text-blue-300 font-semibold">{v.maletas}</span>
+                        {v.capacidad > 0 && <span className="text-slate-500">/{v.capacidad}</span>}
                       </div>
-                      <div className="text-slate-500">
-                        {v.count} envío{v.count === 1 ? '' : 's'} · {v.maletas} maletas
+                      <div className="text-slate-300">Progreso: <span className="text-slate-200 font-semibold">{Math.round(v.progreso * 100)}%</span></div>
+                      <div className="text-slate-300">
+                        Llega: <span className="text-slate-200 font-semibold">{hhmm(v.llegadaLocal)} {v.gmtDestino}</span>
                       </div>
                       {v.count > 1 && (
-                        <div className="text-slate-500 font-mono">{v.envioIds.join(', ')}</div>
+                        <div className="text-slate-500 font-mono mt-1">{v.envioIds.join(', ')}</div>
+                      )}
+                      {v.seleccionado && (
+                        <div className="text-amber-300 mt-1">Envío elegido a bordo</div>
                       )}
                     </div>
                   </Tooltip>
@@ -808,8 +843,10 @@ export default function MapaDiaADia() {
             <Leyenda color={COLOR_DESTINO} label="Destino" />
             <Leyenda color="#ef4444" label="Vuelo cancelado" />
             <span className="w-px bg-slate-700" />
-            <Leyenda color="#3b82f6" label="Avión en vuelo" avion />
-            <Leyenda color="#93c5fd" label="Avión del envío elegido" avion />
+            <Leyenda color="#4ade80" label="Avión < 60% ocupado" avion />
+            <Leyenda color="#fbbf24" label="Avión ≥ 60% ocupado" avion />
+            <Leyenda color="#f87171" label="Avión > 85% ocupado" avion />
+            <Leyenda color="#facc15" label="Avión del envío elegido" avion />
           </div>
 
           {!envio && !cargando && envios.length > 0 && vuelosActivos.length === 0 && (

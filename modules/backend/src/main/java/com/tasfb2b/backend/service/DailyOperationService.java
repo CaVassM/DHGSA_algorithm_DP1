@@ -377,6 +377,7 @@ public class DailyOperationService {
                             .llegadaUtc(llegadaUtc)
                             .salidaLocal(salida)
                             .llegadaLocal(llegada)
+                            .capacidad(v.getCapacidad())
                             .gmtOrigen(HoraLocal.etiquetaGmt(o))
                             .gmtDestino(HoraLocal.etiquetaGmt(d))
                             .esperaMinutos(llegadaPrevia != null && salida != null

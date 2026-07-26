@@ -71,6 +71,13 @@ public class DailyShipmentRouteResponse {
         private String gmtDestino;
 
         /**
+         * Capacidad total del vuelo FÍSICO (no de este envío). El mapa la usa
+         * para calcular el % de ocupación y colorear el avión igual que en el
+         * mapa en vivo de la simulación (semáforo por ocupación).
+         */
+        private int capacidad;
+
+        /**
          * Minutos que la maleta espera en este aeropuerto antes de despegar. 0 en
          * el primer tramo: la maleta ya estaba en el almacén cuando se registró.
          */
