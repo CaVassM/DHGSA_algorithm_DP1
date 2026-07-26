@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
 import NavBar from '../components/NavBar'
 import {
   getAirports,
@@ -9,6 +10,9 @@ import {
   getReporteCierreDiario,
   cargarArchivoDiario,
   cancelarVueloDiario,
+  prepararEscenarioDiario,
+  revertirEscenarioDiario,
+  generarVuelosPrueba,
 } from '../services/api'
 
 // Aeropuerto de esta terminal. El enunciado pide que NO se teclee: "resulta
@@ -50,6 +54,7 @@ function colorOcupacion(pct) {
 }
 
 export default function OperacionDiaria() {
+  const navigate = useNavigate()
   const [aeropuertos, setAeropuertos] = useState([])
   const [estado, setEstado] = useState(null)
   const [cargandoEstado, setCargandoEstado] = useState(true)
@@ -72,6 +77,15 @@ export default function OperacionDiaria() {
   const [cancelando, setCancelando] = useState(false)
   const [resultadoCancelacion, setResultadoCancelacion] = useState(null)
   const [verTodosLosVuelos, setVerTodosLosVuelos] = useState(false)
+
+  // Preparación del escenario: capacidades a 999 y planes de vuelo ajustados a
+  // la hora de la sesión. Solo se usa en los minutos previos a la prueba, así
+  // que el panel va plegado y no estorba durante la operación.
+  const [panelPreparacion, setPanelPreparacion] = useState(false)
+  const [horaPrueba, setHoraPrueba] = useState('')
+  const [vuelosPrueba, setVuelosPrueba] = useState([])
+  const [preparando, setPreparando] = useState(false)
+  const [avisoPreparacion, setAvisoPreparacion] = useState(null)
 
   // Historial de registros de esta sesión (lo último arriba).
   const [registros, setRegistros] = useState([])
@@ -239,9 +253,80 @@ export default function OperacionDiaria() {
     }
   }
 
+  // --- Preparación del escenario ---
+  //
+  // El enunciado da 8 minutos para dejar el entorno listo, y los dos cambios
+  // que pide (capacidad 999 y planes de vuelo de la hora) tocan la base de
+  // datos. Hacerlos desde aquí evita depender de tener consola contra la base
+  // del despliegue, que es justo lo que no se tiene ese día.
+
+  async function handlePrepararCapacidades() {
+    setError(null)
+    setPreparando(true)
+    try {
+      const r = await prepararEscenarioDiario()
+      setAvisoPreparacion(r.mensaje)
+      setEstado(await getEstadoDiario())
+    } catch {
+      setError('No se pudieron cambiar las capacidades.')
+    } finally {
+      setPreparando(false)
+    }
+  }
+
+  async function handleRevertirCapacidades() {
+    setError(null)
+    setPreparando(true)
+    try {
+      const r = await revertirEscenarioDiario()
+      setAvisoPreparacion(r.mensaje)
+      setEstado(await getEstadoDiario())
+    } catch {
+      setError('No se pudieron revertir las capacidades.')
+    } finally {
+      setPreparando(false)
+    }
+  }
+
+  /**
+   * @param cargar false para solo verlos. El enunciado pide presentar el
+   *               archivo antes de agregarlo a los planes de vuelo.
+   */
+  async function handleGenerarVuelos(cargar) {
+    setError(null)
+    if (!/^\d{1,2}:\d{2}$/.test(horaPrueba)) {
+      setError('La hora debe ir como HH:mm en 24 h, por ejemplo 11:00.')
+      return
+    }
+    setPreparando(true)
+    try {
+      const r = await generarVuelosPrueba(horaPrueba, !cargar)
+      setVuelosPrueba(r.vuelos ?? [])
+      setAvisoPreparacion(r.mensaje)
+      if (cargar) setEstado(await getEstadoDiario())
+    } catch (err) {
+      setError(err.response?.data?.message ?? 'No se pudieron generar los vuelos.')
+    } finally {
+      setPreparando(false)
+    }
+  }
+
+  /** Descarga las líneas generadas, por si hay que enseñar el archivo. */
+  function descargarVuelos() {
+    const texto = vuelosPrueba.map(v => v.linea).join('\n') + '\n'
+    const url = URL.createObjectURL(new Blob([texto], { type: 'text/plain' }))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `planes-vuelo-adicionales-${horaPrueba.replace(':', '')}.txt`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
   const colapso = estado?.colapsoTotal
   const ocupFlota = estado?.ocupacionFlotaPorcentaje ?? 0
   const colFlota = colorOcupacion(ocupFlota)
+  const sedesPreparadas = estado?.almacenes?.length > 0
+    && estado.almacenes.every(a => a.preparado)
 
   return (
     <div className="min-h-screen bg-[#0f172a] text-slate-200">
@@ -253,6 +338,15 @@ export default function OperacionDiaria() {
           {cierre && <span className="ml-2 text-amber-400">· JORNADA CERRADA</span>}
         </span>
         <div className="flex gap-2">
+          {/* El mapa es una pantalla aparte (el enunciado las quiere separadas),
+              pero durante la operación se salta de una a otra constantemente:
+              se registra aquí y se comprueba la ruta allá. */}
+          <button
+            onClick={() => navigate('/dia-a-dia/mapa')}
+            className="px-3 py-1.5 rounded text-xs font-medium bg-slate-700 hover:bg-slate-600 text-slate-200 transition-colors"
+          >
+            🗺 Ver mapa de operaciones
+          </button>
           {/* G09: cerrar congela la jornada y emite el reporte de la última
               planificación estable. Solo tiene sentido con la jornada abierta. */}
           {!cierre && (
@@ -372,6 +466,149 @@ export default function OperacionDiaria() {
               <Metric label="Rechazados" value={estado?.totalRechazados ?? 0} clr="text-red-400" />
               <Metric label="Maletas" value={estado?.totalMaletasDespachadas ?? 0} clr="text-blue-400" />
             </div>
+
+            {/* Capacidad de almacén de las cuatro sedes. La prueba exige subirla
+                a 999 en la preparación y hay que poder enseñarlo: la tabla de
+                vuelos de abajo muestra la capacidad de cada VUELO, que es otra
+                cosa y se prestaba a confusión. */}
+            {estado?.almacenes?.length > 0 && (
+              <div className="mt-4 pt-4 border-t border-slate-700">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[10px] text-slate-500 uppercase tracking-wider">
+                    Capacidad de almacén · sedes
+                  </span>
+                  {estado.almacenes.every(a => a.preparado) ? (
+                    <span className="text-[10px] text-green-400 font-semibold">✓ preparado</span>
+                  ) : (
+                    <span className="text-[10px] text-amber-400 font-semibold">sin preparar</span>
+                  )}
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {estado.almacenes.map(a => (
+                    <div key={a.icao}
+                         className={`rounded-lg px-2.5 py-1.5 border ${
+                           a.preparado
+                             ? 'bg-green-500/10 border-green-500/30'
+                             : 'bg-slate-700/30 border-slate-600/50'}`}>
+                      <div className="text-[10px] text-slate-400 font-mono">{a.icao}</div>
+                      <div className="flex items-baseline justify-between gap-1">
+                        <span className="text-[11px] text-slate-500 truncate">{a.ciudad}</span>
+                        <span className={`text-sm font-bold font-mono ${
+                          a.preparado ? 'text-green-400' : 'text-slate-300'}`}>
+                          {a.capacidad}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Preparación de la prueba. Los dos cambios que pide el enunciado
+              antes de empezar tocan la base de datos; hacerlos desde aquí evita
+              depender de tener consola contra la base del despliegue. Plegado
+              por defecto: solo hace falta en los minutos previos. */}
+          <div className="bg-slate-800 rounded-2xl border border-slate-700 overflow-hidden">
+            <button
+              onClick={() => setPanelPreparacion(v => !v)}
+              className="w-full flex items-center justify-between px-5 py-4 hover:bg-slate-700/30 transition-colors"
+            >
+              <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                Preparación de la prueba
+              </span>
+              <span className="flex items-center gap-2">
+                {sedesPreparadas && (
+                  <span className="text-[10px] text-green-400">✓ sedes listas</span>
+                )}
+                <span className="text-slate-500 text-xs">{panelPreparacion ? '▲' : '▼'}</span>
+              </span>
+            </button>
+
+            {panelPreparacion && (
+              <div className="px-5 pb-5 space-y-4 border-t border-slate-700 pt-4">
+                {avisoPreparacion && (
+                  <div className="rounded-lg bg-blue-500/10 border border-blue-500/30 px-3 py-2 text-xs text-blue-300">
+                    {avisoPreparacion}
+                  </div>
+                )}
+
+                {/* 1. Capacidades */}
+                <div>
+                  <div className="text-[11px] text-slate-400 mb-2">
+                    <span className="font-semibold text-slate-300">1. Capacidad de las sedes</span>
+                    {' — '}el enunciado las fija en 999 durante la prueba.
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handlePrepararCapacidades}
+                      disabled={preparando}
+                      className="flex-1 px-3 py-2 rounded-lg bg-green-600 hover:bg-green-500 disabled:opacity-40 text-sm font-medium transition-colors"
+                    >
+                      Poner en 999
+                    </button>
+                    <button
+                      onClick={handleRevertirCapacidades}
+                      disabled={preparando}
+                      className="flex-1 px-3 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 disabled:opacity-40 text-sm transition-colors"
+                    >
+                      Restaurar originales
+                    </button>
+                  </div>
+                </div>
+
+                {/* 2. Planes de vuelo */}
+                <div className="pt-3 border-t border-slate-700/60">
+                  <div className="text-[11px] text-slate-400 mb-2">
+                    <span className="font-semibold text-slate-300">2. Planes de vuelo adicionales</span>
+                    {' — '}se calculan a partir de la hora de inicio, en hora de
+                    Lima. Se añaden a los existentes, no los reemplazan.
+                  </div>
+                  <div className="flex gap-2 mb-2">
+                    <input
+                      type="time"
+                      value={horaPrueba}
+                      onChange={e => setHoraPrueba(e.target.value)}
+                      disabled={preparando}
+                      className="w-32 px-3 py-2 rounded-lg bg-slate-700/60 border border-slate-600 text-sm font-mono focus:outline-none focus:border-blue-500 disabled:opacity-50"
+                    />
+                    <button
+                      onClick={() => handleGenerarVuelos(false)}
+                      disabled={preparando || !horaPrueba}
+                      className="flex-1 px-3 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 disabled:opacity-40 text-sm transition-colors"
+                    >
+                      Ver sin cargar
+                    </button>
+                    <button
+                      onClick={() => handleGenerarVuelos(true)}
+                      disabled={preparando || !horaPrueba}
+                      className="flex-1 px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-sm font-medium transition-colors"
+                    >
+                      Generar y cargar
+                    </button>
+                  </div>
+
+                  {vuelosPrueba.length > 0 && (
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-[10px] text-slate-500 uppercase tracking-wider">
+                          {vuelosPrueba.length} vuelos
+                        </span>
+                        <button
+                          onClick={descargarVuelos}
+                          className="text-[10px] text-blue-400 hover:text-blue-300 transition-colors"
+                        >
+                          ⬇ descargar .txt
+                        </button>
+                      </div>
+                      <pre className="max-h-40 overflow-auto rounded-lg bg-slate-900/60 border border-slate-700 p-2 text-[10px] font-mono text-slate-400 leading-relaxed">
+                        {vuelosPrueba.map(v => v.linea).join('\n')}
+                      </pre>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Formulario de registro */}
@@ -568,7 +805,21 @@ export default function OperacionDiaria() {
                       )}
                       {!r.aceptado && <span className="block text-xs text-red-300/70 truncate">{r.mensaje}</span>}
                     </div>
-                    {r.envioId && <span className="shrink-0 text-xs font-mono text-slate-500">{r.envioId}</span>}
+                    {r.envioId && (
+                      <div className="shrink-0 text-right">
+                        <span className="block text-xs font-mono text-slate-500">{r.envioId}</span>
+                        {/* Atajo al paso de la prueba: "se selecciona un envío y
+                            se debe mostrar en el mapa todas las rutas". Abre el
+                            mapa con este envío ya elegido, en vez de tener que
+                            buscarlo en la lista. */}
+                        <button
+                          onClick={() => navigate(`/dia-a-dia/mapa?envio=${encodeURIComponent(r.envioId)}`)}
+                          className="mt-0.5 text-[11px] text-blue-400 hover:text-blue-300 underline"
+                        >
+                          ver en el mapa
+                        </button>
+                      </div>
+                    )}
                   </li>
                 ))}
               </ul>
