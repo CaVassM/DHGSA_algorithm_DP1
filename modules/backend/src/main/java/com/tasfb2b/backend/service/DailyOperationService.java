@@ -16,6 +16,7 @@ import com.tasfb2b.dhgs.demo.domain.model.Envio;
 import com.tasfb2b.dhgs.demo.domain.model.InstanciaVuelo;
 import com.tasfb2b.dhgs.demo.domain.model.Vuelo;
 import com.tasfb2b.dhgs.demo.domain.valueobject.HoraLocal;
+import com.tasfb2b.dhgs.demo.domain.valueobject.TiemposOperacion;
 import com.tasfb2b.dhgs.demo.infraestructure.util.GrafoVuelos;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
@@ -23,6 +24,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeParseException;
@@ -266,6 +268,14 @@ public class DailyOperationService {
             // hay que entregar la maleta y donde alguien la va a esperar.
             LocalDateTime deadlineLocalDestino = HoraLocal.aLocal(deadline, destino);
 
+            // P&R P16: cuándo queda entregada la maleta, no solo hasta cuándo hay
+            // plazo. Es la llegada del último vuelo más el recojo en destino.
+            LocalDateTime entregaUtc = calcularEntrega(ruta);
+            LocalDateTime entregaLocalDestino = HoraLocal.aLocal(entregaUtc, destino);
+            Long holguraMinutos = (entregaUtc != null && deadline != null)
+                    ? Duration.between(entregaUtc, deadline).toMinutes()
+                    : null;
+
             totalAceptados++;
             totalMaletasDespachadas += maletas;
 
@@ -302,6 +312,8 @@ public class DailyOperationService {
                     .deadline(deadline)
                     .registradoLocal(horaLocal)
                     .deadlineLocalDestino(deadlineLocalDestino)
+                    .entregaLocalDestino(entregaLocalDestino)
+                    .holguraMinutos(holguraMinutos)
                     .gmtOrigen(HoraLocal.etiquetaGmt(origen))
                     .gmtDestino(HoraLocal.etiquetaGmt(destino))
                     .rutaVuelos(rutaIds)
@@ -685,6 +697,24 @@ public class DailyOperationService {
                     + " no pudo ser atendida.";
         }
         return "Jornada cerrada con capacidad desbordada: la mayoría de los envíos no pudo ser atendida.";
+    }
+
+    /**
+     * Momento en que la maleta queda entregada al cliente (P&R P16).
+     *
+     * <p>Llegada del último vuelo de la ruta más el tiempo de recojo en destino.
+     * Se devuelve en UTC; quien la muestre la convierte al huso que corresponda.
+     */
+    private LocalDateTime calcularEntrega(List<Vuelo> ruta) {
+        if (ruta == null || ruta.isEmpty()) {
+            return null;
+        }
+        Vuelo ultimo = ruta.get(ruta.size() - 1);
+        if (!(ultimo instanceof InstanciaVuelo instancia)
+                || instancia.getFechaHoraLlegada() == null) {
+            return null;
+        }
+        return instancia.getFechaHoraLlegada().plus(TiemposOperacion.RECOJO_DESTINO);
     }
 
     /**

@@ -49,6 +49,21 @@ public class DailyRegisterResponse {
     private String gmtOrigen;
     private String gmtDestino;
 
+    /**
+     * Fecha y hora en que la maleta queda entregada al cliente, en la hora de
+     * pared del aeropuerto de destino (P&R P16: "deben presentar la fecha y hora
+     * cuando hablen de la recepción de los envíos/paquetes en los destinos").
+     *
+     * <p>Es la llegada del último vuelo más el tiempo de recojo en destino, y es
+     * distinta del plazo: el plazo es hasta cuándo se puede entregar, esto es
+     * cuándo se va a entregar. La holgura entre ambas es lo que dice si la ruta
+     * va apurada.
+     */
+    private LocalDateTime entregaLocalDestino;
+
+    /** Minutos de holgura entre la entrega prevista y el plazo. Negativo = tarde. */
+    private Long holguraMinutos;
+
     /** Secuencia de vuelos (flightBusinessId) que componen la ruta, en orden. */
     private List<String> rutaVuelos;
 

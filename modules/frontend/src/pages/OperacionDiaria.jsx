@@ -71,6 +71,7 @@ export default function OperacionDiaria() {
   const [vueloACancelar, setVueloACancelar] = useState('')
   const [cancelando, setCancelando] = useState(false)
   const [resultadoCancelacion, setResultadoCancelacion] = useState(null)
+  const [verTodosLosVuelos, setVerTodosLosVuelos] = useState(false)
 
   // Historial de registros de esta sesión (lo último arriba).
   const [registros, setRegistros] = useState([])
@@ -116,6 +117,13 @@ export default function OperacionDiaria() {
 
   const aeropuertoTerminal = aeropuertos.find(a => a.codigoIcao === terminal) ?? null
 
+  // Vuelos que ve el operador: los que salen de su mostrador, salvo que pida la
+  // flota completa. Sin este filtro la tabla son miles de filas de aeropuertos
+  // con los que esta terminal no opera.
+  const vuelosVisibles = (estado?.vuelos ?? []).filter(
+    v => verTodosLosVuelos || !terminal || v.origenIcao === terminal,
+  )
+
   function fijarTerminal(icao) {
     setTerminal(icao)
     localStorage.setItem(LS_TERMINAL, icao)
@@ -146,16 +154,18 @@ export default function OperacionDiaria() {
     }
   }
 
-  async function handleCancelarVuelo(e) {
-    e.preventDefault()
-    const id = vueloACancelar.trim()
-    if (!id) return
+  // El identificador llega por parámetro y no del estado: los botones de la
+  // tabla cancelan una fila concreta, y leerlo del estado obligaría a esperar a
+  // que React lo propague — se cancelaría el vuelo anterior.
+  async function cancelarVueloPorId(id) {
+    const limpio = (id ?? '').trim()
+    if (!limpio) return
 
     setError(null)
     setResultadoCancelacion(null)
     setCancelando(true)
     try {
-      const res = await cancelarVueloDiario(id)
+      const res = await cancelarVueloDiario(limpio)
       setResultadoCancelacion(res)
       if (res.aplicada) setVueloACancelar('')
       await refrescarEstado()
@@ -164,6 +174,11 @@ export default function OperacionDiaria() {
     } finally {
       setCancelando(false)
     }
+  }
+
+  function handleCancelarVuelo(e) {
+    e.preventDefault()
+    return cancelarVueloPorId(vueloACancelar)
   }
 
   async function handleCerrar() {
@@ -520,15 +535,35 @@ export default function OperacionDiaria() {
                           <span className="text-slate-500 ml-2 text-xs">
                             {r.directa ? 'directa' : `${r.escalas} escala(s)`} · {r.rutaVuelos?.join(' → ')}
                           </span>
-                          {/* Las dos horas que importan al operador: cuándo se
-                              recibió aquí y hasta cuándo hay plazo allá. Cada
-                              una en la hora de su propio aeropuerto. */}
+                          {/* Las tres horas que importan al operador, cada una en
+                              la hora de su propio aeropuerto: cuándo se recibió
+                              aquí, cuándo se ENTREGA allá (P&R P16) y hasta
+                              cuándo hay plazo. La entrega es el dato que se pide
+                              al hablar de recepción en destino; el plazo solo
+                              dice si llega a tiempo. */}
                           <div className="text-[11px] text-slate-500 mt-0.5">
                             recibido {r.registradoLocal?.slice(11, 16)} {r.gmtOrigen}
-                            {r.deadlineLocalDestino && (
-                              <> · entregar antes de {r.deadlineLocalDestino.slice(5, 16).replace('T', ' ')} {r.gmtDestino}</>
+                            {r.entregaLocalDestino && (
+                              <>
+                                {' · '}
+                                <span className="text-slate-300">
+                                  entrega {r.entregaLocalDestino.slice(5, 16).replace('T', ' ')} {r.gmtDestino}
+                                </span>
+                              </>
                             )}
                           </div>
+                          {r.deadlineLocalDestino && (
+                            <div className="text-[11px] text-slate-500">
+                              plazo {r.deadlineLocalDestino.slice(5, 16).replace('T', ' ')} {r.gmtDestino}
+                              {r.holguraMinutos != null && (
+                                <span className={r.holguraMinutos >= 0 ? 'text-green-500/80' : 'text-red-400'}>
+                                  {' '}({r.holguraMinutos >= 0
+                                    ? `${Math.floor(r.holguraMinutos / 60)}h de holgura`
+                                    : `${Math.floor(-r.holguraMinutos / 60)}h TARDE`})
+                                </span>
+                              )}
+                            </div>
+                          )}
                         </>
                       )}
                       {!r.aceptado && <span className="block text-xs text-red-300/70 truncate">{r.mensaje}</span>}
@@ -540,11 +575,29 @@ export default function OperacionDiaria() {
             )}
           </div>
 
-          {/* Capacidades de vuelos */}
+          {/* Capacidades de vuelos.
+
+              Por defecto se muestran solo las salidas de ESTA terminal: el
+              catálogo entero son miles de vuelos de todo el mundo, y el operador
+              de un mostrador no opera los de otro continente. El interruptor
+              permite ver toda la flota cuando hace falta (p. ej. para localizar
+              un vuelo de conexión que se quiere cancelar). */}
           <div className="bg-slate-800 rounded-2xl border border-slate-700 p-5">
-            <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
               <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Capacidad de vuelos (en vivo)</h2>
-              <span className="text-xs text-slate-500">{estado?.vuelos?.length ?? 0} vuelos</span>
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-slate-500">{vuelosVisibles.length} vuelos</span>
+                {terminal && (
+                  <label className="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer">
+                    <input
+                      type="checkbox" checked={verTodosLosVuelos}
+                      onChange={e => setVerTodosLosVuelos(e.target.checked)}
+                      className="accent-blue-500"
+                    />
+                    Ver toda la flota
+                  </label>
+                )}
+              </div>
             </div>
             {cargandoEstado ? (
               <p className="text-sm text-slate-500">Cargando…</p>
@@ -556,12 +609,17 @@ export default function OperacionDiaria() {
                       <th className="text-left px-3 py-2 font-semibold">Vuelo</th>
                       <th className="text-left px-3 py-2 font-semibold">Ruta</th>
                       <th className="text-right px-3 py-2 font-semibold">Ocupado</th>
-                      <th className="px-3 py-2 font-semibold w-40">Ocupación</th>
+                      <th className="px-3 py-2 font-semibold w-32">Ocupación</th>
+                      <th className="px-2 py-2 font-semibold w-10"></th>
                     </tr>
                   </thead>
                   <tbody>
-                    {(estado?.vuelos ?? []).map((v, i) => {
+                    {vuelosVisibles.map((v, i) => {
                       const c = colorOcupacion(v.ocupacionPorcentaje)
+                      // El id de la fila es la salida concreta ("VUELO@fecha");
+                      // para cancelar se manda el vuelo recurrente, que es lo que
+                      // el backend resuelve contra la regla de la hora.
+                      const plantilla = v.vueloId.split('@')[0]
                       return (
                         <tr key={v.vueloId} className={i % 2 === 0 ? 'bg-slate-800/50' : 'bg-slate-900/30'}>
                           <td className="px-3 py-2 font-mono text-xs text-slate-400">{v.vueloId}</td>
@@ -574,6 +632,19 @@ export default function OperacionDiaria() {
                               </div>
                               <span className={`text-xs font-mono w-12 text-right ${c.txt}`}>{v.ocupacionPorcentaje.toFixed(0)}%</span>
                             </div>
+                          </td>
+                          <td className="px-2 py-2 text-center">
+                            {/* Cancelar sin teclear el identificador: copiarlo a
+                                mano teniendo la fila delante es una fuente de
+                                errores gratuita. */}
+                            <button
+                              onClick={() => cancelarVueloPorId(plantilla)}
+                              disabled={cancelando}
+                              title={`Cancelar ${plantilla}`}
+                              className="w-6 h-6 rounded text-red-400 hover:text-white hover:bg-red-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors text-xs"
+                            >
+                              ✕
+                            </button>
                           </td>
                         </tr>
                       )
