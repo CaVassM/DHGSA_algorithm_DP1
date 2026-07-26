@@ -105,6 +105,29 @@ function createPlaneIcon({ fill, stroke, angle, count }) {
   })
 }
 
+/**
+ * D14: marca de vuelo cancelado. Va en el aeropuerto de salida, desplazada
+ * arriba a la derecha para no tapar el ícono del propio aeropuerto, y late para
+ * que se distinga de un elemento estático del mapa.
+ *
+ * Constante (no depende de datos): se crea una sola vez, porque el mapa se
+ * re-renderiza cada segundo con el reloj en vivo y reemplazar el DOM del
+ * marcador deja los tooltips pegados abiertos.
+ */
+const cancelIcon = L.divIcon({
+  className: 'tasf-cancel-icon-wrapper',
+  html: `
+    <div class="tasf-cancel-icon">
+      <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true">
+        <circle cx="12" cy="12" r="10" fill="#ef4444" stroke="#ffffff" stroke-width="2"/>
+        <path d="M8 8 L16 16 M16 8 L8 16" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round"/>
+      </svg>
+    </div>
+  `,
+  iconSize: [24, 24],
+  iconAnchor: [-4, 20],
+})
+
 // T6: ícono de aeropuerto (en vez de un círculo). El color del semáforo va en
 // el relleno; el borde blanco lo mantiene legible sobre el mapa oscuro.
 // Cacheado por (fill, atenuado): sin esto, MapaMundi se re-renderiza cada
@@ -310,6 +333,8 @@ export default function MapaMundi({
   // F07/F08: vinculación bidireccional de unidades de transporte (aviones).
   focusFlight,
   onSelectFlightFromMap,
+  // D14/D15: vuelos cancelados durante la corrida, para marcarlos en el mapa.
+  cancelaciones = [],
 }) {
   const navigate = useNavigate()
   const timerRef = useRef(null)
@@ -926,7 +951,69 @@ export default function MapaMundi({
       }))
   }, [vuelosVaciosBackend, simTime, coords, rutasLineas])
 
+  /**
+   * D14/D15: cancelaciones vigentes en el instante simulado.
+   *
+   * Una cancelación se muestra desde que se registra hasta la hora en que ese
+   * avión habría despegado — "el tiempo previsto" de D15. Antes de esa hora es
+   * información operativa (ese vuelo no va a salir); pasada la salida deja de
+   * serlo, y mantenerla llenaría el mapa de cruces de vuelos que ya no importan.
+   */
+  const cancelacionesResueltas = useMemo(() => {
+    if (!cancelaciones.length || !flights.length) return []
+    const porId = new Map(flights.map(f => [f.businessId, f]))
+    return cancelaciones.flatMap(c => {
+      const vuelo = porId.get(c.flightBusinessId)
+      if (!vuelo || !c.dia) return []
+      // El backend identifica la salida por día; la hora está en la plantilla.
+      const salida = new Date(`${c.dia}T${vuelo.horaSalida}`)
+      if (Number.isNaN(salida.getTime())) return []
+      return [{
+        ...c,
+        salida,
+        desde: vuelo.origenIcao,
+        hasta: vuelo.destinoIcao,
+      }]
+    })
+  }, [cancelaciones, flights])
+
+  const cancelacionesVigentes = useMemo(() => {
+    if (!simTime) return []
+    return cancelacionesResueltas
+      .filter(c => simTime <= c.salida)
+      .map(c => ({
+        ...c,
+        // Minutos simulados que faltan para la salida que no ocurrirá.
+        minutosParaSalida: Math.round((c.salida - simTime) / 60000),
+      }))
+      .sort((a, b) => a.salida - b.salida)
+  }, [cancelacionesResueltas, simTime])
+
+  /**
+   * D14: salidas canceladas, para que su avión no se dibuje. El backend ya no
+   * las planifica, pero las rutas de la época en la que se canceló siguen
+   * mencionándolas: sin este filtro el mapa animaría un despegue que la
+   * operación anuló, que es justo lo que la prueba comprueba que NO pasa.
+   *
+   * La comparación es (vuelo, día de salida) y no el id de instancia del
+   * backend: el mapa reconstruye las salidas por su cuenta y las identifica con
+   * la marca de tiempo exacta, así que los dos identificadores no coinciden. El
+   * día sí, y basta — un vuelo recurrente tiene una sola salida diaria.
+   */
+  const salidasCanceladas = useMemo(
+    () => new Set(
+      cancelacionesResueltas.map(c => `${c.flightBusinessId}@${c.salida.toDateString()}`),
+    ),
+    [cancelacionesResueltas],
+  )
+
   const activeDots = [...Object.values(activeDotMap), ...vuelosVaciosEnAire]
+    .filter(d => {
+      const salida = d.key?.split('@')[1]
+      if (!salida) return true
+      const dia = new Date(Number(salida) || salida)
+      return !salidasCanceladas.has(`${d.flightBusinessId}@${dia.toDateString()}`)
+    })
 
   // F07: tramo del vuelo resaltado desde el panel, para pintar su ruta. Si el
   // avión ya aterrizó deja de existir en `activeDots` y el resaltado se
@@ -1274,6 +1361,43 @@ export default function MapaMundi({
           )
         })}
 
+        {/* D14: cada cancelación se marca en el aeropuerto del que ese vuelo
+            habría despegado, con la cruz roja y el tramo afectado. D15: la marca
+            vive mientras el vuelo seguía previsto (ver `cancelacionesVigentes`). */}
+        {cancelacionesVigentes.map(c => {
+          const pos = coords[c.desde]
+          if (!pos) return null
+          return (
+            <Marker
+              key={`cancel-${c.idInstancia}`}
+              position={[pos.lat, pos.lng]}
+              icon={cancelIcon}
+              zIndexOffset={2000}
+            >
+              <Tooltip direction="top" offset={[0, -12]} className="tasf-tooltip" opacity={1}>
+                <div className="text-xs">
+                  <div className="font-bold text-red-300 mb-1">VUELO CANCELADO</div>
+                  <div className="font-bold text-white">{c.desde} {'->'} {c.hasta}</div>
+                  <div className="font-mono text-[10px] text-slate-400 mb-1">{c.flightBusinessId}</div>
+                  <div className="text-slate-300">
+                    Salida prevista: <span className="text-red-300 font-semibold">
+                      {c.salida.toISOString().slice(11, 16)}
+                    </span>
+                  </div>
+                  <div className="text-slate-300">
+                    No despega en: <span className="text-amber-300 font-semibold">
+                      {c.minutosParaSalida} min
+                    </span>
+                  </div>
+                  {c.mensaje && (
+                    <div className="text-blue-300 mt-1 max-w-[220px]">{c.mensaje}</div>
+                  )}
+                </div>
+              </Tooltip>
+            </Marker>
+          )
+        })}
+
         {Object.values(aeropuertosConOcupacion).map(ap => {
           const pos = coords[ap.codigo]
           if (!pos) return null
@@ -1398,6 +1522,40 @@ export default function MapaMundi({
             className="ml-1 px-2 py-0.5 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px]">
             Volver (Esc)
           </button>
+        </div>
+      )}
+
+      {/* D14/D15: cancelaciones vigentes. En el mapa cada una es una cruz roja
+          sobre su aeropuerto de salida; aquí se listan con la cuenta atrás hasta
+          la salida que no va a ocurrir, para poder seguirlas sin buscarlas. El
+          panel desaparece cuando ya pasó la hora de todas ellas. */}
+      {cancelacionesVigentes.length > 0 && (
+        <div className="absolute bottom-20 right-4 z-[1000] bg-slate-900/95 backdrop-blur border border-red-500/40 rounded-xl shadow-xl px-3 py-2.5 w-64">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+            <span className="text-[11px] font-semibold text-red-300 uppercase tracking-wider">
+              Vuelos cancelados ({cancelacionesVigentes.length})
+            </span>
+          </div>
+          <ul className="space-y-1.5 max-h-40 overflow-y-auto">
+            {cancelacionesVigentes.map(c => (
+              <li key={c.idInstancia} className="text-[11px] leading-tight">
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="font-semibold text-white">{c.desde} → {c.hasta}</span>
+                  <span className="font-mono text-red-300 shrink-0">
+                    {c.salida.toISOString().slice(11, 16)}
+                  </span>
+                </div>
+                <div className="flex items-baseline justify-between gap-2 text-slate-400">
+                  <span className="font-mono text-[10px] truncate">{c.flightBusinessId}</span>
+                  <span className="text-amber-300 shrink-0">en {c.minutosParaSalida} min</span>
+                </div>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-2 pt-2 border-t border-slate-700 text-[10px] text-slate-500 leading-snug">
+            No despegan. Sus maletas se replanifican en la siguiente época.
+          </p>
         </div>
       )}
 

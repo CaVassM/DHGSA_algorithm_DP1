@@ -38,6 +38,9 @@ export default function Dashboard() {
   const intervalRef = useRef(null)
   //agregado esta seccion para la simulacion en vivo 
   const [eventoSimulacion, setEventoSimulacion] = useState(null)
+  // D14/D15: vuelos cancelados durante la corrida. El mapa los marca y deja de
+  // dibujar su avión; el detalle de cada uno llega en el evento CANCELACION.
+  const [cancelaciones, setCancelaciones] = useState([])
   const [rutasEnVivo, setRutasEnVivo] = useState([])
   const [routesRefreshKey, setRoutesRefreshKey] = useState(0)
   const [simulacionEnVivo, setSimulacionEnVivo] = useState(
@@ -156,6 +159,24 @@ export default function Dashboard() {
       setEventoSimulacion(ev)
     }
 
+    // D14/D15: un vuelo cancelado durante la corrida. El id de instancia viene
+    // como "VUELO@AAAA-MM-DD", que es todo lo que hace falta para situar la
+    // salida: el día sale del sufijo y la hora, del catálogo de vuelos.
+    if (ev.tipo === 'CANCELACION' && ev.vueloCancelado) {
+      const [flightBusinessId, dia] = ev.vueloCancelado.split('@')
+      setCancelaciones(prev =>
+        prev.some(c => c.idInstancia === ev.vueloCancelado)
+          ? prev
+          : [...prev, {
+              idInstancia: ev.vueloCancelado,
+              flightBusinessId,
+              dia,
+              mensaje: ev.mensaje,
+              registradaEn: ev.relojSimulado ? new Date(ev.relojSimulado) : null,
+            }],
+      )
+    }
+
     if (ev.tipo === 'ERROR') {
       setSimulacionEnVivo(false)
       console.error(ev.mensaje)
@@ -164,6 +185,9 @@ export default function Dashboard() {
 
   return disconnect
 }, [runId, location.state?.topic])
+
+// Nueva corrida: las cancelaciones de la anterior ya no aplican.
+useEffect(() => { setCancelaciones([]) }, [runId])
 
   return (
     <div className="h-screen flex flex-col bg-[#0f172a] overflow-hidden">
@@ -234,6 +258,7 @@ export default function Dashboard() {
             onSelectAirportFromMap={(icao) => setAirportFromMap({ icao, nonce: Date.now() })}
             focusFlight={focusFlight}
             onSelectFlightFromMap={(id) => setFlightFromMap({ id, nonce: Date.now() })}
+            cancelaciones={cancelaciones}
           />
           {/* #7: indicadores globales (flota + almacenes) siempre visibles */}
           <IndicadoresGlobalesBar enVuelo={enVuelo} ocupacionPorIcao={ocupacion} run={run} />

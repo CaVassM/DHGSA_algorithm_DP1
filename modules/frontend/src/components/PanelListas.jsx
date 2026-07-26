@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
-import { getAirports, getFlights, getShipments } from '../services/api'
+import { getAirports, getFlights, getShipments, cancelarVuelo } from '../services/api'
 import { SEMAFORO_COLORES, getSemaforoPorOcupacion } from '../data/aeropuertos'
 
 // Panel de control con las TRES listas que pidió el profesor (almacenes,
@@ -107,6 +107,30 @@ export default function PanelListas({runId,enVuelo=[], enviosOperativos = {plani
     setEnvioResaltado(envioId)
     onSelectFlight?.(null)
     onSelectShipment?.(envioId)
+  }
+
+  // P&R P9 / D14: cancelación de vuelos desde el propio panel. `cancelando`
+  // evita disparar dos veces la misma petición (cada una consumiría una salida
+  // distinta del vuelo); `avisoCancelacion` deja el resultado a la vista, que es
+  // donde se lee cuántas maletas quedaron por replanificar.
+  const [cancelando, setCancelando] = useState(null)
+  const [avisoCancelacion, setAvisoCancelacion] = useState(null)
+
+  const solicitarCancelacion = async (businessId) => {
+    setCancelando(businessId)
+    setAvisoCancelacion(null)
+    try {
+      const res = await cancelarVuelo(businessId)
+      setAvisoCancelacion({ ok: res.aplicada, texto: res.mensaje, vuelo: businessId })
+    } catch {
+      setAvisoCancelacion({
+        ok: false,
+        vuelo: businessId,
+        texto: 'No se pudo contactar con el planificador.',
+      })
+    } finally {
+      setCancelando(null)
+    }
   }
 
   // E18/E21/E23: envíos asociados a cada almacén, separados en los que ENTRAN
@@ -597,6 +621,25 @@ export default function PanelListas({runId,enVuelo=[], enviosOperativos = {plani
               {/* E03: envíos que traslada. E04: productos (maletas) de cada uno. */}
               {abierto && (
                 <div className="bg-slate-900/70 border-t border-slate-800 px-3 py-2">
+                  {/* D14: cancelar este vuelo. La salida concreta la elige el
+                      backend según el reloj simulado (P&R P9), así que aquí se
+                      identifica el vuelo y se informa del resultado. */}
+                  <div className="mb-2 pb-2 border-b border-slate-800">
+                    <button
+                      onClick={() => solicitarCancelacion(f.businessId)}
+                      disabled={cancelando === f.businessId}
+                      className="w-full py-1.5 rounded-lg bg-red-600/90 hover:bg-red-500 disabled:bg-red-900 disabled:cursor-not-allowed text-white text-[11px] font-medium transition-colors"
+                    >
+                      {cancelando === f.businessId ? 'Cancelando…' : '✕ Cancelar este vuelo'}
+                    </button>
+                    {avisoCancelacion?.vuelo === f.businessId && (
+                      <p className={`mt-1.5 text-[10px] leading-snug ${
+                        avisoCancelacion.ok ? 'text-red-300' : 'text-amber-300'}`}>
+                        {avisoCancelacion.texto}
+                      </p>
+                    )}
+                  </div>
+
                   {envios.length === 0 ? (
                     <p className="text-[11px] text-slate-500 py-1">
                       Este vuelo no transporta envíos en la planificación actual.

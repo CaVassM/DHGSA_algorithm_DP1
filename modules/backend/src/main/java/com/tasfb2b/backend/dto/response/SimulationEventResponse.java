@@ -20,7 +20,7 @@ import java.util.Map;
 @Builder
 public class SimulationEventResponse {
 
-    /** Tipo de evento: INICIO, EPOCA, FIN, ERROR. */
+    /** Tipo de evento: INICIO, EPOCA, CANCELACION, COLAPSO, FIN, ERROR. */
     private String tipo;
 
     private Long runId;
@@ -63,4 +63,11 @@ public class SimulationEventResponse {
 
     /** Reporte final, presente en eventos de tipo COLAPSO/FIN del colapso. */
     private CollapseReportResponse reporteColapso;
+
+    /**
+     * P&R P9: instancia de vuelo cancelada ({@code plantilla@fecha}), presente en
+     * los eventos de tipo CANCELACION. El mapa la usa para dejar de dibujar esa
+     * salida — el avión no debe despegar — sin esperar a la siguiente época.
+     */
+    private String vueloCancelado;
 }

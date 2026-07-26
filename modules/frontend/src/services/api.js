@@ -114,6 +114,22 @@ export async function cancelarSimulacionEnVivo(runId) {
   return data
 }
 
+// P&R P9 / D14: cancelar un vuelo durante la simulación. El backend elige la
+// salida afectada (la próxima con al menos una hora de margen sobre el reloj
+// simulado) y libera las maletas que llevaba. Devuelve el cuerpo también cuando
+// rechaza (422), que trae el motivo.
+export async function cancelarVuelo(idVuelo) {
+  try {
+    const { data } = await api.post(`/simulacion/flights/${encodeURIComponent(idVuelo)}/cancel`)
+    return data
+  } catch (err) {
+    if (err.response?.status === 422 && err.response.data) {
+      return err.response.data
+    }
+    throw err
+  }
+}
+
 export async function iniciarSimulacionColapso(request) {
   const { data } = await api.post('/simulacion/collapse', request)
   return data // { runId, topic, mensaje }

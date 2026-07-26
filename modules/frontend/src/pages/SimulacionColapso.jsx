@@ -1,7 +1,14 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
 import NavBar from '../components/NavBar'
 import { iniciarSimulacionColapso, cancelarSimulacionEnVivo } from '../services/api'
 import { suscribirSimulacion } from '../services/simulacionSocket'
+
+// G10: clave con la que ReportePeriodo localiza la corrida a reportar. Es la
+// misma que usan el Dashboard y la simulación de periodo: el reporte de la
+// última planificación estable no distingue de qué escenario viene, lo toma
+// del propio run (que ya guarda escenario, estado y motivo de cierre).
+const LS_KEY = 'tasf_runId'
 
 // Simulación de colapso logístico (escenario COLLAPSE_SIMULATION).
 // Multiplica la carga existente hasta saturar el sistema; muestra cómo los
@@ -17,6 +24,7 @@ function colorOcup(pct) {
 const FACTORES = [2, 5, 10, 20]
 
 export default function SimulacionColapso() {
+  const navigate = useNavigate()
   const [estado, setEstado] = useState('idle') // idle | corriendo | colapso | fin | error
   const [factorCarga, setFactorCarga] = useState(5)
   const [algoritmo, setAlgoritmo] = useState('DHGS')
@@ -46,6 +54,10 @@ export default function SimulacionColapso() {
         umbralColapso: 40,
       })
       setRunId(runId)
+      // G10: sin esto el reporte no tiene forma de saber qué corrida mostrar
+      // (lee la clave al montarse) y el escenario de colapso quedaba fuera del
+      // reporte de la última planificación estable.
+      localStorage.setItem(LS_KEY, String(runId))
       disconnectRef.current = suscribirSimulacion(topic, (ev) => {
         if (ev.tipo === 'EPOCA') setEvento(ev)
         else if (ev.tipo === 'INICIO') setMensaje(ev.mensaje)
@@ -133,6 +145,18 @@ export default function SimulacionColapso() {
                   <Linea k="Aeropuertos saturados" v={reporte.aeropuertosSaturados.join(', ')} clr="text-red-400" />
                 )}
               </div>
+
+              {/* G10: acceso al reporte de la última planificación estable, igual
+                  que al cerrar la simulación de periodo (G08). Lo de arriba es el
+                  resumen del colapso y vive solo en esta pestaña; el reporte lee
+                  la corrida persistida, así que sobrevive a recargas y se puede
+                  imprimir o abrir desde otro visualizador. */}
+              <button
+                onClick={() => navigate('/reporte')}
+                className="mt-4 w-full py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium transition-colors"
+              >
+                Ver reporte de planificación
+              </button>
             </div>
           )}
         </div>
@@ -163,6 +187,19 @@ export default function SimulacionColapso() {
               </div>
             )}
             {mensaje && <p className="mt-3 text-xs text-slate-400">{mensaje}</p>}
+
+            {/* G10: la corrida también puede cerrarse sin reporte de colapso —
+                detenida a mano, o terminada mientras el evento no llegó. La
+                planificación hecha hasta ahí sigue siendo estable y reportable,
+                así que el acceso no puede depender de que exista el reporte. */}
+            {!reporte && (estado === 'fin' || estado === 'colapso') && runId && (
+              <button
+                onClick={() => navigate('/reporte')}
+                className="mt-3 w-full py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium transition-colors"
+              >
+                Ver reporte de planificación
+              </button>
+            )}
           </div>
 
           <div className="bg-slate-800 rounded-2xl border border-slate-700 p-5">

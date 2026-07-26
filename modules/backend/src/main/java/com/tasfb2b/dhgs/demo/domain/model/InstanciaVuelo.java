@@ -23,6 +23,13 @@ public class InstanciaVuelo extends Vuelo {
     private LocalDateTime fechaHoraSalida;
     private LocalDateTime fechaHoraLlegada;
 
+    /**
+     * Vuelo cancelado (P&R P9): esta ocurrencia concreta no opera. La cancelación
+     * recae sobre la instancia, no sobre la plantilla — el mismo vuelo vuelve a
+     * operar al día siguiente sin necesidad de reactivarlo.
+     */
+    private boolean cancelado;
+
     public static InstanciaVuelo desdePlantilla(Vuelo plantilla, LocalDate fechaOperacion) {
         InstanciaVuelo instancia = new InstanciaVuelo();
         instancia.setIdPlantilla(plantilla.getId());
@@ -45,6 +52,17 @@ public class InstanciaVuelo extends Vuelo {
         instancia.setFechaHoraSalida(salida);
         instancia.setFechaHoraLlegada(salida.plus(duracion));
         return instancia;
+    }
+
+    /**
+     * Un vuelo cancelado deja de ser operable, de modo que la búsqueda de rutas
+     * lo descarta igual que si no existiera. Es el único punto que hay que tocar
+     * para que la planificación no vuelva a usarlo: {@code GrafoVuelos} filtra
+     * por aquí en cada expansión.
+     */
+    @Override
+    public boolean estaOperable() {
+        return !cancelado;
     }
 
     @Override

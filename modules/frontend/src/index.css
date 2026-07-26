@@ -117,6 +117,27 @@
   filter: drop-shadow(0 3px 6px rgba(2, 6, 23, 0.7));
 }
 
+/* D14: marca de vuelo cancelado. El latido la separa de los elementos estáticos
+   del mapa — una cruz quieta se confunde con un icono más del aeropuerto. */
+.tasf-cancel-icon-wrapper {
+  background: transparent;
+  border: 0;
+}
+
+.tasf-cancel-icon {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  filter: drop-shadow(0 2px 5px rgba(2, 6, 23, 0.8));
+  animation: tasf-cancel-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes tasf-cancel-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.18); opacity: 0.75; }
+}
+
 /* La rotación se aplica SOLO al avión (SVG), no al contenedor: si rotáramos el
    contenedor, el badge del número giraría con él y se vería invertido cuando el
    avión apunta hacia la izquierda/abajo. */
