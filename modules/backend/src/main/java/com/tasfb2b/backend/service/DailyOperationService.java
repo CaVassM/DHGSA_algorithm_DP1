@@ -226,12 +226,33 @@ public class DailyOperationService {
                         origenIcao, destinoIcao, maletas);
             }
 
+            // Huso horario: la recepción se registra en la hora de pared del
+            // aeropuerto que la recibe. Cuatro terminales registrando a la vez
+            // desde Lima, Buenos Aires, Copenhague y Delhi marcan cuatro horas
+            // distintas para el mismo instante; guardar la del servidor las
+            // volvería todas iguales y el plazo se contaría desde una hora que
+            // en ese mostrador nunca ocurrió.
+            //
+            // Se conserva la hora local (lo que ve el operador) y el instante
+            // absoluto (lo que permite comparar y ordenar entre husos). Se
+            // calcula ANTES de buscar ruta porque es también el piso de salida
+            // que usa Dijkstra (ver comentario de más abajo).
+            LocalDateTime horaLocal = resolverHoraLocal(request.getFechaHoraLocal(), origen);
+            LocalDateTime creacionUtc = HoraLocal.aUtc(horaLocal, origen);
+
             // Busca una ruta de vuelos que admita TODA la carga (carga requerida
-            // = maletas). La salida más temprana admisible es AHORA: sin acotarlo,
-            // la búsqueda arranca al principio del día y puede devolver vuelos que
-            // ya despegaron — maletas asignadas a aviones que no están.
+            // = maletas). La salida más temprana admisible es la hora en que se
+            // registró ESTE envío (creacionUtc), no el reloj real del servidor:
+            // toda la operación día a día trabaja sobre la hora que teclea el
+            // operador (la de "hora de la prueba", que puede no coincidir con la
+            // hora real de pared), así que el piso de búsqueda tiene que ser
+            // consistente con esa misma hora — si no, un envío registrado para
+            // las 14:00 podía terminar saltando el vuelo de las 14:12 que se ve
+            // en el catálogo simplemente porque el reloj real del servidor ya
+            // había pasado esa hora, devolviendo un vuelo posterior sin que el
+            // operador entendiera por qué.
             List<Vuelo> ruta = grafo.dijkstraMenorTiempo(
-                    origen, destino, maletas, HoraLocal.ahoraUtc());
+                    origen, destino, maletas, creacionUtc);
             if (ruta == null || ruta.isEmpty()) {
                 return rechazo("No hay ruta con capacidad para " + maletas
                                 + " maletas de " + origenIcao + " a " + destinoIcao
@@ -251,18 +272,6 @@ public class DailyOperationService {
                             origenIcao, destinoIcao, maletas);
                 }
             }
-
-            // Huso horario: la recepción se registra en la hora de pared del
-            // aeropuerto que la recibe. Cuatro terminales registrando a la vez
-            // desde Lima, Buenos Aires, Copenhague y Delhi marcan cuatro horas
-            // distintas para el mismo instante; guardar la del servidor las
-            // volvería todas iguales y el plazo se contaría desde una hora que
-            // en ese mostrador nunca ocurrió.
-            //
-            // Se conserva la hora local (lo que ve el operador) y el instante
-            // absoluto (lo que permite comparar y ordenar entre husos).
-            LocalDateTime horaLocal = resolverHoraLocal(request.getFechaHoraLocal(), origen);
-            LocalDateTime creacionUtc = HoraLocal.aUtc(horaLocal, origen);
 
             String envioId = "DIA-" + secuenciaEnvio.incrementAndGet();
             Envio envio = new Envio();

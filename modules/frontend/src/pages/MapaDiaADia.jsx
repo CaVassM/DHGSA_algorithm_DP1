@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { MapContainer, TileLayer, Marker, Polyline, Tooltip } from 'react-leaflet'
+import { MapContainer, TileLayer, Marker, Polyline, Tooltip, useMap } from 'react-leaflet'
 import L from 'leaflet'
 import NavBar from '../components/NavBar'
-import { getAirports, getEnviosDiariosConRuta, cancelarVueloDiario } from '../services/api'
+import { getAirports, getEnviosDiariosConRuta, getEstadoDiario, cancelarVueloDiario } from '../services/api'
+import { getSemaforoPorOcupacion, SEMAFORO_COLORES } from '../data/aeropuertos'
 
 // Mapa de operaciones día a día.
 //
@@ -13,8 +14,11 @@ import { getAirports, getEnviosDiariosConRuta, cancelarVueloDiario } from '../se
 //
 // No comparte código con MapaMundi (el de la simulación 5D) a propósito: aquel
 // vive de eventos por época, reloj simulado y reproductor, nada de lo cual
-// existe en la operación real. Lo que se reutiliza es lo que de verdad se
-// comparte: Leaflet, las coordenadas de los aeropuertos y el estilo.
+// existe en la operación real. Lo que sí se porta 1:1 es el "panel de control"
+// (filtros por semáforo de almacenes/UT + continente, y las listas operativas
+// de almacenes/UT/envíos) porque es la misma idea de producto — solo cambia de
+// dónde sale el dato: aquí es el estado en vivo de la operación real
+// (`/daily/state`, `/daily/shipments`), no una corrida de simulación.
 
 const CENTRO = [10, -20]
 const ZOOM = 2
@@ -27,7 +31,7 @@ const iconoAeropuerto = L.divIcon({
   iconAnchor: [4, 4],
 })
 
-/** Aeropuerto atenuado: su continente está filtrado (T54/T55, ver MapaMundi). */
+/** Aeropuerto atenuado: filtrado por semáforo de almacén o por continente. */
 const iconoAeropuertoAtenuado = L.divIcon({
   className: 'tasf-daily-airport',
   html: '<div style="width:8px;height:8px;border-radius:50%;background:#475569;border:1px solid #94a3b8;opacity:0.25;"></div>',
@@ -48,7 +52,7 @@ function iconoRuta(color, etiqueta) {
   })
 }
 
-/** Posición actual de la maleta: anillo pulsante del color de su estado. */
+/** Posición actual de la maleta en tierra: anillo pulsante del color de su estado. */
 function iconoMaleta(color) {
   return L.divIcon({
     className: 'tasf-daily-bag',
@@ -98,15 +102,13 @@ function iconoAvion({ fill, stroke, angle }) {
   })
 }
 
-// T54/T55 (mapa en vivo): filtro por estado del envío, adaptado aquí porque
-// esta pantalla no maneja ocupación de almacén/avión — solo el estado de la
-// maleta que ya calcula estadoDeLaMaleta().
-const ESTADOS_FILTRO = [
-  { fase: 'en-almacen', color: '#22c55e', label: 'En almacén' },
-  { fase: 'en-vuelo', color: '#3b82f6', label: 'En vuelo' },
-  { fase: 'en-escala', color: '#f59e0b', label: 'En escala' },
-  { fase: 'entregada', color: '#94a3b8', label: 'Entregada' },
-  { fase: 'sin-ruta', color: '#64748b', label: 'Sin ruta' },
+// T54/T55 (idéntico a MapaMundi): filtro por semáforo de carga. Un color
+// "apagado" (en `ocultos`) atenúa en el mapa las entidades de ese color.
+const SEMAFORO_FILTRO = [
+  { color: 'vacio', hex: '#94a3b8', label: 'Vacío' },
+  { color: 'verde', hex: '#4ade80', label: 'Baja carga' },
+  { color: 'ambar', hex: '#fbbf24', label: 'Carga media' },
+  { color: 'rojo', hex: '#f87171', label: 'Carga alta' },
 ]
 
 // Alterna un valor en un Set (sin mutar el original). Igual que en MapaMundi.
@@ -114,6 +116,14 @@ function toggleSet(set, valor) {
   const next = new Set(set)
   if (next.has(valor)) next.delete(valor); else next.add(valor)
   return next
+}
+
+function normalizarTexto(valor) {
+  return String(valor ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim()
 }
 
 function hhmm(iso) {
@@ -134,10 +144,6 @@ function fechaHora(iso) {
  */
 function ahoraComoUtc() {
   const n = new Date()
-  // Se construye la fecha a partir de los campos UTC actuales, leídos luego como
-  // locales — la misma lectura que hizo el navegador con las cadenas sin zona
-  // del backend. Explícito a propósito: hacerlo con aritmética de offsets
-  // invita a equivocarse de signo.
   return new Date(
     n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate(),
     n.getUTCHours(), n.getUTCMinutes(), n.getUTCSeconds(),
@@ -220,9 +226,35 @@ function estadoDeLaMaleta(envio, ahoraUtc) {
   }
 }
 
+/** Dónde está físicamente parada la maleta ahora mismo (para almacenes), o null si está volando/entregada. */
+function ubicacionEnTierra(envio, estado) {
+  if (estado.fase === 'en-almacen') return envio.tramos?.[0]?.origenIcao ?? null
+  if (estado.fase === 'en-escala') return envio.tramos?.[estado.tramoActual]?.destinoIcao ?? null
+  return null
+}
+
+// Recentra el mapa sobre un punto (clic en un almacén desde el panel). Es un
+// simple flyTo, no el ajuste de viewport completo de MapaMundi (aquí no hace
+// falta encajar TODOS los aeropuertos, solo llevar la vista a uno).
+function MapFlyTo({ target }) {
+  const map = useMap()
+  useEffect(() => {
+    if (!target) return
+    map.flyTo([target.lat, target.lng], Math.max(map.getZoom(), 4), { duration: 0.6 })
+  }, [target, map])
+  return null
+}
+
+const TABS_PANEL = [
+  { id: 'almacenes', label: 'Almacenes' },
+  { id: 'ut', label: 'UT' },
+  { id: 'envios', label: 'Envíos' },
+]
+
 export default function MapaDiaADia() {
   const [aeropuertos, setAeropuertos] = useState([])
   const [envios, setEnvios] = useState([])
+  const [estadoDiario, setEstadoDiario] = useState(null)
   // ?envio=DIA-3 llega desde la pantalla de registro ("ver en el mapa"): abre
   // el mapa con ese envío ya elegido, sin tener que buscarlo en la lista.
   const [searchParams] = useSearchParams()
@@ -231,26 +263,32 @@ export default function MapaDiaADia() {
   const [cargando, setCargando] = useState(true)
   const [error, setError] = useState(null)
 
-  // T54/T55 (portados del mapa en vivo): filtro por estado del envío y por
-  // continente. Sets de valores OCULTOS; vacío = todo visible.
-  const [estadosOcultos, setEstadosOcultos] = useState(() => new Set())
+  // Panel de control: mismas tres listas operativas que el mapa en vivo
+  // (Almacenes / UT / Envíos), solo que alimentadas desde el estado real de
+  // la operación día a día en vez de una corrida de simulación.
+  const [panelTab, setPanelTab] = useState('envios')
+  const [almacenSeleccionado, setAlmacenSeleccionado] = useState(null)
+  const [flyTarget, setFlyTarget] = useState(null)
+
+  // T54/T55 (idénticos a MapaMundi): filtro por semáforo de almacenes, por
+  // semáforo de UT (aviones) y por continente. Sets de valores OCULTOS; vacío
+  // = todo visible.
+  const [almacenesOcultos, setAlmacenesOcultos] = useState(() => new Set())
+  const [utsOcultas, setUtsOcultas] = useState(() => new Set())
   const [continentesOcultos, setContinentesOcultos] = useState(() => new Set())
   const [filtrosAbiertos, setFiltrosAbiertos] = useState(false)
 
   // Cancelación desde el propio mapa. La prueba encadena "seleccionar un envío,
   // verlo en el mapa, cancelar un vuelo y comprobar la reasignación": mandar a
   // otra pantalla justo en ese punto obligaría a saltar de pestaña y volver,
-  // con el mapa perdiendo el envío elegido por el camino.
+  // con el mapa perdiendo el envío elegido por el camino. También se puede
+  // cancelar directo desde la pestaña "UT" del panel.
   const [cancelando, setCancelando] = useState(null)
   const [avisoCancelacion, setAvisoCancelacion] = useState(null)
 
   // Reloj en UTC: es contra el que se sitúan los tramos, que vienen fechados en
   // esa misma línea de tiempo. Avanza cada 30 s — la operación real no cambia
   // más rápido que eso y refrescar por segundo solo gastaría renders.
-  //
-  // Las fechas del backend llegan SIN zona ("2026-07-26T00:01"), y el navegador
-  // las interpreta como hora local. Para compararlas hay que llevar el "ahora"
-  // a esa misma convención: la hora UTC actual, leída como si fuera local.
   const [ahoraUtc, setAhoraUtc] = useState(ahoraComoUtc)
   useEffect(() => {
     const id = setInterval(() => setAhoraUtc(ahoraComoUtc()), 30000)
@@ -259,8 +297,12 @@ export default function MapaDiaADia() {
 
   const refrescar = useCallback(async () => {
     try {
-      const lista = await getEnviosDiariosConRuta()
+      const [lista, estado] = await Promise.all([
+        getEnviosDiariosConRuta(),
+        getEstadoDiario().catch(() => null),
+      ])
       setEnvios(lista ?? [])
+      if (estado) setEstadoDiario(estado)
       setError(null)
     } catch {
       setError('No se pudieron cargar los envíos. ¿El backend está corriendo?')
@@ -282,10 +324,10 @@ export default function MapaDiaADia() {
     setAvisoCancelacion(null)
     try {
       const r = await cancelarVueloDiario(plantilla)
-      setAvisoCancelacion({ ok: r.aplicada, texto: r.mensaje })
+      setAvisoCancelacion({ ok: r.aplicada, texto: r.mensaje, vuelo: plantilla })
       await refrescar()
     } catch {
-      setAvisoCancelacion({ ok: false, texto: 'No se pudo cancelar el vuelo.' })
+      setAvisoCancelacion({ ok: false, texto: 'No se pudo cancelar el vuelo.', vuelo: plantilla })
     } finally {
       setCancelando(null)
     }
@@ -312,20 +354,13 @@ export default function MapaDiaADia() {
 
   const enviosFiltrados = useMemo(() => {
     const q = filtro.trim().toUpperCase()
-    return envios.filter(e => {
-      if (q && !(
-        e.envioId?.toUpperCase().includes(q)
-        || e.destinoIcao?.toUpperCase().includes(q)
-        || e.origenIcao?.toUpperCase().includes(q)
-        || e.idCliente?.toUpperCase().includes(q)
-      )) return false
-      // Filtro por estado (T54/T55): oculta envíos cuya fase actual esté apagada.
-      if (estadosOcultos.size > 0 && estadosOcultos.has(estadoDeLaMaleta(e, ahoraUtc).fase)) {
-        return false
-      }
-      return true
-    })
-  }, [envios, filtro, estadosOcultos, ahoraUtc])
+    if (!q) return envios
+    return envios.filter(e =>
+      e.envioId?.toUpperCase().includes(q)
+      || e.destinoIcao?.toUpperCase().includes(q)
+      || e.origenIcao?.toUpperCase().includes(q)
+      || e.idCliente?.toUpperCase().includes(q))
+  }, [envios, filtro])
 
   // Continentes presentes en el dataset, para el filtro (igual que MapaMundi).
   const continentes = useMemo(
@@ -333,14 +368,96 @@ export default function MapaDiaADia() {
     [aeropuertos],
   )
 
-  // ICAOs cuyo continente está apagado: sus aeropuertos y los tramos que los
-  // tocan se atenúan en el mapa.
   const icaosContinenteOculto = useMemo(() => {
     const set = new Set()
     if (continentesOcultos.size === 0) return set
     aeropuertos.forEach(a => { if (continentesOcultos.has(a.continente)) set.add(a.codigoIcao) })
     return set
   }, [aeropuertos, continentesOcultos])
+
+  // Ocupación de almacén de cada aeropuerto AHORA MISMO: maletas de envíos que
+  // están físicamente ahí (en su almacén de origen, o esperando conexión en una
+  // escala). Es el equivalente día-a-día de MapaMundi.almacenOcupacion — ahí se
+  // deriva de las rutas de una corrida; aquí, del estado real de los envíos.
+  const ocupacionAlmacenes = useMemo(() => {
+    const acc = {}
+    envios.forEach(e => {
+      const est = estadoDeLaMaleta(e, ahoraUtc)
+      const icao = ubicacionEnTierra(e, est)
+      if (!icao) return
+      acc[icao] = (acc[icao] ?? 0) + Number(e.cantidadMaletas ?? 0)
+    })
+    return acc
+  }, [envios, ahoraUtc])
+
+  const almacenesView = useMemo(() => {
+    const q = normalizarTexto(filtro)
+    const preparados = aeropuertos.map(a => {
+      const actual = ocupacionAlmacenes[a.codigoIcao] ?? 0
+      const capacidad = Number(a.capacidadAlmacen ?? 0)
+      const pct = capacidad > 0 ? Math.round((actual / capacidad) * 1000) / 10 : 0
+      return { ...a, _actual: actual, _pct: pct, _sem: getSemaforoPorOcupacion(pct) }
+    })
+    const filtrados = q
+      ? preparados.filter(a => normalizarTexto(`${a.codigoIcao} ${a.ciudad} ${a.pais}`).includes(q))
+      : preparados
+    return [...filtrados].sort((a, b) => b._pct - a._pct)
+  }, [aeropuertos, ocupacionAlmacenes, filtro])
+
+  // ICAOs cuyo semáforo de ocupación de almacén está apagado por el filtro.
+  const icaosSemaforoOculto = useMemo(() => {
+    const set = new Set()
+    if (almacenesOcultos.size === 0) return set
+    almacenesView.forEach(a => { if (almacenesOcultos.has(a._sem)) set.add(a.codigoIcao) })
+    return set
+  }, [almacenesView, almacenesOcultos])
+
+  // Conjunto combinado (continente + semáforo de almacén) para dimming en el
+  // mapa: mismo criterio que MapaMundi.icaosOcultos.
+  const icaosOcultosEnMapa = useMemo(() => {
+    const set = new Set(icaosContinenteOculto)
+    icaosSemaforoOculto.forEach(icao => set.add(icao))
+    return set
+  }, [icaosContinenteOculto, icaosSemaforoOculto])
+
+  const utsView = useMemo(() => {
+    const q = normalizarTexto(filtro)
+    const vuelos = estadoDiario?.vuelos ?? []
+    const preparados = vuelos.map(v => ({
+      ...v,
+      _sem: getSemaforoPorOcupacion(v.ocupacionPorcentaje ?? 0),
+    }))
+    const filtrados = q
+      ? preparados.filter(v => normalizarTexto(`${v.vueloId} ${v.origenIcao} ${v.destinoIcao}`).includes(q))
+      : preparados
+    return [...filtrados].sort((a, b) => (b.ocupacionPorcentaje ?? 0) - (a.ocupacionPorcentaje ?? 0))
+  }, [estadoDiario, filtro])
+
+  // Envíos parados ahora en un almacén, y envíos en camino hacia él (todavía
+  // sin entregar): lo que se despliega al abrir un almacén en la lista.
+  const detalleAlmacen = useMemo(() => {
+    if (!almacenSeleccionado) return null
+    const aqui = []
+    const entrando = []
+    envios.forEach(e => {
+      const est = estadoDeLaMaleta(e, ahoraUtc)
+      if (ubicacionEnTierra(e, est) === almacenSeleccionado) aqui.push(e)
+      if (e.destinoIcao === almacenSeleccionado && est.fase !== 'entregada') entrando.push(e)
+    })
+    return { icao: almacenSeleccionado, aqui, entrando }
+  }, [almacenSeleccionado, envios, ahoraUtc])
+
+  function seleccionarAlmacen(icao) {
+    setAlmacenSeleccionado(prev => (prev === icao ? null : icao))
+    const c = coords[icao]
+    if (c) setFlyTarget({ lat: c.lat, lng: c.lng, nonce: Date.now() })
+  }
+
+  function irAlEnvio(envioId) {
+    setPanelTab('envios')
+    setFiltro('')
+    setSeleccionado(envioId)
+  }
 
   const envio = envios.find(e => e.envioId === seleccionado) ?? null
   const estadoActual = envio ? estadoDeLaMaleta(envio, ahoraUtc) : null
@@ -369,12 +486,22 @@ export default function MapaDiaADia() {
       return {
         lat: a.lat + (b.lat - a.lat) * estadoActual.progreso,
         lng: a.lng + (b.lng - a.lng) * estadoActual.progreso,
-        // Rumbo del ícono de avión (T-request: mismo estilo que MapaMundi).
+        // Rumbo del ícono de avión (mismo estilo que MapaMundi).
         angle: getHeadingAngle(a, b),
       }
     }
     return null // entregada: ya no hay nada que situar
   }, [envio, estadoActual, coords])
+
+  // Semáforo de la UT que transporta ahora mismo al envío seleccionado, para
+  // que el filtro "UT (aviones)" también atenúe el ícono de avión del mapa.
+  const utActualSemaforo = useMemo(() => {
+    if (estadoActual?.fase !== 'en-vuelo' || !envio) return null
+    const tramoActivo = envio.tramos?.[estadoActual.tramoActual]
+    if (!tramoActivo) return null
+    const ut = (estadoDiario?.vuelos ?? []).find(v => v.vueloId === tramoActivo.vueloId)
+    return ut ? getSemaforoPorOcupacion(ut.ocupacionPorcentaje ?? 0) : null
+  }, [estadoActual, envio, estadoDiario])
 
   // Aeropuertos que toca la ruta seleccionada, con el papel que cumplen: el
   // color distingue de un vistazo dónde empieza, dónde hace escala y dónde
@@ -401,20 +528,40 @@ export default function MapaDiaADia() {
       <NavBar />
       <div className="flex flex-1 overflow-hidden">
 
-        {/* Lista de envíos: es el punto de entrada de la prueba — "se selecciona
-            un envío y se debe mostrar en el mapa todas las rutas del envío". */}
+        {/* Panel de control: Almacenes / UT / Envíos — mismas tres listas
+            operativas que el Dashboard del mapa en vivo (PanelListas), leídas
+            del estado real de la operación en vez de una corrida. */}
         <aside className="w-96 shrink-0 bg-slate-900 border-r border-slate-700 flex flex-col">
-          <div className="px-4 py-3.5 border-b border-slate-700">
-            <h2 className="text-sm font-semibold text-slate-200 uppercase tracking-wider">
-              Envíos registrados
-            </h2>
-            <p className="text-xs text-slate-500 mt-1">
-              Selecciona uno para ver su ruta en el mapa.
+          <div className="flex bg-slate-900 border-b border-slate-700">
+            {TABS_PANEL.map(t => (
+              <button
+                type="button"
+                key={t.id}
+                onClick={() => { setPanelTab(t.id); setFiltro('') }}
+                className={`flex-1 px-2 py-2.5 text-[11px] font-semibold uppercase tracking-wider transition-colors ${
+                  panelTab === t.id
+                    ? 'text-blue-300 border-b-2 border-blue-500 bg-slate-800/50'
+                    : 'text-slate-500 hover:text-slate-300'}`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="px-4 py-3 border-b border-slate-700">
+            <p className="text-xs text-slate-500 mb-2">
+              {panelTab === 'almacenes' ? 'Ocupación de almacenes en vivo.'
+                : panelTab === 'ut' ? 'Capacidad de vuelos en vivo.'
+                : 'Selecciona un envío para ver su ruta en el mapa.'}
             </p>
             <input
               type="text" value={filtro} onChange={e => setFiltro(e.target.value)}
-              placeholder="Buscar por id, destino o aerolínea…"
-              className="mt-2.5 w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 text-sm focus:outline-none focus:border-blue-500"
+              placeholder={
+                panelTab === 'almacenes' ? 'Buscar aeropuerto o ciudad…'
+                  : panelTab === 'ut' ? 'Buscar vuelo, origen o destino…'
+                    : 'Buscar por id, destino o aerolínea…'
+              }
+              className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 text-sm focus:outline-none focus:border-blue-500"
             />
           </div>
 
@@ -423,6 +570,93 @@ export default function MapaDiaADia() {
               <p className="p-4 text-sm text-slate-500">Cargando…</p>
             ) : error ? (
               <p className="p-4 text-sm text-red-400">{error}</p>
+            ) : panelTab === 'almacenes' ? (
+              almacenesView.length === 0 ? (
+                <p className="p-4 text-sm text-slate-500">Ningún aeropuerto coincide con la búsqueda.</p>
+              ) : (
+                <ul>
+                  {almacenesView.map(a => {
+                    const abierto = almacenSeleccionado === a.codigoIcao
+                    return (
+                      <li key={a.codigoIcao}>
+                        <button
+                          type="button"
+                          onClick={() => seleccionarAlmacen(a.codigoIcao)}
+                          className={`w-full text-left px-4 py-3 border-b border-slate-800 transition-colors ${
+                            abierto ? 'bg-blue-600/20 border-l-2 border-l-blue-500' : 'hover:bg-slate-800/60'}`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-mono text-sm text-blue-300">{a.codigoIcao}</span>
+                            <SemChip sem={a._sem} pct={a._pct} />
+                          </div>
+                          <div className="flex items-center justify-between gap-2 mt-1">
+                            <span className="text-xs text-slate-400 truncate">{a.ciudad} · {a.pais}</span>
+                            <span className="text-[11px] text-slate-500 font-mono shrink-0">
+                              {a._actual.toLocaleString()}/{Number(a.capacidadAlmacen ?? 0).toLocaleString()}
+                            </span>
+                          </div>
+                        </button>
+                        {abierto && detalleAlmacen && (
+                          <div className="bg-slate-900/70 border-b border-slate-800 px-4 py-2.5 space-y-2">
+                            <ListaMini
+                              titulo={`Aquí ahora (${detalleAlmacen.aqui.length})`}
+                              color="text-green-400"
+                              envios={detalleAlmacen.aqui}
+                              onSelect={irAlEnvio}
+                            />
+                            <ListaMini
+                              titulo={`En camino (${detalleAlmacen.entrando.length})`}
+                              color="text-amber-400"
+                              envios={detalleAlmacen.entrando}
+                              onSelect={irAlEnvio}
+                            />
+                          </div>
+                        )}
+                      </li>
+                    )
+                  })}
+                </ul>
+              )
+            ) : panelTab === 'ut' ? (
+              utsView.length === 0 ? (
+                <p className="p-4 text-sm text-slate-500">
+                  {(estadoDiario?.vuelos?.length ?? 0) === 0
+                    ? 'Todavía no hay vuelos con carga en la jornada.'
+                    : 'Ningún vuelo coincide con la búsqueda.'}
+                </p>
+              ) : (
+                <ul>
+                  {utsView.map(v => (
+                    <li key={v.vueloId} className="px-4 py-3 border-b border-slate-800">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-mono text-xs text-blue-300 truncate">{v.vueloId}</span>
+                        <SemChip sem={v._sem} pct={v.ocupacionPorcentaje} />
+                      </div>
+                      <div className="flex items-center justify-between gap-2 mt-1">
+                        <span className="text-xs text-slate-300">{v.origenIcao} → {v.destinoIcao}</span>
+                        <span className="text-[11px] text-slate-500 font-mono">
+                          {v.ocupado}/{v.capacidad}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => cancelarTramo(v.vueloId)}
+                        disabled={cancelando === String(v.vueloId).split('@')[0]}
+                        className="mt-2 w-full py-1.5 rounded border border-red-500/40 bg-red-500/10 hover:bg-red-500/20 disabled:opacity-40 disabled:cursor-not-allowed text-red-300 text-[10px] font-medium transition-colors"
+                      >
+                        {cancelando === String(v.vueloId).split('@')[0] ? 'Cancelando…' : '✕ Cancelar este vuelo'}
+                      </button>
+                      {avisoCancelacion && cancelando === null
+                        && String(v.vueloId).split('@')[0] === avisoCancelacion.vuelo && (
+                        <p className={`mt-1.5 text-[10px] leading-snug ${
+                          avisoCancelacion.ok ? 'text-red-300' : 'text-amber-300'}`}>
+                          {avisoCancelacion.texto}
+                        </p>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )
             ) : enviosFiltrados.length === 0 ? (
               <p className="p-4 text-sm text-slate-500">
                 {envios.length === 0
@@ -437,6 +671,7 @@ export default function MapaDiaADia() {
                   return (
                     <li key={e.envioId}>
                       <button
+                        type="button"
                         onClick={() => setSeleccionado(activo ? null : e.envioId)}
                         className={`w-full text-left px-4 py-3 border-b border-slate-800 transition-colors ${
                           activo ? 'bg-blue-600/20 border-l-2 border-l-blue-500' : 'hover:bg-slate-800/60'}`}
@@ -476,7 +711,11 @@ export default function MapaDiaADia() {
           </div>
 
           <div className="px-4 py-2 border-t border-slate-700 text-[11px] text-slate-500">
-            {envios.length} envío{envios.length === 1 ? '' : 's'} en la jornada
+            {panelTab === 'almacenes'
+              ? `${almacenesView.length} aeropuerto(s)`
+              : panelTab === 'ut'
+                ? `${utsView.length} vuelo(s) con carga`
+                : `${envios.length} envío${envios.length === 1 ? '' : 's'} en la jornada`}
           </div>
         </aside>
 
@@ -494,6 +733,8 @@ export default function MapaDiaADia() {
               attribution="&copy; OpenStreetMap &copy; CARTO"
             />
 
+            <MapFlyTo target={flyTarget} />
+
             {/* Aeropuertos que no participan en la ruta elegida: se dejan como
                 referencia geográfica, sin competir por la atención. */}
             {aeropuertos.map(a => (
@@ -501,7 +742,8 @@ export default function MapaDiaADia() {
                 <Marker
                   key={a.codigoIcao}
                   position={[a.latitud, a.longitud]}
-                  icon={icaosContinenteOculto.has(a.codigoIcao) ? iconoAeropuertoAtenuado : iconoAeropuerto}
+                  icon={icaosOcultosEnMapa.has(a.codigoIcao) ? iconoAeropuertoAtenuado : iconoAeropuerto}
+                  eventHandlers={{ click: () => seleccionarAlmacen(a.codigoIcao) }}
                 >
                   <Tooltip direction="top" className="tasf-tooltip" opacity={1}>
                     <span className="text-xs">{a.codigoIcao} · {a.ciudad}</span>
@@ -520,11 +762,11 @@ export default function MapaDiaADia() {
               // el viaje sin necesidad de animar nada.
               const enCurso = estadoActual?.fase === 'en-vuelo' && estadoActual.tramoActual === i
               const yaPasado = estadoActual?.tramoActual != null && i < estadoActual.tramoActual
-              // Filtro por continente: si el aeropuerto de origen o destino de
-              // este tramo está apagado, se atenúa (regla del profesor: filtrar
-              // aeropuertos oculta sus vuelos — MapaMundi.icaosOcultos).
-              const continenteOculto = icaosContinenteOculto.has(t.origenIcao)
-                || icaosContinenteOculto.has(t.destinoIcao)
+              // Filtro por continente / semáforo de almacén: si el aeropuerto de
+              // origen o destino de este tramo está apagado, se atenúa (regla
+              // del profesor: filtrar aeropuertos oculta sus vuelos).
+              const filtroOculto = icaosOcultosEnMapa.has(t.origenIcao)
+                || icaosOcultosEnMapa.has(t.destinoIcao)
               return (
                 <Polyline
                   key={`${t.vueloId}-${i}`}
@@ -532,7 +774,7 @@ export default function MapaDiaADia() {
                   pathOptions={{
                     color: t.cancelado ? '#ef4444' : enCurso ? '#60a5fa' : '#3b82f6',
                     weight: enCurso ? 5 : 3,
-                    opacity: continenteOculto ? 0.12 : (t.cancelado ? 0.9 : yaPasado ? 0.35 : 0.9),
+                    opacity: filtroOculto ? 0.12 : (t.cancelado ? 0.9 : yaPasado ? 0.35 : 0.9),
                     // El tramo cancelado se dibuja discontinuo: sigue siendo
                     // parte del historial del envío, pero ese avión no vuela.
                     dashArray: t.cancelado ? '6 6' : null,
@@ -568,11 +810,13 @@ export default function MapaDiaADia() {
               <Marker
                 position={[posicionMaleta.lat, posicionMaleta.lng]}
                 // En vuelo se ve como un avión (mismo ícono/estilo que el mapa
-                // en vivo, rotado hacia su rumbo); en tierra sigue siendo el
-                // punto pulsante, que ahí sí representa una maleta quieta.
+                // en vivo, rotado hacia su rumbo, atenuado si el filtro de UT
+                // apaga su semáforo de carga); en tierra sigue siendo el punto
+                // pulsante, que ahí sí representa una maleta quieta.
                 icon={estadoActual.fase === 'en-vuelo' && posicionMaleta.angle != null
                   ? iconoAvion({ fill: estadoActual.color, stroke: '#bfdbfe', angle: posicionMaleta.angle })
                   : iconoMaleta(estadoActual.color)}
+                opacity={utActualSemaforo && utsOcultas.has(utActualSemaforo) ? 0.2 : 1}
                 zIndexOffset={2000}
               >
                 <Tooltip direction="top" offset={[0, -10]} className="tasf-tooltip" opacity={1}>
@@ -596,6 +840,7 @@ export default function MapaDiaADia() {
                   position={[c.lat, c.lng]}
                   icon={iconoRuta(p.color, p.icao)}
                   zIndexOffset={1000}
+                  eventHandlers={{ click: () => seleccionarAlmacen(p.icao) }}
                 >
                   <Tooltip direction="top" offset={[0, -8]} className="tasf-tooltip" opacity={1}>
                     <div className="text-xs">
@@ -608,10 +853,8 @@ export default function MapaDiaADia() {
             })}
           </MapContainer>
 
-          {/* T54/T55 (portados del mapa en vivo): filtro por estado del envío
-              y por continente, en un panel plegable igual al de MapaMundi.
-              Va arriba a la izquierda: la ficha del envío usa la derecha y el
-              cartel de "selecciona un envío" el centro. */}
+          {/* T54/T55 (idéntico a MapaMundi): filtros por semáforo de almacenes,
+              por semáforo de UT y por continente, en un panel plegable. */}
           <div className="absolute top-3 left-3 z-[1000] bg-slate-900/92 backdrop-blur border border-slate-700 rounded-xl shadow-lg w-44">
             <button
               onClick={() => setFiltrosAbiertos(a => !a)}
@@ -621,9 +864,16 @@ export default function MapaDiaADia() {
             </button>
             {filtrosAbiertos && (
               <div className="px-3 pb-3 max-h-80 overflow-y-auto">
-                <FiltroEstado
-                  ocultos={estadosOcultos}
-                  onToggle={(f) => setEstadosOcultos(prev => toggleSet(prev, f))}
+                <FiltroSemaforo
+                  titulo="Almacenes"
+                  ocultos={almacenesOcultos}
+                  onToggle={(c) => setAlmacenesOcultos(prev => toggleSet(prev, c))}
+                />
+                <div className="h-px bg-slate-700 my-2" />
+                <FiltroSemaforo
+                  titulo="UT (aviones)"
+                  ocultos={utsOcultas}
+                  onToggle={(c) => setUtsOcultas(prev => toggleSet(prev, c))}
                 />
                 {continentes.length > 1 && (
                   <>
@@ -756,7 +1006,7 @@ export default function MapaDiaADia() {
           )}
 
           {/* Leyenda */}
-          <div className="absolute bottom-4 left-4 z-[1000] flex gap-3 bg-slate-900/85 backdrop-blur rounded-lg px-4 py-2 border border-slate-700 shadow-lg flex-wrap max-w-[calc(100%-2rem)]">
+          <div className="absolute bottom-4 left-4 z-[1000] flex gap-3 bg-slate-900/80 backdrop-blur rounded-lg px-4 py-2 border border-slate-700 shadow-lg flex-wrap max-w-[calc(100%-2rem)]">
             <Leyenda color={COLOR_ORIGEN} label="Origen" />
             <Leyenda color={COLOR_ESCALA} label="Escala" />
             <Leyenda color={COLOR_DESTINO} label="Destino" />
@@ -786,8 +1036,57 @@ function Leyenda({ color, label }) {
   )
 }
 
-// T54/T55 (mismo componente que MapaMundi): casilla marcada = visible,
-// desmarcada = oculto/atenuado en el mapa.
+function SemChip({ sem, pct }) {
+  return (
+    <span className="flex items-center gap-1 shrink-0">
+      <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: SEMAFORO_COLORES[sem] }} />
+      <span className="text-[10px] text-slate-400">{Number(pct ?? 0).toFixed(0)}%</span>
+    </span>
+  )
+}
+
+// Lista compacta de envíos (usada en el detalle de un almacén: quién está ahí
+// ahora / quién viene en camino). Versión chica de PanelListas.ListaFlujo.
+function ListaMini({ titulo, color, envios, onSelect }) {
+  return (
+    <div>
+      <div className={`text-[10px] font-semibold uppercase tracking-wider mb-1 ${color}`}>
+        {titulo}
+      </div>
+      {envios.length === 0 ? (
+        <p className="text-[11px] text-slate-500 pb-1">Sin envíos.</p>
+      ) : (
+        <ul className="space-y-1 max-h-32 overflow-y-auto">
+          {envios.slice(0, 30).map(e => (
+            <li key={e.envioId}>
+              <button
+                type="button"
+                onClick={() => onSelect(e.envioId)}
+                className="w-full text-left rounded px-2 py-1 bg-slate-800/60 hover:bg-slate-700/60 transition-colors"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-mono text-[11px] text-blue-300 truncate">{e.envioId}</span>
+                  <span className="font-mono text-[11px] text-slate-300 shrink-0">
+                    {Number(e.cantidadMaletas ?? 0)} mal.
+                  </span>
+                </div>
+                <div className="text-[10px] text-slate-400">{e.origenIcao} → {e.destinoIcao}</div>
+              </button>
+            </li>
+          ))}
+          {envios.length > 30 && (
+            <li className="text-[10px] text-slate-500 px-2 pt-1">
+              …y {envios.length - 30} envíos más
+            </li>
+          )}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+// T54/T55: casilla marcada = visible, desmarcada = oculto/atenuado en el mapa.
+// Idéntico al de MapaMundi.
 function FiltroCheck({ marcado, onToggle, hex, label }) {
   return (
     <button onClick={onToggle}
@@ -803,14 +1102,14 @@ function FiltroCheck({ marcado, onToggle, hex, label }) {
   )
 }
 
-function FiltroEstado({ ocultos, onToggle }) {
+function FiltroSemaforo({ titulo, ocultos, onToggle }) {
   return (
     <div>
-      <p className="text-[10px] text-slate-400 uppercase tracking-wider mb-1.5">Estado del envío</p>
+      <p className="text-[10px] text-slate-400 uppercase tracking-wider mb-1.5">{titulo}</p>
       <div className="flex flex-col gap-0.5">
-        {ESTADOS_FILTRO.map(s => (
-          <FiltroCheck key={s.fase} marcado={!ocultos.has(s.fase)}
-            onToggle={() => onToggle(s.fase)} hex={s.color} label={s.label} />
+        {SEMAFORO_FILTRO.map(s => (
+          <FiltroCheck key={s.color} marcado={!ocultos.has(s.color)}
+            onToggle={() => onToggle(s.color)} hex={s.hex} label={s.label} />
         ))}
       </div>
     </div>
