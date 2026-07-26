@@ -61,11 +61,13 @@ export default function PanelLateral({
   run,
   runId,
   enVuelo = [],
-  enviosOperativos = { planificados: [], enVuelo: [], entregados4h: [] },
-  ocupacionPorIcao = {},
+  enviosOperativos,
+  ocupacionPorIcao,
   airportFromMap,
+  flightFromMap,
   onSelectAirport,
   onSelectShipment,
+  onSelectFlight,
 }) {
   const isReal     = !!run
   const isTerminal = isReal && TERMINAL_STATUSES.has(run.status)

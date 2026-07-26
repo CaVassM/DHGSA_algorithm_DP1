@@ -838,11 +838,11 @@ function DetalleProductosUT({ productos }) {
     <div>
       <div className="mb-1.5">
         <p className="text-[10px] uppercase tracking-wider text-slate-500">Productos que traslada</p>
-        {usaFallback && (
+       {/*  {usaFallback && (
           <p className="mt-0.5 text-[10px] text-amber-400/80">
             El backend aún no expone productos; se muestra la carga en maletas.
           </p>
-        )}
+        )} */}
       </div>
       <div className="space-y-1.5">
         {productos.map(producto => (
