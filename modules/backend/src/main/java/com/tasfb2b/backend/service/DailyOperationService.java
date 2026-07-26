@@ -226,12 +226,22 @@ public class DailyOperationService {
                         origenIcao, destinoIcao, maletas);
             }
 
+            // Huso horario: la recepción se registra en la hora de pared del
+            // aeropuerto que la recibe. Se calcula ANTES de buscar ruta porque
+            // horaLocal es también el piso de salida que usa Dijkstra: el
+            // catálogo de vuelos guarda sus horarios en hora LOCAL de cada
+            // aeropuerto (sin convertir a UTC), así que comparar contra un
+            // UTC real (creacionUtc o el reloj del servidor) desalinea la
+            // búsqueda por el huso del aeropuerto de origen.
+            LocalDateTime horaLocal = resolverHoraLocal(request.getFechaHoraLocal(), origen);
+            LocalDateTime creacionUtc = HoraLocal.aUtc(horaLocal, origen);
+
             // Busca una ruta de vuelos que admita TODA la carga (carga requerida
-            // = maletas). La salida más temprana admisible es AHORA: sin acotarlo,
-            // la búsqueda arranca al principio del día y puede devolver vuelos que
-            // ya despegaron — maletas asignadas a aviones que no están.
+            // = maletas). La salida más temprana admisible es horaLocal (no
+            // creacionUtc ni el reloj del servidor): así queda en el mismo eje
+            // horario que el catálogo de vuelos.
             List<Vuelo> ruta = grafo.dijkstraMenorTiempo(
-                    origen, destino, maletas, HoraLocal.ahoraUtc());
+                    origen, destino, maletas, horaLocal);
             if (ruta == null || ruta.isEmpty()) {
                 return rechazo("No hay ruta con capacidad para " + maletas
                                 + " maletas de " + origenIcao + " a " + destinoIcao
@@ -243,26 +253,12 @@ public class DailyOperationService {
             for (Vuelo vuelo : ruta) {
                 boolean ok = vuelo.registrarAsignacion(maletas);
                 if (!ok) {
-                    // No debería pasar porque Dijkstra ya filtró por capacidad,
-                    // pero si pasa revertimos para no dejar capacidad inconsistente.
                     revertir(ruta, vuelo, maletas);
                     return rechazo("Capacidad insuficiente en el vuelo " + vuelo.getId()
                                     + " al confirmar la ruta.",
                             origenIcao, destinoIcao, maletas);
                 }
             }
-
-            // Huso horario: la recepción se registra en la hora de pared del
-            // aeropuerto que la recibe. Cuatro terminales registrando a la vez
-            // desde Lima, Buenos Aires, Copenhague y Delhi marcan cuatro horas
-            // distintas para el mismo instante; guardar la del servidor las
-            // volvería todas iguales y el plazo se contaría desde una hora que
-            // en ese mostrador nunca ocurrió.
-            //
-            // Se conserva la hora local (lo que ve el operador) y el instante
-            // absoluto (lo que permite comparar y ordenar entre husos).
-            LocalDateTime horaLocal = resolverHoraLocal(request.getFechaHoraLocal(), origen);
-            LocalDateTime creacionUtc = HoraLocal.aUtc(horaLocal, origen);
 
             String envioId = "DIA-" + secuenciaEnvio.incrementAndGet();
             Envio envio = new Envio();
@@ -280,9 +276,9 @@ public class DailyOperationService {
             // P&R P16: cuándo queda entregada la maleta, no solo hasta cuándo hay
             // plazo. Es la llegada del último vuelo más el recojo en destino.
             LocalDateTime entregaUtc = calcularEntrega(ruta);
-            LocalDateTime entregaLocalDestino = HoraLocal.aLocal(entregaUtc, destino);
-            Long holguraMinutos = (entregaUtc != null && deadline != null)
-                    ? Duration.between(entregaUtc, deadline).toMinutes()
+            LocalDateTime entregaLocalDestino = entregaUtc;
+            Long holguraMinutos = (entregaUtc != null && deadlineLocalDestino != null)
+                    ? Duration.between(entregaUtc, deadlineLocalDestino).toMinutes()
                     : null;
 
             totalAceptados++;
@@ -390,7 +386,7 @@ public class DailyOperationService {
                         .cantidadMaletas(envio.getCantidadMaletas())
                         .idCliente(envio.getIdCliente())
                         .registradoLocal(HoraLocal.aLocal(envio.getFechaHoraCreacion(), origen))
-                        .entregaLocalDestino(HoraLocal.aLocal(entregaUtc, destino))
+                        .entregaLocalDestino(entregaUtc)
                         .deadlineLocalDestino(HoraLocal.aLocal(envio.getDeadline(), destino))
                         .gmtOrigen(HoraLocal.etiquetaGmt(origen))
                         .gmtDestino(HoraLocal.etiquetaGmt(destino))
