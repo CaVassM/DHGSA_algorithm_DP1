@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { getAirports, getFlights } from '../services/api'
+import { getAirports, getAllFlights } from '../services/api'
 
 // Tira de INDICADORES GLOBALES siempre visible sobre el mapa (lo pidió el
 // profesor: deben estar de forma recurrente durante toda la simulación). Cubre
@@ -25,8 +25,11 @@ export default function IndicadoresGlobalesBar({ enVuelo = [], ocupacionPorIcao 
       })
       .catch(() => {})
     // Capacidad total de la flota = suma de capacidad de TODOS los vuelos (P12).
-    getFlights(0, 2000)
-      .then(p => { if (vivo) setCapFlotaTotal((p.content ?? []).reduce((s, f) => s + (f.capacidad ?? 0), 0)) })
+    // getFlights(0, 2000) se quedaba corto contra los ~2.866 vuelos reales,
+    // subestimando el denominador y por tanto inflando el % de ocupación
+    // mostrado. getAllFlights pagina hasta traerlos todos.
+    getAllFlights()
+      .then(lista => { if (vivo) setCapFlotaTotal(lista.reduce((s, f) => s + (f.capacidad ?? 0), 0)) })
       .catch(() => {})
     return () => { vivo = false }
   }, [])

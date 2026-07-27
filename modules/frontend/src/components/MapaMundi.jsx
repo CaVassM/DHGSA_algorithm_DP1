@@ -17,7 +17,7 @@ import {
   SEMAFORO_COLORES,
   UMBRALES_ALMACEN,
 } from '../data/aeropuertos'
-import { getAirports, getFlights, getPlanningRunRoutes } from '../services/api'
+import { getAirports, getAllFlights, getPlanningRunRoutes } from '../services/api'
 import { buildRouteLegs, RECOJO_DESTINO_MS } from '../services/rutaTramos'
 
 // Respiro entre bloques (ms): al terminar los vuelos de una época y llegar la
@@ -136,20 +136,22 @@ const cancelIcon = L.divIcon({
 
 // T6: ícono de aeropuerto (en vez de un círculo). El color del semáforo va en
 // el relleno; el borde blanco lo mantiene legible sobre el mapa oscuro.
-// Cacheado por (fill, atenuado): sin esto, MapaMundi se re-renderiza cada
-// segundo (reloj en vivo) y cada render creaba un ícono nuevo, forzando a
-// Leaflet a reemplazar el DOM del marcador. El navegador no dispara
-// "mouseout" cuando el elemento bajo el cursor se reemplaza, así que el
-// tooltip de hover quedaba pegado abierto aunque el mouse ya no estuviera ahí.
+// Cacheado por fill: sin esto, MapaMundi se re-renderiza cada segundo (reloj
+// en vivo) y cada render creaba un ícono nuevo, forzando a Leaflet a
+// reemplazar el DOM del marcador. El navegador no dispara "mouseout" cuando
+// el elemento bajo el cursor se reemplaza, así que el tooltip de hover
+// quedaba pegado abierto aunque el mouse ya no estuviera ahí.
+//
+// Ya no admite atenuación: un aeropuerto filtrado se OCULTA del todo (no se
+// llega a llamar esta función para él), igual que día a día.
 const airportIconCache = new Map()
-function createAirportIcon({ fill, atenuado = false }) {
-  const cacheKey = `${fill}|${atenuado}`
-  const cached = airportIconCache.get(cacheKey)
+function createAirportIcon({ fill }) {
+  const cached = airportIconCache.get(fill)
   if (cached) return cached
   const icon = L.divIcon({
     className: 'tasf-airport-icon-wrapper',
     html: `
-      <div class="tasf-airport-icon" style="--ap-fill:${fill};opacity:${atenuado ? 0.3 : 1};">
+      <div class="tasf-airport-icon" style="--ap-fill:${fill};">
         <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
           <circle cx="12" cy="12" r="11" fill="${fill}" stroke="#ffffff" stroke-width="2"/>
           <path fill="#0f172a" transform="translate(4.6 4.6) scale(0.62)"
@@ -160,7 +162,7 @@ function createAirportIcon({ fill, atenuado = false }) {
     iconSize: [24, 24],
     iconAnchor: [12, 12],
   })
-  airportIconCache.set(cacheKey, icon)
+  airportIconCache.set(fill, icon)
   return icon
 }
 
@@ -617,8 +619,13 @@ export default function MapaMundi({
 
 
   useEffect(() => {
-    getFlights(0, 500)
-      .then(page => setFlights(page.content ?? []))
+    // Antes: getFlights(0, 500) — una sola página. El dataset real tiene
+    // ~2.866 vuelos plantilla, así que 500 dejaba fuera a la mayoría: un tramo
+    // que usara un vuelo fuera de esos primeros 500 no encontraba su entrada en
+    // flightMap y se descartaba en silencio (buildRouteLegs), reduciendo de
+    // golpe los aviones que el mapa podía llegar a mostrar.
+    getAllFlights()
+      .then(setFlights)
       .catch(() => {})
   }, [])
 
@@ -939,13 +946,16 @@ export default function MapaMundi({
   // sería una contradicción.
   const vuelosVaciosEnAire = useMemo(() => {
     if (!simTime) return []
-    // Solo se pintan sobre tramos que ya tienen su línea dibujada: un avión sin
-    // trayectoria visible confunde más de lo que aporta.
-    const tramosConLinea = new Set(rutasLineas.map(r => `${r.desde}-${r.hasta}`))
+    // Antes esto exigía que el tramo YA tuviera una línea dibujada, es decir,
+    // que en esa misma ruta viajara también un envío con carga. Esa
+    // restricción (igual que la que había en el backend, en vuelosDeEpoca)
+    // dejaba fuera la inmensa mayoría de la flota: día a día no la tiene —
+    // muestra cualquier vuelo del catálogo que esté en el aire, lleve carga o
+    // no — y cada avión dibuja su propia línea (ver el bloque de Polyline más
+    // abajo), así que no hace falta depender de `rutasLineas`.
     return vuelosVaciosBackend
       .filter(v => v.salida <= simTime && simTime <= v.llegada
-        && coords[v.desde] && coords[v.hasta]
-        && tramosConLinea.has(`${v.desde}-${v.hasta}`))
+        && coords[v.desde] && coords[v.hasta])
       .map(v => ({
         key: v.key,
         flightBusinessId: v.flightBusinessId,
@@ -956,7 +966,7 @@ export default function MapaMundi({
         maletas: 0,
         capacidadTotal: v.capacidadTotal,
       }))
-  }, [vuelosVaciosBackend, simTime, coords, rutasLineas])
+  }, [vuelosVaciosBackend, simTime, coords])
 
   /**
    * D14/D15: cancelaciones vigentes en el instante simulado.
@@ -1014,7 +1024,39 @@ export default function MapaMundi({
     [cancelacionesResueltas],
   )
 
-  const activeDots = [...Object.values(activeDotMap), ...vuelosVaciosEnAire]
+  /**
+   * (vuelo, día de salida) de los aviones que en este instante SÍ llevan carga
+   * — mismo criterio de clave que `salidasCanceladas` (día, no milisegundo
+   * exacto, porque `activeDotMap` y `vuelosVaciosEnAire` identifican la salida
+   * con formatos distintos).
+   *
+   * Hace falta para blindar el mapa contra "fantasmas vacíos": `vuelosVaciosBackend`
+   * se acumula época a época y nunca se limpia, así que si ese mismo vuelo
+   * pasó de ir vacío (en la época en que se reportó) a llevar carga (por una
+   * reasignación posterior, p. ej. tras cancelar otro vuelo), el registro
+   * "vacío" seguía sirviéndose para siempre y se dibujaba superpuesto al avión
+   * real — se veía un avión blanco (vacío) que en realidad llevaba envíos.
+   */
+  const vuelosConCargaHoy = useMemo(
+    () => new Set(
+      Object.values(activeDotMap).map(d => {
+        const raw = d.key?.split('@')[1]
+        const dia = new Date(Number(raw) || raw)
+        return `${d.flightBusinessId}@${dia.toDateString()}`
+      }),
+    ),
+    [activeDotMap],
+  )
+
+  const activeDots = [
+    ...Object.values(activeDotMap),
+    ...vuelosVaciosEnAire.filter(v => {
+      const raw = v.key?.split('@')[1]
+      if (!raw) return true
+      const dia = new Date(Number(raw) || raw)
+      return !vuelosConCargaHoy.has(`${v.flightBusinessId}@${dia.toDateString()}`)
+    }),
+  ]
     .filter(d => {
       const salida = d.key?.split('@')[1]
       if (!salida) return true
@@ -1284,11 +1326,22 @@ export default function MapaMundi({
             const key = `${ruta.desde}-${ruta.hasta}`
             const esDelEnvio = tramosEnvioBuscado?.has(key)
             // Regla del profesor: si el origen o destino del tramo está filtrado
-            // (aeropuerto oculto por color/continente), atenuar también la ruta.
+            // (aeropuerto oculto por color/continente), OCULTAR del todo la
+            // ruta — igual que día a día (ver MapaDiaADia.jsx): antes esto solo
+            // atenuaba con una opacidad casi invisible, pero seguía siendo un
+            // elemento dibujado en el mapa en vez de desaparecer como pide el
+            // filtro.
             const tramoOculto = icaosOcultos.has(ruta.desde) || icaosOcultos.has(ruta.hasta)
-            let pathOptions
             // F07: tramo del vuelo seleccionado en el panel.
             const esTramoVueloResaltado = tramoVueloResaltado === key
+            // El filtro gana salvo que el propio tramo esté resaltado a
+            // propósito (por búsqueda de envío o selección de vuelo): esos dos
+            // casos son una acción explícita del usuario sobre ESE tramo en
+            // concreto, y deben poder verse aunque su aeropuerto esté oculto.
+            if (tramoOculto && !esTramoVueloResaltado && !esDelEnvio) {
+              return null
+            }
+            let pathOptions
             if (esTramoVueloResaltado) {
               pathOptions = { color: '#facc15', weight: 3, opacity: 0.95 }
             } else if (tramosEnvioBuscado) {
@@ -1298,8 +1351,6 @@ export default function MapaMundi({
               pathOptions = esDelEnvio
                 ? { color: '#facc15', weight: 4, opacity: 0.95 }                    // resaltado
                 : { color: '#3b82f6', weight: 1, opacity: 0.22, dashArray: '4 8' }  // contexto
-            } else if (tramoOculto) {
-              pathOptions = { color: '#475569', weight: 1, opacity: 0.08, dashArray: '2 8' }
             } else if (recorrida) {
               pathOptions = { color: '#475569', weight: 1, opacity: 0.2, dashArray: '2 8' }
             } else {
@@ -1313,6 +1364,32 @@ export default function MapaMundi({
                 key={key}
                 positions={[[a.lat, a.lng], [b.lat, b.lng]]}
                 pathOptions={pathOptions}
+              />
+            )
+          })}
+
+        {/* Línea propia para los aviones (sobre todo los vacíos) cuyo tramo NO
+            tiene ninguna ruta de carga (`rutasLineas` sale solo de `allLegs`,
+            es decir, de envíos con carga): sin esto, un vuelo vacío en un
+            tramo que ningún envío usa se dibujaba sin trayectoria debajo — o,
+            con el filtro que había antes, no se dibujaba en absoluto. Mismo
+            criterio que usa día a día (cada avión dibuja su propia línea, sin
+            depender de si alguien más ya la dibujó). */}
+        {[...tramosConAvion]
+          .filter(t => !rutasLineas.some(r => `${r.desde}-${r.hasta}` === t))
+          .map(t => {
+            const [desde, hasta] = t.split('-')
+            const a = coords[desde]
+            const b = coords[hasta]
+            if (!a || !b) return null
+            // Misma regla que las líneas de rutasLineas: aeropuerto oculto por
+            // filtro (color de almacén o continente) oculta también esta línea.
+            if (icaosOcultos.has(desde) || icaosOcultos.has(hasta)) return null
+            return (
+              <Polyline
+                key={`sin-carga-${t}`}
+                positions={[[a.lat, a.lng], [b.lat, b.lng]]}
+                pathOptions={{ color: '#94a3b8', weight: 1.5, opacity: 0.45, dashArray: '4 8' }}
               />
             )
           })}
@@ -1350,14 +1427,21 @@ export default function MapaMundi({
           }
           const pct = dot.capacidadTotal > 0 ? (dot.maletas / dot.capacidadTotal) * 100 : 0
           const color = getPlaneColors(pct)
-          // T55: filtro por semáforo de UT — atenuar aviones del color oculto.
-          // Regla del profesor: si el aeropuerto origen o destino está filtrado
-          // (por color o continente), también se oculta el vuelo asociado.
           const semUt = getPlaneSemaforo(pct)
-          const utAtenuada = utsOcultas.has(semUt)
-            || icaosOcultos.has(dot.desde) || icaosOcultos.has(dot.hasta)
           // F07: el vuelo elegido en el panel se pinta en amarillo para ubicarlo.
           const esResaltado = vueloResaltado && dot.flightBusinessId === vueloResaltado
+          // T55: filtro por semáforo de UT. Regla del profesor: si el
+          // aeropuerto origen o destino está filtrado (por color o
+          // continente), también se oculta el vuelo asociado. Igual que día a
+          // día: el filtro OCULTA del todo (antes solo bajaba la opacidad a
+          // 0.2, y el avión seguía ahí estorbando la lectura del mapa) —
+          // salvo que el propio avión esté resaltado a propósito desde el
+          // panel, que es una acción explícita del usuario sobre ESE avión.
+          const utOculto = (utsOcultas.has(semUt)
+            || icaosOcultos.has(dot.desde) || icaosOcultos.has(dot.hasta))
+            && !esResaltado
+          if (utOculto) return null
+
           const planeIcon = createPlaneIcon({
             fill: esResaltado ? '#facc15' : color.fill,
             stroke: esResaltado ? '#fde047' : color.stroke,
@@ -1368,7 +1452,6 @@ export default function MapaMundi({
           return (
             <Marker
               key={dot.key}
-              opacity={utAtenuada ? 0.2 : 1}
               position={[lat, lng]}
               icon={planeIcon}
               eventHandlers={{
@@ -1431,20 +1514,22 @@ export default function MapaMundi({
         {Object.values(aeropuertosConOcupacion).map(ap => {
           const pos = coords[ap.codigo]
           if (!pos) return null
+          // T54: si el almacén está filtrado (por color o continente), se
+          // OCULTA del todo — igual que día a día (MapaDiaADia.jsx: "el
+          // filtro de almacenes/continente los oculta del todo, no solo los
+          // atenúa"). Antes esto solo bajaba la opacidad a 0.25.
+          if (icaosOcultos.has(ap.codigo)) return null
 
           const pct = getOcupacionPct(ap)
           const color = getSemaforoPorOcupacion(pct)
           const hex = SEMAFORO_COLORES[color]
-          // T54: atenuar si el almacén está filtrado (por color o continente).
-          const atenuado = icaosOcultos.has(ap.codigo)
-          const airportIcon = createAirportIcon({ fill: hex, atenuado })
+          const airportIcon = createAirportIcon({ fill: hex })
 
           return (
             <Marker
               key={ap.codigo}
               position={[pos.lat, pos.lng]}
               icon={airportIcon}
-              opacity={atenuado ? 0.25 : 1}
               eventHandlers={{
                 // T50: clic abre el detalle en panel de la misma vista (no navega).
                 // Vinculación mapa→panel: notificar al padre el aeropuerto elegido.

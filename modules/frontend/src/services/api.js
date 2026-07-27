@@ -53,6 +53,31 @@ export async function getFlights(page = 0, size = 100) {
   return data
 }
 
+/**
+ * TODO el catálogo de vuelos plantilla, sin importar cuántas páginas haga
+ * falta. El dataset real tiene ~2.866 vuelos: pedir una sola página (como se
+ * hacía antes con `getFlights(0, 500)`) dejaba fuera más del 80% del
+ * catálogo, y cualquier tramo de ruta que usara uno de esos vuelos
+ * "invisibles" para el mapa se descartaba en silencio (buildRouteLegs no
+ * encuentra el vuelo en flightMap) — así que el mapa en vivo mostraba muchos
+ * menos aviones de los que en realidad estaban volando.
+ */
+export async function getAllFlights(pageSize = 500) {
+  let page = 0
+  let acumulado = []
+  // Cota de seguridad (200 páginas ≈ 100k vuelos) para no quedar en loop
+  // infinito si el backend devolviera una paginación inconsistente.
+  for (let i = 0; i < 200; i++) {
+    const data = await getFlights(page, pageSize)
+    const contenido = data?.content ?? []
+    acumulado = acumulado.concat(contenido)
+    const totalPages = data?.totalPages ?? 1
+    if (contenido.length === 0 || page >= totalPages - 1) break
+    page += 1
+  }
+  return acumulado
+}
+
 export async function getShipments(page = 0, size = 100, sort = null) {
   const params = { page, size }
   if (sort) params.sort = sort

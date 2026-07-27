@@ -29,8 +29,10 @@ import com.tasfb2b.dhgs.demo.application.service.OptimizationService;
 import com.tasfb2b.dhgs.demo.application.service.OptimizationService.ExecutionParams;
 import com.tasfb2b.dhgs.demo.domain.model.Aeropuerto;
 import com.tasfb2b.dhgs.demo.domain.model.Envio;
+import com.tasfb2b.dhgs.demo.domain.model.InstanciaVuelo;
 import com.tasfb2b.dhgs.demo.domain.model.RutaEnvio;
 import com.tasfb2b.dhgs.demo.domain.model.Vuelo;
+import com.tasfb2b.dhgs.demo.domain.valueobject.HoraLocal;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -39,6 +41,7 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -177,10 +180,22 @@ public class PlanningRoutePersistenceService {
                         continue;
                     }
 
+                    // El instante real de ESTA ocurrencia (no de la plantilla), ya
+                    // convertido a UTC: es lo que evita que el frontend tenga que
+                    // reconstruir el horario de cada tramo a mano.
+                    LocalDateTime salidaUtc = null;
+                    LocalDateTime llegadaUtc = null;
+                    if (vuelo instanceof InstanciaVuelo instancia) {
+                        salidaUtc = HoraLocal.aUtc(instancia.getFechaHoraSalida(), vuelo.getAeropuertoOrigen());
+                        llegadaUtc = HoraLocal.aUtc(instancia.getFechaHoraLlegada(), vuelo.getAeropuertoDestino());
+                    }
+
                     route.getLegs().add(RouteLegEntity.builder()
                             .route(route)
                             .flight(flightEntity)
                             .legOrder(i)
+                            .salidaUtc(salidaUtc)
+                            .llegadaUtc(llegadaUtc)
                             .build());
                 }
             }

@@ -17,6 +17,8 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
+import java.time.LocalDateTime;
+
 @Entity
 @Table(
         name = "ruta_legs",
@@ -44,4 +46,23 @@ public class RouteLegEntity {
 
     @Column(name = "leg_order", nullable = false)
     private Integer legOrder;
+
+    /**
+     * Salida/llegada REALES de esta ocurrencia de vuelo, ya convertidas a UTC
+     * (instante absoluto), no la hora de pared del catálogo.
+     *
+     * <p>Antes no se guardaban: el leg solo enlazaba a la plantilla
+     * ({@link #flight}), y el frontend tenía que reconstruir el horario de cada
+     * tramo a mano a partir de la hora local de la plantilla y la duración,
+     * encadenando tramos sin tener en cuenta que cada punta vive en un huso
+     * distinto. Esa reconstrucción es la causa de que el mapa en vivo no
+     * mostrara todos los aviones realmente en vuelo. Guardando aquí el instante
+     * real de la instancia que el algoritmo asignó, el frontend ya no necesita
+     * adivinar nada.
+     */
+    @Column(name = "salida_utc")
+    private LocalDateTime salidaUtc;
+
+    @Column(name = "llegada_utc")
+    private LocalDateTime llegadaUtc;
 }
