@@ -275,6 +275,15 @@ export default function MapaDiaADia() {
   // Panel lateral completo: ocultable para dejar el mapa a pantalla completa.
   const [sidebarColapsado, setSidebarColapsado] = useState(false)
 
+  // Instancia de Leaflet: hace falta para interpolar la posición del avión en
+  // el MISMO espacio en que Leaflet dibuja la línea (píxeles de pantalla), no
+  // en grados lat/lng. Interpolar en grados se curva al proyectar a Mercator
+  // y, en rutas largas (sobre todo las que cruzan el antimeridiano, ±180°),
+  // el avión terminaba dibujado lejos de su propia línea — con pocos vuelos
+  // no se notaba, pero con cientos de vuelos de larga distancia sí. Mismo
+  // arreglo que ya usa MapaMundi.
+  const [mapInstance, setMapInstance] = useState(null)
+
   // T54/T55 (adaptado): filtro por semáforo de los aviones en el mapa — mismo
   // panel que MapaMundi, mismos 4 colores (vacío/verde/ámbar/rojo). Un color
   // "apagado" atenúa esos aviones en vez de ocultarlos del todo.
@@ -609,6 +618,7 @@ export default function MapaDiaADia() {
           <MapContainer
             center={CENTRO} zoom={ZOOM} className="w-full h-full" worldCopyJump
             zoomSnap={0.25} zoomDelta={0.25} wheelPxPerZoomLevel={200}
+            ref={setMapInstance}
           >
             <TileLayer
               url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
@@ -737,10 +747,9 @@ export default function MapaDiaADia() {
               const a = coords[v.origenIcao]
               const b = coords[v.destinoIcao]
               if (!a || !b) return null
-              // Mismo filtro por semáforo que el avión: si su color está
-              // apagado en el panel de filtros, la línea se atenúa igual —
-              // antes se quedaba a toda opacidad aunque el avión desapareciera.
-              const atenuado = utsOcultas.has(getPlaneSemaforo(v.ocupacionPct))
+              // Mismo filtro por semáforo que el avión, y del mismo modo: oculta
+              // del todo, no atenúa — si el avión desaparece, su línea también.
+              if (utsOcultas.has(getPlaneSemaforo(v.ocupacionPct))) return null
               return (
                 <Polyline
                   key={`linea-${v.key}`}
@@ -748,7 +757,7 @@ export default function MapaDiaADia() {
                   pathOptions={{
                     color: v.vacio ? '#94a3b8' : '#3b82f6',
                     weight: 2,
-                    opacity: atenuado ? 0.08 : 0.55,
+                    opacity: 0.55,
                     dashArray: '4 8',
                   }}
                 />
@@ -768,25 +777,44 @@ export default function MapaDiaADia() {
               const a = coords[v.origenIcao]
               const b = coords[v.destinoIcao]
               if (!a || !b) return null
-              const lat = a.lat + (b.lat - a.lat) * v.progreso
-              const lng = a.lng + (b.lng - a.lng) * v.progreso
-              const angle = getHeadingAngle(a, b)
+              const sem = getPlaneSemaforo(v.ocupacionPct)
+              // El filtro oculta del todo, no solo atenúa: con cientos de
+              // vuelos en pantalla, dejar el avión semitransparente seguía
+              // estorbando la lectura del mapa.
+              if (utsOcultas.has(sem)) return null
+
+              // Posición interpolada en el MISMO espacio en que Leaflet dibuja
+              // la línea (píxeles de pantalla), no en grados lat/lng: interpolar
+              // en grados se curva al proyectar a Mercator, y en rutas largas
+              // (sobre todo cruzando el antimeridiano, ±180°) el avión terminaba
+              // lejos de su propia línea. Mismo arreglo que ya usa MapaMundi.
+              let lat = a.lat + (b.lat - a.lat) * v.progreso
+              let lng = a.lng + (b.lng - a.lng) * v.progreso
+              let angle = getHeadingAngle(a, b)
+              if (mapInstance) {
+                const pa = mapInstance.latLngToLayerPoint([a.lat, a.lng])
+                const pb = mapInstance.latLngToLayerPoint([b.lat, b.lng])
+                const p = mapInstance.layerPointToLatLng([
+                  pa.x + (pb.x - pa.x) * v.progreso,
+                  pa.y + (pb.y - pa.y) * v.progreso,
+                ])
+                lat = p.lat
+                lng = p.lng
+                angle = Math.atan2(pb.y - pa.y, pb.x - pa.x) * (180 / Math.PI)
+              }
               const esResaltadoUt = vueloResaltado && v.vueloId.split('@')[0] === vueloResaltado
               const destacado = v.seleccionado || esResaltadoUt
               // El avión del envío elegido (o del vuelo resaltado) se pinta en
               // amarillo para ubicarlo, igual que MapaMundi hace con la UT
               // resaltada desde su panel.
-              const sem = getPlaneSemaforo(v.ocupacionPct)
               const tono = getPlaneColors(v.ocupacionPct)
               const fill = destacado ? '#facc15' : tono.fill
               const stroke = destacado ? '#fde047' : tono.stroke
-              const atenuado = utsOcultas.has(sem)
               return (
                 <Marker
                   key={v.key}
                   position={[lat, lng]}
                   icon={crearIconoAvion({ fill, stroke, angle, count: v.count })}
-                  opacity={atenuado ? 0.2 : 1}
                   zIndexOffset={destacado ? 2500 : 1500}
                   eventHandlers={{
                     click: () => {
