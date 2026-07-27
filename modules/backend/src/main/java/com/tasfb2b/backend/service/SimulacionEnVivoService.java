@@ -31,6 +31,7 @@ import com.tasfb2b.dhgs.demo.domain.model.Envio;
 import com.tasfb2b.dhgs.demo.domain.model.InstanciaVuelo;
 import com.tasfb2b.dhgs.demo.domain.model.RutaEnvio;
 import com.tasfb2b.dhgs.demo.domain.model.Vuelo;
+import com.tasfb2b.dhgs.demo.domain.valueobject.HoraLocal;
 import com.tasfb2b.dhgs.demo.domain.service.CancelacionVuelos;
 import com.tasfb2b.dhgs.demo.domain.service.EpocaData;
 import com.tasfb2b.dhgs.demo.domain.service.SimuladorEpocas;
@@ -835,11 +836,17 @@ private OptimizationAlgorithm resolverOptimizationAlgorithm(String rawAlgorithm)
             for (List<Vuelo> salientes : grafoVuelos.getAdyacencia().values()) {
                 for (Vuelo vuelo : salientes) {
                     if (!(vuelo instanceof InstanciaVuelo instancia)) continue;
-                    LocalDateTime salida = instancia.getFechaHoraSalida();
+                    if (vuelo.getAeropuertoOrigen() == null || vuelo.getAeropuertoDestino() == null) continue;
+                    // La época está acotada en UTC (SimuladorEpocas); la salida del
+                    // catálogo vive en hora LOCAL del aeropuerto de origen. Sin
+                    // convertir, un vuelo de un aeropuerto con huso distinto de 0
+                    // quedaba fuera de la época que realmente le correspondía (o
+                    // colado en otra), y por eso faltaban aviones vacíos en el mapa.
+                    LocalDateTime salida = HoraLocal.aUtc(
+                            instancia.getFechaHoraSalida(), vuelo.getAeropuertoOrigen());
                     if (salida == null || salida.isBefore(epoca.getInicio()) || !salida.isBefore(epoca.getFin())) {
                         continue;
                     }
-                    if (vuelo.getAeropuertoOrigen() == null || vuelo.getAeropuertoDestino() == null) continue;
                     String tramo = vuelo.getAeropuertoOrigen().getCodigoICAO()
                             + "-" + vuelo.getAeropuertoDestino().getCodigoICAO();
                     if (!tramosOperando.contains(tramo)) continue;
@@ -863,14 +870,24 @@ private OptimizationAlgorithm resolverOptimizationAlgorithm(String rawAlgorithm)
         return String.valueOf(vuelo.getId());
     }
 
-    /** Construye el DTO base de un vuelo (sin carga todavía). */
+    /**
+     * Construye el DTO base de un vuelo (sin carga todavía).
+     *
+     * <p>El catálogo guarda salida/llegada en hora LOCAL de cada punta (origen y
+     * destino respectivamente), igual que en la operación día a día. El mapa
+     * compara estos campos contra el reloj simulado, que vive en UTC, así que
+     * hay que convertir explícitamente: mandar la hora local tal cual hacía que
+     * un vuelo desde un aeropuerto con huso negativo apareciera "en vuelo" (o
+     * "aterrizado") en el momento equivocado, y por eso el mapa en vivo no
+     * mostraba todos los aviones que sí debían estar volando.
+     */
     private VueloEpocaDTO nuevoVueloEpoca(Vuelo vuelo) {
         if (vuelo.getAeropuertoOrigen() == null || vuelo.getAeropuertoDestino() == null) return null;
         LocalDateTime salida = null;
         LocalDateTime llegada = null;
         if (vuelo instanceof InstanciaVuelo instancia) {
-            salida = instancia.getFechaHoraSalida();
-            llegada = instancia.getFechaHoraLlegada();
+            salida = HoraLocal.aUtc(instancia.getFechaHoraSalida(), vuelo.getAeropuertoOrigen());
+            llegada = HoraLocal.aUtc(instancia.getFechaHoraLlegada(), vuelo.getAeropuertoDestino());
         }
         return VueloEpocaDTO.builder()
                 .businessId(vuelo.getId())

@@ -24,8 +24,10 @@ import com.tasfb2b.dhgs.demo.application.service.OptimizationService;
 import com.tasfb2b.dhgs.demo.application.service.OptimizationService.ExecutionParams;
 import com.tasfb2b.dhgs.demo.domain.model.Aeropuerto;
 import com.tasfb2b.dhgs.demo.domain.model.Envio;
+import com.tasfb2b.dhgs.demo.domain.model.InstanciaVuelo;
 import com.tasfb2b.dhgs.demo.domain.model.RutaEnvio;
 import com.tasfb2b.dhgs.demo.domain.model.Vuelo;
+import com.tasfb2b.dhgs.demo.domain.valueobject.HoraLocal;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -287,10 +289,19 @@ public class PlanningRunExecutor {
                         continue;
                     }
 
+                    LocalDateTime salidaUtc = null;
+                    LocalDateTime llegadaUtc = null;
+                    if (vuelo instanceof InstanciaVuelo instancia) {
+                        salidaUtc = HoraLocal.aUtc(instancia.getFechaHoraSalida(), vuelo.getAeropuertoOrigen());
+                        llegadaUtc = HoraLocal.aUtc(instancia.getFechaHoraLlegada(), vuelo.getAeropuertoDestino());
+                    }
+
                     route.getLegs().add(RouteLegEntity.builder()
                             .route(route)
                             .flight(flightEntity)
                             .legOrder(i)
+                            .salidaUtc(salidaUtc)
+                            .llegadaUtc(llegadaUtc)
                             .build());
                 }
             }

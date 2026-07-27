@@ -62,8 +62,51 @@ export function getNextDeparture(horaSalida, afterDate) {
  *
  * Cada tramo lleva `esperaMin`: los minutos que la maleta pasa en tierra antes
  * de despegar (0 en el primer tramo), para poder mostrarlo en el plan de viaje.
+ *
+ * Si el backend ya trae `route.legs` (salida/llegada reales en UTC de la
+ * instancia de vuelo que el algoritmo asignó — ver RouteResponse.LegResponse),
+ * se usan tal cual y no se reconstruye nada. Solo se cae a la reconstrucción
+ * de abajo para rutas persistidas ANTES de que existiera ese campo.
  */
+function tieneHorasReales(route) {
+  return Array.isArray(route.legs)
+    && route.legs.length > 0
+    && route.legs.every(l => l.salidaUtc && l.llegadaUtc)
+}
+
+function buildRouteLegsDesdeBackend(route, flightMap) {
+  let llegadaPrevia = null
+  return route.legs.flatMap(l => {
+    const fid = l.flightBusinessId
+    const flight = flightMap.get(fid)
+    if (!flight) return []
+
+    const salida = new Date(l.salidaUtc)
+    const llegada = new Date(l.llegadaUtc)
+    const esperaMin = llegadaPrevia
+      ? Math.round((salida.getTime() - llegadaPrevia.getTime()) / 60000)
+      : 0
+
+    llegadaPrevia = llegada
+    return [{
+      flightBusinessId: fid,
+      shipmentId: route.shipmentBusinessId,
+      cantidadMaletas: route.cantidadMaletas ?? 0,
+      desde: flight.origenIcao,
+      hasta: flight.destinoIcao,
+      salida,
+      llegada,
+      esperaMin,
+      capacidadVuelo: flight.capacidad ?? 0,
+    }]
+  })
+}
+
 export function buildRouteLegs(route, flightMap) {
+  if (tieneHorasReales(route)) {
+    return buildRouteLegsDesdeBackend(route, flightMap)
+  }
+
   let cursor = new Date(route.tiempoInicio)
   let llegadaPrevia = null
   return (route.flightBusinessIds ?? []).flatMap(fid => {
