@@ -546,6 +546,19 @@ export default function MapaDiaADia() {
   )
 
   /**
+   * Qué aviones se DIBUJAN en el mapa: todos, salvo que haya un envío elegido
+   * desde la pestaña "Envíos" del panel — ahí la pantalla pasa a modo
+   * "seguimiento de un solo envío" y el resto de la flota se oculta, para que
+   * se vea nada más la ruta de ese envío. `avionesEnAire` (sin filtrar) se
+   * sigue usando para los contadores del panel de arriba, que muestran el
+   * total de la operación, no solo lo que se está mirando.
+   */
+  const avionesVisibles = useMemo(() => {
+    if (!seleccionado) return avionesEnAire
+    return avionesEnAire.filter(v => v.envioIds.includes(seleccionado))
+  }, [avionesEnAire, seleccionado])
+
+  /**
    * Salidas del vuelo resaltado desde la pestaña "Vuelos" del panel (F07/F08
    * de MapaMundi, adaptado): un vuelo se puede ubicar en el mapa aunque no
    * lleve ningún envío montado todavía, usando el catálogo en vivo
@@ -814,8 +827,10 @@ export default function MapaDiaADia() {
                 nada: es lo que pide el evaluador — entrar y ver de un vistazo
                 hacia dónde va cada vuelo que ya está en el aire, no solo el
                 seleccionado. Punteada y más tenue que la ruta del envío
-                elegido (esa sigue siendo la más marcada). */}
-            {avionesEnAire.map(v => {
+                elegido (esa sigue siendo la más marcada). Si hay un envío
+                elegido desde la pestaña "Envíos", `avionesVisibles` ya viene
+                filtrado a solo ese envío — el resto de la flota se oculta. */}
+            {avionesVisibles.map(v => {
               const a = coords[v.origenIcao]
               const b = coords[v.destinoIcao]
               if (!a || !b) return null
@@ -848,8 +863,10 @@ export default function MapaDiaADia() {
                 semáforo (blanco/gris), no se omiten. El avión del envío
                 elegido, o el que se resaltó desde la pestaña "Vuelos", se
                 destaca con un tono más claro y por encima del resto. El panel
-                de filtros de abajo puede atenuar por color de semáforo. */}
-            {avionesEnAire.map(v => {
+                de filtros de abajo puede atenuar por color de semáforo. Con un
+                envío elegido desde "Envíos", `avionesVisibles` ya trae solo
+                el suyo. */}
+            {avionesVisibles.map(v => {
               const a = coords[v.origenIcao]
               const b = coords[v.destinoIcao]
               if (!a || !b) return null

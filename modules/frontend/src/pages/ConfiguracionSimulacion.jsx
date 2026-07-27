@@ -176,7 +176,17 @@ export default function ConfiguracionSimulacion() {
       <div className="w-full max-w-2xl">
 
         {/* Header */}
-        <div className="text-center mb-8">
+        <div className="text-center mb-8 relative">
+          {/* Acceso directo a la operación día a día: pantalla independiente
+              de esta (no corre el optimizador, es registro manual en vivo),
+              así que no tiene sentido pasar por "Iniciar Simulación" para
+              llegar — un atajo directo desde la pantalla inicial. */}
+          <button
+            onClick={() => navigate('/dia-a-dia/mapa')}
+            className="absolute right-0 top-0 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-700 hover:bg-slate-600 text-slate-200 transition-colors flex items-center gap-1.5"
+          >
+            🗺 Operación día a día
+          </button>
           <div className="inline-flex items-center gap-2 mb-4">
             <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center">
               <span className="text-white text-sm font-bold">T</span>
