@@ -3,6 +3,7 @@ package com.tasfb2b.backend.dto.response;
 import lombok.Builder;
 import lombok.Data;
 
+import java.time.LocalDateTime;
 import java.util.List;
 
 /**
@@ -57,5 +58,19 @@ public class DailyStateResponse {
         private int capacidadDisponible;
         private int ocupado;
         private double ocupacionPorcentaje;
+
+        /** Salida/llegada en UTC real, para saber si esta salida ya está en el aire. */
+        private LocalDateTime salidaUtc;
+        private LocalDateTime llegadaUtc;
+
+        /** Las mismas, en la hora de pared de cada aeropuerto (para mostrarlas). */
+        private LocalDateTime salidaLocal;
+        private LocalDateTime llegadaLocal;
+
+        private String gmtOrigen;
+        private String gmtDestino;
+
+        /** true si esta salida fue cancelada (P&R P9). */
+        private boolean cancelado;
     }
 }

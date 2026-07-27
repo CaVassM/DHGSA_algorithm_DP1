@@ -709,14 +709,37 @@ public class DailyOperationService {
                     if (v.getCapacidadDisponible() > 0) {
                         algunoConCupo = true;
                     }
+
+                    Aeropuerto o = v.getAeropuertoOrigen();
+                    Aeropuerto d = v.getAeropuertoDestino();
+                    // Igual que en enviosConRuta(): el catálogo guarda la hora en
+                    // hora LOCAL de cada punta, no en UTC. El panel de vuelos
+                    // necesita el instante real para saber si esta salida ya
+                    // está en el aire.
+                    LocalDateTime salida = null;
+                    LocalDateTime llegada = null;
+                    boolean cancelado = false;
+                    if (v instanceof InstanciaVuelo instancia) {
+                        salida = instancia.getFechaHoraSalida();
+                        llegada = instancia.getFechaHoraLlegada();
+                        cancelado = !instancia.estaOperable();
+                    }
+
                     cargas.add(DailyStateResponse.FlightLoad.builder()
                             .vueloId(v.getId())
-                            .origenIcao(v.getAeropuertoOrigen().getCodigoICAO())
-                            .destinoIcao(v.getAeropuertoDestino().getCodigoICAO())
+                            .origenIcao(o.getCodigoICAO())
+                            .destinoIcao(d.getCodigoICAO())
                             .capacidad(v.getCapacidad())
                             .capacidadDisponible(v.getCapacidadDisponible())
                             .ocupado(ocupado)
                             .ocupacionPorcentaje(redondear(pct))
+                            .salidaUtc(HoraLocal.aUtc(salida, o))
+                            .llegadaUtc(HoraLocal.aUtc(llegada, d))
+                            .salidaLocal(salida)
+                            .llegadaLocal(llegada)
+                            .gmtOrigen(HoraLocal.etiquetaGmt(o))
+                            .gmtDestino(HoraLocal.etiquetaGmt(d))
+                            .cancelado(cancelado)
                             .build());
                 }
             }

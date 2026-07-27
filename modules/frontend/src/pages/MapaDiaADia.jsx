@@ -3,7 +3,8 @@ import { useSearchParams } from 'react-router-dom'
 import { MapContainer, TileLayer, Marker, Polyline, Tooltip } from 'react-leaflet'
 import L from 'leaflet'
 import NavBar from '../components/NavBar'
-import { getAirports, getEnviosDiariosConRuta, cancelarVueloDiario } from '../services/api'
+import PanelListasDiaADia from '../components/PanelListasDiaADia'
+import { getAirports, getEnviosDiariosConRuta, getEstadoDiario, cancelarVueloDiario } from '../services/api'
 
 // Mapa de operaciones día a día.
 //
@@ -234,9 +235,17 @@ export default function MapaDiaADia() {
   // el mapa con ese envío ya elegido, sin tener que buscarlo en la lista.
   const [searchParams] = useSearchParams()
   const [seleccionado, setSeleccionado] = useState(() => searchParams.get('envio'))
-  const [filtro, setFiltro] = useState('')
+  // Vuelo (plantilla, sin "@fecha") resaltado desde la pestaña "Vuelos" del
+  // panel — igual que F07/F08 en MapaMundi: se puede ubicar una UT en el mapa
+  // sin necesidad de que un envío concreto vaya montado en ella.
+  const [vueloResaltado, setVueloResaltado] = useState(null)
   const [cargando, setCargando] = useState(true)
   const [error, setError] = useState(null)
+  // Estado en vivo de almacenes y flota (capacidades, ocupación) — alimenta las
+  // pestañas "Almacenes" y "Vuelos" del panel, además de la ficha de detalle.
+  const [estado, setEstado] = useState(null)
+  // Panel lateral completo: ocultable para dejar el mapa a pantalla completa.
+  const [sidebarColapsado, setSidebarColapsado] = useState(false)
 
   // Cancelación desde el propio mapa. La prueba encadena "seleccionar un envío,
   // verlo en el mapa, cancelar un vuelo y comprobar la reasignación": mandar a
@@ -271,6 +280,16 @@ export default function MapaDiaADia() {
     }
   }, [])
 
+  // Capacidades de almacenes y flota — usadas por las pestañas "Almacenes" y
+  // "Vuelos" del panel lateral. Se refresca junto con los envíos.
+  const refrescarEstado = useCallback(async () => {
+    try {
+      setEstado(await getEstadoDiario())
+    } catch {
+      // El panel de almacenes/vuelos queda vacío; el resto de la pantalla sigue.
+    }
+  }, [])
+
   /**
    * Cancela la salida de un tramo y refresca en el acto.
    *
@@ -284,14 +303,14 @@ export default function MapaDiaADia() {
     setAvisoCancelacion(null)
     try {
       const r = await cancelarVueloDiario(plantilla)
-      setAvisoCancelacion({ ok: r.aplicada, texto: r.mensaje })
-      await refrescar()
+      setAvisoCancelacion({ ok: r.aplicada, texto: r.mensaje, plantilla })
+      await Promise.all([refrescar(), refrescarEstado()])
     } catch {
-      setAvisoCancelacion({ ok: false, texto: 'No se pudo cancelar el vuelo.' })
+      setAvisoCancelacion({ ok: false, texto: 'No se pudo cancelar el vuelo.', plantilla })
     } finally {
       setCancelando(null)
     }
-  }, [refrescar])
+  }, [refrescar, refrescarEstado])
 
   useEffect(() => {
     let vivo = true
@@ -299,12 +318,13 @@ export default function MapaDiaADia() {
       .then(p => { if (vivo) setAeropuertos(p?.content ?? []) })
       .catch(() => {})
     refrescar()
+    refrescarEstado()
     // La operación es continua y hay varias terminales registrando a la vez:
     // sin refresco periódico, este visualizador se quedaría con la foto del
     // momento en que se abrió.
-    const id = setInterval(refrescar, 5000)
+    const id = setInterval(() => { refrescar(); refrescarEstado() }, 5000)
     return () => { vivo = false; clearInterval(id) }
-  }, [refrescar])
+  }, [refrescar, refrescarEstado])
 
   const coords = useMemo(() => {
     const m = {}
@@ -370,15 +390,16 @@ export default function MapaDiaADia() {
     }))
   }, [envios, estadosPorEnvio, seleccionado])
 
-  const enviosFiltrados = useMemo(() => {
-    const q = filtro.trim().toUpperCase()
-    if (!q) return envios
-    return envios.filter(e =>
-      e.envioId?.toUpperCase().includes(q)
-      || e.destinoIcao?.toUpperCase().includes(q)
-      || e.origenIcao?.toUpperCase().includes(q)
-      || e.idCliente?.toUpperCase().includes(q))
-  }, [envios, filtro])
+  /**
+   * Salidas del vuelo resaltado desde la pestaña "Vuelos" del panel (F07/F08
+   * de MapaMundi, adaptado): un vuelo se puede ubicar en el mapa aunque no
+   * lleve ningún envío montado todavía, usando el catálogo en vivo
+   * (`estado.vuelos`) en vez de depender de las rutas de los envíos.
+   */
+  const vuelosResaltadosLinea = useMemo(() => {
+    if (!vueloResaltado || !estado?.vuelos) return []
+    return estado.vuelos.filter(v => v.vueloId.split('@')[0] === vueloResaltado)
+  }, [vueloResaltado, estado])
 
   const envio = envios.find(e => e.envioId === seleccionado) ?? null
   const estadoActual = envio ? estadosPorEnvio.get(envio.envioId) : null
@@ -422,94 +443,84 @@ export default function MapaDiaADia() {
     return puntos
   }, [envio])
 
-  const icaosEnRuta = new Set(puntosRuta.map(p => p.icao))
+  /**
+   * Cuando no hay envío elegido pero SÍ un vuelo resaltado desde el panel,
+   * igual conviene marcar sus dos puntas en el mapa (si hay envío elegido,
+   * su ruta manda: `puntosRuta` ya cubre más tramos que un solo vuelo).
+   */
+  const puntosVueloResaltado = useMemo(() => {
+    if (puntosRuta.length > 0) return []
+    const v = vuelosResaltadosLinea[0]
+    if (!v) return []
+    return [
+      { icao: v.origenIcao, color: COLOR_ORIGEN, papel: 'origen' },
+      { icao: v.destinoIcao, color: COLOR_DESTINO, papel: 'destino' },
+    ]
+  }, [puntosRuta, vuelosResaltadosLinea])
+
+  const puntosDestacados = puntosRuta.length > 0 ? puntosRuta : puntosVueloResaltado
+  const icaosEnRuta = new Set(puntosDestacados.map(p => p.icao))
 
   const enviosVolando = vuelosActivos.reduce((acc, v) => acc + v.count, 0)
 
   return (
     <div className="h-screen flex flex-col bg-[#0f172a] overflow-hidden">
       <NavBar />
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 overflow-hidden relative">
 
-        {/* Lista de envíos: es el punto de entrada de la prueba — "se selecciona
-            un envío y se debe mostrar en el mapa todas las rutas del envío". */}
-        <aside className="w-96 shrink-0 bg-slate-900 border-r border-slate-700 flex flex-col">
-          <div className="px-4 py-3.5 border-b border-slate-700">
-            <h2 className="text-sm font-semibold text-slate-200 uppercase tracking-wider">
-              Envíos registrados
-            </h2>
-            <p className="text-xs text-slate-500 mt-1">
-              Selecciona uno para ver su ruta en el mapa. Los vuelos en curso de
-              TODOS los envíos se ven sin necesidad de elegir ninguno.
-            </p>
-            <input
-              type="text" value={filtro} onChange={e => setFiltro(e.target.value)}
-              placeholder="Buscar por id, destino o aerolínea…"
-              className="mt-2.5 w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 text-sm focus:outline-none focus:border-blue-500"
-            />
-          </div>
+        {/* Panel de control: almacenes, vuelos y envíos en vivo — misma
+            estructura que PanelListas del Dashboard, adaptada a la operación
+            día a día. Ocultable por completo (deja el mapa a pantalla
+            completa) independientemente de sus propios filtros internos,
+            que también se pliegan aparte. */}
+        {!sidebarColapsado && (
+          <aside className="w-96 shrink-0 bg-slate-900 border-r border-slate-700 flex flex-col">
+            <div className="px-4 py-3 border-b border-slate-700">
+              <h2 className="text-sm font-semibold text-slate-200 uppercase tracking-wider">
+                Operación día a día
+              </h2>
+              <p className="text-[11px] text-slate-500 mt-0.5">
+                Almacenes, vuelos y envíos en vivo. Elegí un envío o un vuelo
+                para verlo resaltado en el mapa.
+              </p>
+            </div>
 
-          <div className="flex-1 overflow-y-auto">
             {cargando ? (
               <p className="p-4 text-sm text-slate-500">Cargando…</p>
             ) : error ? (
               <p className="p-4 text-sm text-red-400">{error}</p>
-            ) : enviosFiltrados.length === 0 ? (
-              <p className="p-4 text-sm text-slate-500">
-                {envios.length === 0
-                  ? 'Todavía no hay envíos registrados. Regístralos en la pantalla de operación.'
-                  : 'Ningún envío coincide con la búsqueda.'}
-              </p>
             ) : (
-              <ul>
-                {enviosFiltrados.map(e => {
-                  const activo = e.envioId === seleccionado
-                  const est = estadosPorEnvio.get(e.envioId)
-                  return (
-                    <li key={e.envioId}>
-                      <button
-                        onClick={() => setSeleccionado(activo ? null : e.envioId)}
-                        className={`w-full text-left px-4 py-3 border-b border-slate-800 transition-colors ${
-                          activo ? 'bg-blue-600/20 border-l-2 border-l-blue-500' : 'hover:bg-slate-800/60'}`}
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className={`text-base font-medium ${activo ? 'text-blue-300' : 'text-slate-100'}`}>
-                            {e.origenIcao} → {e.destinoIcao}
-                          </span>
-                          <span className="text-xs font-mono text-slate-500">{e.envioId}</span>
-                        </div>
-                        <div className="flex items-center justify-between gap-2 mt-1">
-                          <span className="text-xs text-slate-400">
-                            {e.cantidadMaletas} maletas
-                            {e.idCliente && <span className="text-slate-500"> · {e.idCliente}</span>}
-                          </span>
-                          <span className="text-xs text-slate-500">
-                            {e.directa ? 'directa' : `${e.escalas} escala(s)`}
-                          </span>
-                        </div>
-                        {/* Dónde está la maleta ahora mismo: es lo que se le
-                            pregunta a un mapa de operaciones. */}
-                        <div className="flex items-center gap-1.5 mt-1.5">
-                          <span className="w-2 h-2 rounded-full shrink-0" style={{ background: est?.color }} />
-                          <span className="text-xs font-medium" style={{ color: est?.color }}>
-                            {est?.etiqueta}
-                          </span>
-                          {est?.detalle && (
-                            <span className="text-xs text-slate-500 truncate">· {est.detalle}</span>
-                          )}
-                        </div>
-                      </button>
-                    </li>
-                  )
-                })}
-              </ul>
+              <PanelListasDiaADia
+                aeropuertos={aeropuertos}
+                envios={envios}
+                estadosPorEnvio={estadosPorEnvio}
+                estado={estado}
+                seleccionado={seleccionado}
+                onSelectShipment={setSeleccionado}
+                vueloResaltado={vueloResaltado}
+                onSelectFlight={setVueloResaltado}
+                onCancelarVuelo={cancelarTramo}
+                cancelando={cancelando}
+                avisoCancelacion={avisoCancelacion}
+              />
             )}
-          </div>
 
-          <div className="px-4 py-2 border-t border-slate-700 text-[11px] text-slate-500">
-            {envios.length} envío{envios.length === 1 ? '' : 's'} en la jornada · {enviosVolando} en vuelo ahora
-          </div>
-        </aside>
+            <div className="px-4 py-2 border-t border-slate-700 text-[11px] text-slate-500">
+              {envios.length} envío{envios.length === 1 ? '' : 's'} en la jornada · {enviosVolando} en vuelo ahora
+            </div>
+          </aside>
+        )}
+
+        {/* Pestaña para ocultar/mostrar el panel completo. Vive fuera del
+            <aside> para poder posicionarla según si está o no colapsado. */}
+        <button
+          onClick={() => setSidebarColapsado(v => !v)}
+          title={sidebarColapsado ? 'Mostrar panel' : 'Ocultar panel'}
+          className="absolute top-1/2 -translate-y-1/2 z-[1200] w-5 h-14 flex items-center justify-center rounded-r-lg bg-slate-800 border border-l-0 border-slate-700 text-slate-400 hover:text-white hover:bg-slate-700 transition-colors"
+          style={{ left: sidebarColapsado ? 0 : '24rem' }}
+        >
+          {sidebarColapsado ? '›' : '‹'}
+        </button>
 
         {/* Mapa */}
         <main className="flex-1 relative">
@@ -553,24 +564,30 @@ export default function MapaDiaADia() {
               const b = coords[t.destinoIcao]
               if (!a || !b) return null
               const yaSalio = t.salidaUtc && ahoraUtc >= new Date(t.salidaUtc)
-              if (!yaSalio && !t.cancelado) return null
               // El tramo que la maleta está volando ahora se destaca; los que ya
               // quedaron atrás se atenúan. Así se lee de un vistazo por dónde va
               // el viaje sin necesidad de animar nada.
               const enCurso = estadoActual?.fase === 'en-vuelo' && estadoActual.tramoActual === i
               const yaPasado = estadoActual?.tramoActual != null && i < estadoActual.tramoActual
+              // Un tramo que TODAVÍA no despega no se pinta como "vuelo en
+              // curso" (sería falso), pero tampoco se oculta del todo: se
+              // muestra como línea fina punteada, la misma "vista previa" de
+              // por dónde va a ir el avión que usa MapaMundi para sus rutas
+              // aún no voladas.
+              const pathOptions = t.cancelado
+                ? { color: '#ef4444', weight: 3, opacity: 0.9, dashArray: '6 6' }
+                : enCurso
+                  ? { color: '#60a5fa', weight: 5, opacity: 0.9 }
+                  : yaPasado
+                    ? { color: '#3b82f6', weight: 3, opacity: 0.35 }
+                    : !yaSalio
+                      ? { color: '#3b82f6', weight: 1.5, opacity: 0.5, dashArray: '5 7' }
+                      : { color: '#3b82f6', weight: 3, opacity: 0.9 }
               return (
                 <Polyline
                   key={`${t.vueloId}-${i}`}
                   positions={[[a.lat, a.lng], [b.lat, b.lng]]}
-                  pathOptions={{
-                    color: t.cancelado ? '#ef4444' : enCurso ? '#60a5fa' : '#3b82f6',
-                    weight: enCurso ? 5 : 3,
-                    opacity: t.cancelado ? 0.9 : yaPasado ? 0.35 : 0.9,
-                    // El tramo cancelado se dibuja discontinuo: sigue siendo
-                    // parte del historial del envío, pero ese avión no vuela.
-                    dashArray: t.cancelado ? '6 6' : null,
-                  }}
+                  pathOptions={pathOptions}
                 >
                   <Tooltip sticky className="tasf-tooltip" opacity={1}>
                     <div className="text-xs">
@@ -584,6 +601,9 @@ export default function MapaDiaADia() {
                       <div className="text-slate-300">
                         Llega {hhmm(t.llegadaLocal)} {t.gmtDestino}
                       </div>
+                      {!yaSalio && !t.cancelado && (
+                        <div className="text-slate-400">Todavía no despega (vista previa)</div>
+                      )}
                       {t.esperaMinutos > 0 && (
                         <div className="text-amber-300">
                           Espera en {t.origenIcao}: {t.esperaMinutos} min
@@ -596,11 +616,42 @@ export default function MapaDiaADia() {
               )
             })}
 
+            {/* Vuelo resaltado desde la pestaña "Vuelos" del panel: se marca
+                con una línea punteada amarilla entre sus dos puntas, exista o
+                no un envío montado en él (F07/F08 de MapaMundi). */}
+            {vuelosResaltadosLinea.map(v => {
+              const a = coords[v.origenIcao]
+              const b = coords[v.destinoIcao]
+              if (!a || !b) return null
+              return (
+                <Polyline
+                  key={`resaltado-${v.vueloId}`}
+                  positions={[[a.lat, a.lng], [b.lat, b.lng]]}
+                  pathOptions={{ color: '#facc15', weight: 3, opacity: 0.95, dashArray: '4 8' }}
+                >
+                  <Tooltip sticky className="tasf-tooltip" opacity={1}>
+                    <div className="text-xs">
+                      <div className="font-bold text-white mb-1">{v.origenIcao} → {v.destinoIcao}</div>
+                      <div className="font-mono text-[10px] text-slate-400 mb-1">{v.vueloId.split('@')[0]}</div>
+                      <div className="text-slate-300">
+                        Sale {hhmm(v.salidaLocal)} {v.gmtOrigen} → Llega {hhmm(v.llegadaLocal)} {v.gmtDestino}
+                      </div>
+                      <div className="text-slate-300">
+                        Ocupación: {v.ocupado}/{v.capacidad} ({(v.ocupacionPorcentaje ?? 0).toFixed(1)}%)
+                      </div>
+                      {v.cancelado && <div className="text-red-400 mt-1">VUELO CANCELADO</div>}
+                    </div>
+                  </Tooltip>
+                </Polyline>
+              )
+            })}
+
             {/* TODOS los vuelos en curso ahora mismo, de cualquier envío — el
                 pedido central: que el mapa de operaciones se vea como el mapa
                 en vivo, con la flota completa a la vista y no un envío a la
-                vez. El avión del envío seleccionado (si está volando) se
-                destaca con un tono más claro y por encima del resto. */}
+                vez. El avión del envío elegido, o el que se resaltó desde la
+                pestaña "Vuelos", se destaca con un tono más claro y por
+                encima del resto. */}
             {vuelosActivos.map(v => {
               const a = coords[v.origenIcao]
               const b = coords[v.destinoIcao]
@@ -608,18 +659,26 @@ export default function MapaDiaADia() {
               const lat = a.lat + (b.lat - a.lat) * v.progreso
               const lng = a.lng + (b.lng - a.lng) * v.progreso
               const angle = getHeadingAngle(a, b)
-              // El avión del envío elegido se pinta en amarillo para ubicarlo,
-              // igual que MapaMundi hace con el vuelo resaltado desde el panel.
+              const esResaltadoUt = vueloResaltado && v.vueloId.split('@')[0] === vueloResaltado
+              const destacado = v.seleccionado || esResaltadoUt
+              // El avión del envío elegido (o del vuelo resaltado) se pinta en
+              // amarillo para ubicarlo, igual que MapaMundi hace con la UT
+              // resaltada desde su panel.
               const tono = getPlaneColors(v.ocupacionPct)
-              const fill = v.seleccionado ? '#facc15' : tono.fill
-              const stroke = v.seleccionado ? '#fde047' : tono.stroke
+              const fill = destacado ? '#facc15' : tono.fill
+              const stroke = destacado ? '#fde047' : tono.stroke
               return (
                 <Marker
                   key={v.key}
                   position={[lat, lng]}
                   icon={crearIconoAvion({ fill, stroke, angle, count: v.count })}
-                  zIndexOffset={v.seleccionado ? 2500 : 1500}
-                  eventHandlers={{ click: () => setSeleccionado(v.envioIds[0]) }}
+                  zIndexOffset={destacado ? 2500 : 1500}
+                  eventHandlers={{
+                    click: () => {
+                      setSeleccionado(v.envioIds[0])
+                      setVueloResaltado(null)
+                    },
+                  }}
                 >
                   <Tooltip direction="top" offset={[0, -12]} className="tasf-tooltip" opacity={1}>
                     <div className="text-xs">
@@ -639,6 +698,9 @@ export default function MapaDiaADia() {
                       )}
                       {v.seleccionado && (
                         <div className="text-amber-300 mt-1">Envío elegido a bordo</div>
+                      )}
+                      {esResaltadoUt && !v.seleccionado && (
+                        <div className="text-amber-300 mt-1">Vuelo resaltado desde el panel</div>
                       )}
                     </div>
                   </Tooltip>
@@ -665,8 +727,9 @@ export default function MapaDiaADia() {
               </Marker>
             )}
 
-            {/* Aeropuertos de la ruta, resaltados según su papel. */}
-            {puntosRuta.map((p, i) => {
+            {/* Aeropuertos de la ruta (o del vuelo resaltado, si no hay envío
+                elegido), resaltados según su papel. */}
+            {puntosDestacados.map((p, i) => {
               const c = coords[p.icao]
               if (!c) return null
               return (
