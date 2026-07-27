@@ -86,11 +86,25 @@ function hhmm(iso) {
   return iso ? String(iso).slice(11, 16) : '—'
 }
 
+/** "20:07 GMT+5 (UTC 15:07)" — la hora local seguida de su equivalente UTC,
+ * para no tener que convertir a mano en ningún panel. */
+function horaConUtc(local, gmt, utc) {
+  return `${hhmm(local)} ${gmt ?? ''} (UTC ${hhmm(utc)})`
+}
+
+const ESTADO_VUELO = {
+  'en-vuelo': { label: 'En vuelo', color: 'text-blue-400', icono: '✈' },
+  'por-salir': { label: 'Por salir', color: 'text-slate-400', icono: null },
+  'llego': { label: 'Llegó', color: 'text-slate-500', icono: null },
+  'cancelado': { label: 'Cancelado', color: 'text-red-400', icono: '✕' },
+}
+
 export default function PanelListasDiaADia({
   aeropuertos = [],
   envios = [],
   estadosPorEnvio,
   estado,
+  ahoraUtc,
   seleccionado,
   onSelectShipment,
   vueloResaltado,
@@ -201,10 +215,20 @@ export default function PanelListasDiaADia({
   const vuelosView = useMemo(() => {
     const bOrigen = normalizarTexto(busquedaOrigen)
     const bDestino = normalizarTexto(busquedaDestino)
+    // "Ahora" en la MISMA convención que usa el mapa (ahoraUtc, no new Date()
+    // directo): las horas del backend llegan sin zona y el navegador las lee
+    // como locales, así que comparar contra un new Date() normal desalinea
+    // esto por el huso del equipo — el mismo bug que ya se corrigió en el mapa.
+    const ahora = ahoraUtc ?? new Date()
     const preparados = (estado?.vuelos ?? []).map(v => {
       const plantilla = plantillaDe(v.vueloId)
       const origenInfo = airportMap.get(v.origenIcao)
       const destinoInfo = airportMap.get(v.destinoIcao)
+      const salida = v.salidaUtc ? new Date(v.salidaUtc) : null
+      const llegada = v.llegadaUtc ? new Date(v.llegadaUtc) : null
+      const yaSalio = salida && ahora >= salida
+      const yaLlego = llegada && ahora >= llegada
+      const estadoVuelo = v.cancelado ? 'cancelado' : (yaSalio && !yaLlego) ? 'en-vuelo' : yaLlego ? 'llego' : 'por-salir'
       return {
         ...v,
         _plantilla: plantilla,
@@ -212,6 +236,7 @@ export default function PanelListasDiaADia({
         _destinoTexto: textoUbicacion(v.destinoIcao, destinoInfo),
         _origenDetalle: [origenInfo?.ciudad, origenInfo?.pais].filter(Boolean).join(' · '),
         _destinoDetalle: [destinoInfo?.ciudad, destinoInfo?.pais].filter(Boolean).join(' · '),
+        _estadoVuelo: estadoVuelo,
       }
     })
     const filtrados = preparados.filter(v => {
@@ -227,11 +252,14 @@ export default function PanelListasDiaADia({
     const mult = direccion.vuelos === 'asc' ? 1 : -1
     return [...filtrados].sort((a, b) =>
       Number(b._plantilla === vueloResaltado) - Number(a._plantilla === vueloResaltado)
+      // Los que ya están en vuelo primero: es justo lo que se quiere ubicar
+      // de un vistazo en esta pestaña.
+      || Number(b._estadoVuelo === 'en-vuelo') - Number(a._estadoVuelo === 'en-vuelo')
       || mult * ORDEN_VUELOS[orden.vuelos].cmp(a, b)
       || compararTexto(a.vueloId, b.vueloId))
   }, [
     estado, airportMap, q, busquedaOrigen, busquedaDestino, filtroOrigen, filtroDestino,
-    orden.vuelos, direccion.vuelos, vueloResaltado,
+    orden.vuelos, direccion.vuelos, vueloResaltado, ahoraUtc,
   ])
 
   const enviosView = useMemo(() => {
@@ -456,10 +484,9 @@ export default function PanelListasDiaADia({
             const abierto = vueloAbierto === v.vueloId
             const resaltado = vueloResaltado === v._plantilla
             const enviosVuelo = enviosPorVuelo.get(v.vueloId) ?? []
-            const yaSalio = v.salidaUtc && new Date() >= new Date(v.salidaUtc)
-            const enAire = yaSalio && (!v.llegadaUtc || new Date() < new Date(v.llegadaUtc))
             const pct = v.ocupacionPorcentaje ?? 0
             const sem = getSemaforoPorOcupacion(pct)
+            const est = ESTADO_VUELO[v._estadoVuelo]
             return (
               <div key={v.vueloId} className={`${abierto ? 'bg-slate-800/35' : ''} ${resaltado ? 'border-l-2 border-amber-400' : ''}`}>
                 <button
@@ -470,14 +497,16 @@ export default function PanelListasDiaADia({
                   <div className="flex items-center justify-between gap-2">
                     <div className="min-w-0">
                       <div className="flex items-center gap-1.5">
-                        {enAire && <span className="text-blue-400" title="En vuelo ahora">✈</span>}
-                        {v.cancelado && <span className="text-red-400" title="Cancelado">✕</span>}
+                        {est.icono && <span className={est.color} title={est.label}>{est.icono}</span>}
                         <span className="font-mono text-xs font-semibold text-blue-300 truncate">{v._plantilla}</span>
-                        <span className="text-[10px] text-slate-500">Sale: {hhmm(v.salidaLocal)} {v.gmtOrigen}</span>
+                        <span className={`text-[10px] font-semibold ${est.color}`}>{est.label}</span>
                       </div>
                       <div className="text-xs text-slate-200 mt-0.5">{v.origenIcao} → {v.destinoIcao}</div>
                       <div className="text-[10px] text-slate-500 truncate">
                         {v._origenDetalle || v.origenIcao} → {v._destinoDetalle || v.destinoIcao}
+                      </div>
+                      <div className="text-[10px] text-slate-500 mt-0.5">
+                        Sale: {horaConUtc(v.salidaLocal, v.gmtOrigen, v.salidaUtc)}
                       </div>
                     </div>
                     <span className="flex items-center gap-1 shrink-0">
@@ -487,7 +516,7 @@ export default function PanelListasDiaADia({
                   </div>
                   <div className="flex items-center justify-between mt-1 text-[10px] text-slate-500">
                     <span>Ocupado: {v.ocupado}/{v.capacidad}</span>
-                    <span>Llega: {hhmm(v.llegadaLocal)} {v.gmtDestino}</span>
+                    <span>Llega: {horaConUtc(v.llegadaLocal, v.gmtDestino, v.llegadaUtc)}</span>
                   </div>
                   <div className="flex items-center justify-between mt-1 text-[10px]">
                     <span className="text-blue-300">{enviosVuelo.length} envío{enviosVuelo.length === 1 ? '' : 's'}</span>

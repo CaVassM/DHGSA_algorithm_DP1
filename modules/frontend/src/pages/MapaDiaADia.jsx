@@ -145,6 +145,12 @@ function hhmm(iso) {
   return iso ? String(iso).slice(11, 16) : '—'
 }
 
+/** "18:37 GMT-5 (UTC 23:37)" — para no tener que convertir husos a mano en
+ * ningún cartel del mapa. */
+function horaConUtc(local, gmt, utc) {
+  return `${hhmm(local)} ${gmt ?? ''} (UTC ${hhmm(utc)})`
+}
+
 function fechaHora(iso) {
   return iso ? String(iso).slice(5, 16).replace('T', ' ') : '—'
 }
@@ -396,6 +402,7 @@ export default function MapaDiaADia() {
           destinoIcao: t.destinoIcao,
           progreso: est.progreso,
           llegadaLocal: t.llegadaLocal,
+          llegadaUtc: t.llegadaUtc,
           gmtDestino: t.gmtDestino,
           capacidad: t.capacidad ?? 0,
           count: 0,
@@ -441,6 +448,7 @@ export default function MapaDiaADia() {
         destinoIcao: v.destinoIcao,
         progreso: (ahoraUtc - v.salida) / (v.llegada - v.salida),
         llegadaLocal: v.llegadaLocal,
+        llegadaUtc: v.llegadaUtc,
         gmtDestino: v.gmtDestino,
         capacidad: v.capacidad,
         count: 0,
@@ -565,6 +573,7 @@ export default function MapaDiaADia() {
                 envios={envios}
                 estadosPorEnvio={estadosPorEnvio}
                 estado={estado}
+                ahoraUtc={ahoraUtc}
                 seleccionado={seleccionado}
                 onSelectShipment={setSeleccionado}
                 vueloResaltado={vueloResaltado}
@@ -666,10 +675,10 @@ export default function MapaDiaADia() {
                       </div>
                       <div className="font-mono text-[10px] text-slate-400 mb-1">{t.vueloId}</div>
                       <div className="text-slate-300">
-                        Sale {hhmm(t.salidaLocal)} {t.gmtOrigen}
+                        Sale {horaConUtc(t.salidaLocal, t.gmtOrigen, t.salidaUtc)}
                       </div>
                       <div className="text-slate-300">
-                        Llega {hhmm(t.llegadaLocal)} {t.gmtDestino}
+                        Llega {horaConUtc(t.llegadaLocal, t.gmtDestino, t.llegadaUtc)}
                       </div>
                       {!yaSalio && !t.cancelado && (
                         <div className="text-slate-400">Todavía no despega (vista previa)</div>
@@ -704,7 +713,10 @@ export default function MapaDiaADia() {
                       <div className="font-bold text-white mb-1">{v.origenIcao} → {v.destinoIcao}</div>
                       <div className="font-mono text-[10px] text-slate-400 mb-1">{v.vueloId.split('@')[0]}</div>
                       <div className="text-slate-300">
-                        Sale {hhmm(v.salidaLocal)} {v.gmtOrigen} → Llega {hhmm(v.llegadaLocal)} {v.gmtDestino}
+                        Sale {horaConUtc(v.salidaLocal, v.gmtOrigen, v.salidaUtc)}
+                      </div>
+                      <div className="text-slate-300">
+                        Llega {horaConUtc(v.llegadaLocal, v.gmtDestino, v.llegadaUtc)}
                       </div>
                       <div className="text-slate-300">
                         Ocupación: {v.ocupado}/{v.capacidad} ({(v.ocupacionPorcentaje ?? 0).toFixed(1)}%)
@@ -713,6 +725,33 @@ export default function MapaDiaADia() {
                     </div>
                   </Tooltip>
                 </Polyline>
+              )
+            })}
+
+            {/* Línea de la ruta de CADA avión en curso, sin necesidad de elegir
+                nada: es lo que pide el evaluador — entrar y ver de un vistazo
+                hacia dónde va cada vuelo que ya está en el aire, no solo el
+                seleccionado. Punteada y más tenue que la ruta del envío
+                elegido (esa sigue siendo la más marcada). */}
+            {avionesEnAire.map(v => {
+              const a = coords[v.origenIcao]
+              const b = coords[v.destinoIcao]
+              if (!a || !b) return null
+              // Mismo filtro por semáforo que el avión: si su color está
+              // apagado en el panel de filtros, la línea se atenúa igual —
+              // antes se quedaba a toda opacidad aunque el avión desapareciera.
+              const atenuado = utsOcultas.has(getPlaneSemaforo(v.ocupacionPct))
+              return (
+                <Polyline
+                  key={`linea-${v.key}`}
+                  positions={[[a.lat, a.lng], [b.lat, b.lng]]}
+                  pathOptions={{
+                    color: v.vacio ? '#94a3b8' : '#3b82f6',
+                    weight: 2,
+                    opacity: atenuado ? 0.08 : 0.55,
+                    dashArray: '4 8',
+                  }}
+                />
               )
             })}
 
@@ -773,7 +812,7 @@ export default function MapaDiaADia() {
                       )}
                       <div className="text-slate-300">Progreso: <span className="text-slate-200 font-semibold">{Math.round(v.progreso * 100)}%</span></div>
                       <div className="text-slate-300">
-                        Llega: <span className="text-slate-200 font-semibold">{hhmm(v.llegadaLocal)} {v.gmtDestino}</span>
+                        Llega: <span className="text-slate-200 font-semibold">{horaConUtc(v.llegadaLocal, v.gmtDestino, v.llegadaUtc)}</span>
                       </div>
                       {v.count > 1 && (
                         <div className="text-slate-500 font-mono mt-1">{v.envioIds.join(', ')}</div>
@@ -985,7 +1024,7 @@ export default function MapaDiaADia() {
                           </div>
                           <div className="text-[11px] font-mono text-slate-500 truncate">{t.vueloId}</div>
                           <div className="text-xs text-slate-300">
-                            {hhmm(t.salidaLocal)} {t.gmtOrigen} → {hhmm(t.llegadaLocal)} {t.gmtDestino}
+                            {horaConUtc(t.salidaLocal, t.gmtOrigen, t.salidaUtc)} → {horaConUtc(t.llegadaLocal, t.gmtDestino, t.llegadaUtc)}
                           </div>
                         </div>
                         {/* Cancelar sin salir del mapa: es la secuencia que pide
