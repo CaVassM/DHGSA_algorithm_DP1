@@ -70,14 +70,15 @@ public class DailyScenarioSetupService {
             List.of("EBCI", "LBSF", "OAKB", "OPKC", "EHAM", "OMDB");
 
     /**
-     * Desplazamiento de cada vuelo dentro de su bloque: los dos primeros salen a
-     * la hora de la prueba con minuto 12, los dos siguientes una hora más tarde
-     * con minuto 13, y los dos últimos dos horas más tarde con minuto 14. Sale
-     * de la plantilla del enunciado.
+     * Minutos que se suman a la hora de inicio de la prueba para obtener la
+     * salida real — aclaración del profesor: "todos parten en el minuto 15,
+     * luego de iniciada la presentación" (el 09:12 de la plantilla del
+     * enunciado era una errata). Es una suma real sobre la hora ingresada, no
+     * un minuto de reloj fijo: si la prueba empieza a las 02:40, la salida es
+     * 02:55, no 02:15. Todos los destinos de una misma sede salen a esa misma
+     * hora local; no hay escalonado por bloques.
      */
-    private static final int[][] OFFSETS = {
-            {0, 12}, {0, 12}, {1, 13}, {1, 13}, {2, 14}, {2, 14}
-    };
+    private static final int MINUTOS_TRAS_INICIO = 15;
 
     private final AirportRepository airportRepository;
     private final DailyOperationService dailyOperationService;
@@ -230,13 +231,21 @@ public class DailyScenarioSetupService {
      */
     @Transactional
     public ResultadoVuelos generarVuelosAdicionales(String horaPrueba, boolean persistir) {
-        int horaLima;
+        int horaBase;
+        int minutoBase;
         try {
             String[] partes = horaPrueba.trim().split(":");
-            horaLima = Integer.parseInt(partes[0].trim());
-            if (horaLima < 0 || horaLima > 23) {
+            int horaLima = Integer.parseInt(partes[0].trim());
+            int minutoLima = Integer.parseInt(partes[1].trim());
+            if (horaLima < 0 || horaLima > 23 || minutoLima < 0 || minutoLima > 59) {
                 throw new NumberFormatException();
             }
+            // La salida real es MINUTOS_TRAS_INICIO minutos después de la hora
+            // ingresada (suma real, con acarreo de hora si hace falta) — no un
+            // minuto de reloj fijo.
+            int totalMinutos = horaLima * 60 + minutoLima + MINUTOS_TRAS_INICIO;
+            horaBase = (totalMinutos / 60) % 24;
+            minutoBase = totalMinutos % 60;
         } catch (RuntimeException e) {
             throw new IllegalArgumentException(
                     "Hora inválida: '" + horaPrueba + "'. Se espera HH:mm en 24 h, por ejemplo 11:00.");
@@ -279,22 +288,23 @@ public class DailyScenarioSetupService {
                         continue;
                     }
 
-                    int saltoHoras = OFFSETS[i][0];
-                    int minuto = OFFSETS[i][1];
-
                     // La prueba empieza a la misma hora física en las cuatro
                     // sedes, así que la hora local de salida se traslada desde
-                    // la de Lima con la diferencia de husos.
+                    // la de Lima (horaBase:minutoBase, ya con los +15 min
+                    // sumados) con la diferencia de husos. Todos los destinos de
+                    // una misma sede salen a esa MISMA hora — sin escalonado por
+                    // bloques. El minuto no cambia de HO a HD: duración y
+                    // diferencia de husos son horas enteras.
                     int ho = Math.floorMod(
-                            horaLima + saltoHoras + (origen.getGmt() - porIcao.get("SPIM").getGmt()), 24);
+                            horaBase + (origen.getGmt() - porIcao.get("SPIM").getGmt()), 24);
                     int hd = Math.floorMod(ho + duracion + (destino.getGmt() - origen.getGmt()), 24);
 
                     String linea = String.format("%s-%s-%02d:%02d-%02d:%02d-%04d",
-                            sede, icaoDestino, ho, minuto, hd, minuto, CAPACIDAD_VUELO_PRUEBA);
+                            sede, icaoDestino, ho, minutoBase, hd, minutoBase, CAPACIDAD_VUELO_PRUEBA);
 
                     generados.add(new VueloGenerado(linea, sede, icaoDestino,
-                            String.format("%02d:%02d", ho, minuto),
-                            String.format("%02d:%02d", hd, minuto),
+                            String.format("%02d:%02d", ho, minutoBase),
+                            String.format("%02d:%02d", hd, minutoBase),
                             CAPACIDAD_VUELO_PRUEBA));
                     archivo.append(linea).append('\n');
                 }

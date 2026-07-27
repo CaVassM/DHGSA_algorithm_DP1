@@ -34,9 +34,11 @@ Las duraciones salen de las reglas del enunciado: 6 h dentro de Sudamérica y
 12 h fuera, para SPIM/SABE; 4 h dentro de Europa-Asia y 13 h fuera, para
 EKCH/VIDP.
 
-Nota: el enunciado trae un Ejemplo 1 cuyo HO aparece como 09:12 para una
-presentación de las 11:00. Es una errata en el HO — el HD del mismo ejemplo sí
-sigue la fórmula, y es la fórmula lo que aquí se implementa.
+Nota: el Ejemplo 1 del enunciado trae el HO como 09:12 para una presentación de
+las 11:00 — es una errata en el minuto. El profesor aclaró que la regla real es
+minuto 15 para todos los vuelos ("todos parten en el minuto 15, luego de
+iniciada la presentación"), sea cual sea la hora de inicio elegida; 09:15 en su
+ejemplo es solo eso, un ejemplo con hora de inicio 09:00.
 """
 
 import argparse
@@ -66,9 +68,14 @@ GMT = {
 SUDAMERICA = ['SCEL', 'SVMI', 'SBBR', 'SKBO', 'SGAS', 'SUAA']
 EUROPA_ASIA = ['EBCI', 'LBSF', 'OAKB', 'OPKC', 'EHAM', 'OMDB']
 
-# Minutos que el enunciado asigna a cada vuelo de la plantilla: los dos
-# primeros destinos salen a HO:12, los dos siguientes a HO+1:12, etc.
-OFFSETS = [(0, 12), (0, 12), (1, 13), (1, 13), (2, 14), (2, 14)]
+# Minutos que se suman a la hora de inicio para obtener la salida real
+# (aclaración del profesor: "todos parten en el minuto 15, luego de iniciada
+# la presentación"; el 09:12 del Ejemplo 1 era una errata, no la regla). Es
+# una suma real sobre la hora ingresada, no un minuto de reloj fijo: si la
+# prueba empieza a las 02:40, la salida es 02:55, no 02:15. Todos los
+# destinos de una misma sede salen a esa misma hora — no hay escalonado por
+# bloques.
+MINUTOS_TRAS_INICIO = 15
 
 CAPACIDAD = '0150'
 
@@ -87,18 +94,28 @@ def generar(hora_lima, minuto_lima, comentarios):
     lineas = []
     total = 0
 
+    # La salida real es MINUTOS_TRAS_INICIO minutos después de la hora
+    # ingresada (suma real, con acarreo de hora si hace falta) — no un minuto
+    # de reloj fijo.
+    total_minutos = hora_lima * 60 + minuto_lima + MINUTOS_TRAS_INICIO
+    hora_base = (total_minutos // 60) % 24
+    minuto_base = total_minutos % 60
+
     for sede, destinos, duracion, rotulo in bloques():
         if comentarios:
             lineas.append(f'** {rotulo}')
 
-        for destino, (salto_h, minuto) in zip(destinos, OFFSETS):
+        for destino in destinos:
             # HO en hora local de la sede: la prueba empieza a la misma hora
-            # física en todas, así que se traslada desde la hora de Lima.
-            ho = (hora_lima + salto_h + (GMT[sede] - GMT['SPIM'])) % 24
+            # física en todas, así que se traslada desde la de Lima (ya con los
+            # +15 min sumados). Todos los destinos de esta sede salen a esa
+            # MISMA hora (sin escalonado). El minuto no cambia de HO a HD:
+            # duración y diferencia de husos son horas enteras.
+            ho = (hora_base + (GMT[sede] - GMT['SPIM'])) % 24
             # HD = HO + duración + diferencia de husos (fórmula del enunciado).
             hd = (ho + duracion + (GMT[destino] - GMT[sede])) % 24
 
-            lineas.append(f'{sede}-{destino}-{ho:02d}:{minuto:02d}-{hd:02d}:{minuto:02d}-{CAPACIDAD}')
+            lineas.append(f'{sede}-{destino}-{ho:02d}:{minuto_base:02d}-{hd:02d}:{minuto_base:02d}-{CAPACIDAD}')
             total += 1
 
         if comentarios:

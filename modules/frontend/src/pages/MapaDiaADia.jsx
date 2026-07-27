@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { MapContainer, TileLayer, Marker, Polyline, Tooltip } from 'react-leaflet'
 import L from 'leaflet'
 import NavBar from '../components/NavBar'
 import PanelListasDiaADia from '../components/PanelListasDiaADia'
 import { getAirports, getEnviosDiariosConRuta, getEstadoDiario, cancelarVueloDiario } from '../services/api'
+import { SEMAFORO_COLORES, getSemaforoPorOcupacion } from '../data/aeropuertos'
 
 // Mapa de operaciones día a día.
 //
@@ -160,6 +161,12 @@ function hhmmss(d) {
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
 
+/** "2026-07-27" — fecha del reloj UTC en vivo, para el panel "Operación en vivo". */
+function fechaCorta(d) {
+  const p = n => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
+
 /**
  * "Ahora" en la misma convención en que llegan las fechas del backend.
  *
@@ -267,6 +274,10 @@ export default function MapaDiaADia() {
   // panel — igual que F07/F08 en MapaMundi: se puede ubicar una UT en el mapa
   // sin necesidad de que un envío concreto vaya montado en ella.
   const [vueloResaltado, setVueloResaltado] = useState(null)
+  // Almacén elegido desde la pestaña "Almacenes" del panel: igual que el envío
+  // o el vuelo resaltado, es excluyente con los otros dos — solo puede haber
+  // un modo de foco activo a la vez en el mapa.
+  const [almacenSeleccionado, setAlmacenSeleccionado] = useState(null)
   const [cargando, setCargando] = useState(true)
   const [error, setError] = useState(null)
   // Estado en vivo de almacenes y flota (capacidades, ocupación) — alimenta las
@@ -275,10 +286,22 @@ export default function MapaDiaADia() {
   // Panel lateral completo: ocultable para dejar el mapa a pantalla completa.
   const [sidebarColapsado, setSidebarColapsado] = useState(false)
 
-  // T54/T55 (adaptado): filtro por semáforo de los aviones en el mapa — mismo
-  // panel que MapaMundi, mismos 4 colores (vacío/verde/ámbar/rojo). Un color
-  // "apagado" atenúa esos aviones en vez de ocultarlos del todo.
+  // Instancia de Leaflet: hace falta para interpolar la posición del avión en
+  // el MISMO espacio en que Leaflet dibuja la línea (píxeles de pantalla), no
+  // en grados lat/lng. Interpolar en grados se curva al proyectar a Mercator
+  // y, en rutas largas (sobre todo las que cruzan el antimeridiano, ±180°),
+  // el avión terminaba dibujado lejos de su propia línea — con pocos vuelos
+  // no se notaba, pero con cientos de vuelos de larga distancia sí. Mismo
+  // arreglo que ya usa MapaMundi.
+  const [mapInstance, setMapInstance] = useState(null)
+
+  // T54/T55 (adaptado): filtros del mapa — mismo panel que MapaMundi: semáforo
+  // de aviones (por ocupación del vuelo), semáforo de almacenes (por ocupación
+  // de la sede) y continente. Un color/continente "apagado" oculta del todo
+  // esos aeropuertos y vuelos (no solo los atenúa).
   const [utsOcultas, setUtsOcultas] = useState(() => new Set())
+  const [almacenesOcultos, setAlmacenesOcultos] = useState(() => new Set())
+  const [continentesOcultos, setContinentesOcultos] = useState(() => new Set())
   const [filtroSemaforoAbierto, setFiltroSemaforoAbierto] = useState(false)
 
   // Cancelación desde el propio mapa. La prueba encadena "seleccionar un envío,
@@ -297,8 +320,12 @@ export default function MapaDiaADia() {
   // las interpreta como hora local. Para compararlas hay que llevar el "ahora"
   // a esa misma convención: la hora UTC actual, leída como si fuera local.
   const [ahoraUtc, setAhoraUtc] = useState(ahoraComoUtc)
+  const [ahoraSistema, setAhoraSistema] = useState(() => new Date())
   useEffect(() => {
-    const id = setInterval(() => setAhoraUtc(ahoraComoUtc()), 1000)
+    const id = setInterval(() => {
+      setAhoraUtc(ahoraComoUtc())
+      setAhoraSistema(new Date())
+    }, 1000)
     return () => clearInterval(id)
   }, [])
 
@@ -346,6 +373,33 @@ export default function MapaDiaADia() {
     }
   }, [refrescar, refrescarEstado])
 
+  // Los tres modos de foco del mapa (envío / vuelo / almacén) son excluyentes
+  // entre sí: elegir uno apaga los otros dos, igual que ya hace MapaMundi con
+  // su búsqueda de envío y su resaltado de UT.
+  const seleccionarEnvioMapa = useCallback(id => {
+    setSeleccionado(id)
+    if (id) { setVueloResaltado(null); setAlmacenSeleccionado(null) }
+  }, [])
+  const resaltarVueloMapa = useCallback(id => {
+    setVueloResaltado(id)
+    if (id) { setSeleccionado(null); setAlmacenSeleccionado(null) }
+  }, [])
+  const seleccionarAlmacenMapa = useCallback(icao => {
+    setAlmacenSeleccionado(icao)
+    if (icao) { setSeleccionado(null); setVueloResaltado(null) }
+  }, [])
+
+  /** Deja el mapa como al entrar: sin foco elegido y sin filtros de semáforo o
+   * continente activos. Botón "Limpiar filtros" del panel. */
+  const limpiarTodoElFoco = useCallback(() => {
+    setSeleccionado(null)
+    setVueloResaltado(null)
+    setAlmacenSeleccionado(null)
+    setUtsOcultas(new Set())
+    setAlmacenesOcultos(new Set())
+    setContinentesOcultos(new Set())
+  }, [])
+
   useEffect(() => {
     let vivo = true
     getAirports(0, 500)
@@ -369,12 +423,70 @@ export default function MapaDiaADia() {
   // Estado (fase/color/detalle) de CADA envío, no solo del elegido: alimenta la
   // lista de la izquierda y el agrupado de vuelos activos de más abajo. Un solo
   // cálculo por envío y por tick de reloj, en vez de repetirlo en cada sitio
-  // que lo necesita.
+  // que lo necesita. Declarado ANTES de `ocupacionPorAlmacen`: ese cálculo lo
+  // usa, y estar declarado después causaba "Cannot access before initialization".
   const estadosPorEnvio = useMemo(() => {
     const m = new Map()
     envios.forEach(e => m.set(e.envioId, estadoDeLaMaleta(e, ahoraUtc)))
     return m
   }, [envios, ahoraUtc])
+
+  // Ocupación de almacén por aeropuerto: lo único que ocupa espacio físico en
+  // una sede en día a día es una maleta en almacén de origen (todavía no salió)
+  // o en escala (ya llegó a una conexión, esperando el siguiente tramo) — volando
+  // no ocupa almacén de nadie. Mismo cálculo que usa la pestaña "Almacenes" del
+  // panel, repetido aquí porque el filtro de colores necesita el semáforo por
+  // aeropuerto para poder ocultarlos en el mapa.
+  const ocupacionPorAlmacen = useMemo(() => {
+    const resultado = {}
+    envios.forEach(envio => {
+      const est = estadosPorEnvio.get(envio.envioId)
+      if (!est) return
+      if (est.fase === 'en-almacen') {
+        const icao = envio.tramos?.[0]?.origenIcao
+        if (icao) resultado[icao] = (resultado[icao] ?? 0) + (envio.cantidadMaletas ?? 0)
+      } else if (est.fase === 'en-escala') {
+        const icao = envio.tramos?.[est.tramoActual]?.destinoIcao
+        if (icao) resultado[icao] = (resultado[icao] ?? 0) + (envio.cantidadMaletas ?? 0)
+      }
+    })
+    return resultado
+  }, [envios, estadosPorEnvio])
+
+  /** Color de semáforo del almacén de cada aeropuerto (mismos 4 colores/umbrales
+   * que MapaMundi usa para sus almacenes — `getSemaforoPorOcupacion`). */
+  const semaforoPorAeropuerto = useMemo(() => {
+    const m = new Map()
+    aeropuertos.forEach(a => {
+      const ocupado = ocupacionPorAlmacen[a.codigoIcao] ?? 0
+      const capacidad = Number(a.capacidadAlmacen ?? 0)
+      const pct = capacidad > 0 ? (ocupado / capacidad) * 100 : 0
+      m.set(a.codigoIcao, getSemaforoPorOcupacion(pct))
+    })
+    return m
+  }, [aeropuertos, ocupacionPorAlmacen])
+
+  const continentes = useMemo(
+    () => Array.from(new Set(aeropuertos.map(a => a.continente).filter(Boolean))).sort(),
+    [aeropuertos],
+  )
+
+  /**
+   * ICAOs ocultos por el filtro de almacenes o de continente. Regla del
+   * profesor (la misma que ya sigue MapaMundi): ocultar un aeropuerto oculta
+   * también sus vuelos — no tendría sentido ver un avión saliendo de un
+   * aeropuerto que el propio filtro dice que no querés ver.
+   */
+  const icaosOcultos = useMemo(() => {
+    const set = new Set()
+    aeropuertos.forEach(a => {
+      const semAlmacen = semaforoPorAeropuerto.get(a.codigoIcao)
+      if (almacenesOcultos.has(semAlmacen) || continentesOcultos.has(a.continente)) {
+        set.add(a.codigoIcao)
+      }
+    })
+    return set
+  }, [aeropuertos, semaforoPorAeropuerto, almacenesOcultos, continentesOcultos])
 
   /**
    * TODOS los vuelos que están en el aire ahora mismo, de cualquier envío —
@@ -469,6 +581,23 @@ export default function MapaDiaADia() {
   )
 
   /**
+   * Qué aviones se DIBUJAN en el mapa: todos, salvo que haya un foco activo
+   * elegido desde el panel — envío ("Envíos"), vuelo ("Vuelos") o almacén
+   * ("Almacenes") — en cuyo caso el resto de la flota se oculta para dejar
+   * la vista despejada con solo lo que corresponde a ese foco. `avionesEnAire`
+   * (sin filtrar) se sigue usando para los contadores del panel de arriba, que
+   * muestran el total de la operación, no solo lo que se está mirando.
+   */
+  const avionesVisibles = useMemo(() => {
+    if (seleccionado) return avionesEnAire.filter(v => v.envioIds.includes(seleccionado))
+    if (vueloResaltado) return avionesEnAire.filter(v => v.vueloId.split('@')[0] === vueloResaltado)
+    if (almacenSeleccionado) {
+      return avionesEnAire.filter(v => v.origenIcao === almacenSeleccionado || v.destinoIcao === almacenSeleccionado)
+    }
+    return avionesEnAire
+  }, [avionesEnAire, seleccionado, vueloResaltado, almacenSeleccionado])
+
+  /**
    * Salidas del vuelo resaltado desde la pestaña "Vuelos" del panel (F07/F08
    * de MapaMundi, adaptado): un vuelo se puede ubicar en el mapa aunque no
    * lleve ningún envío montado todavía, usando el catálogo en vivo
@@ -478,6 +607,65 @@ export default function MapaDiaADia() {
     if (!vueloResaltado || !estado?.vuelos) return []
     return estado.vuelos.filter(v => v.vueloId.split('@')[0] === vueloResaltado)
   }, [vueloResaltado, estado])
+
+  /**
+   * Vuelos que tocan el almacén elegido desde la pestaña "Almacenes" del
+   * panel: los que ENTRAN (destino = ese almacén) y los que SALEN (origen =
+   * ese almacén), con su ruta completa — hayan despegado o no todavía. Sale
+   * del catálogo en vivo (`estado.vuelos`), no de `avionesEnAire`: ese último
+   * solo trae lo que ya está en el aire, y acá se quiere ver también lo que
+   * está por salir/llegar.
+   */
+  const vuelosDelAlmacen = useMemo(() => {
+    if (!almacenSeleccionado || !estado?.vuelos) return []
+    return estado.vuelos.filter(v => v.origenIcao === almacenSeleccionado || v.destinoIcao === almacenSeleccionado)
+  }, [almacenSeleccionado, estado])
+
+  // `coords` se reconstruye cada refresco de aeropuertos (cada 5s) aunque el
+  // dato no haya cambiado; leerlo por ref evita que el efecto de zoom de abajo
+  // se dispare de nuevo en cada refresco y "empuje" la vista mientras el
+  // usuario ya la movió a mano.
+  const coordsRef = useRef(coords)
+  useEffect(() => { coordsRef.current = coords }, [coords])
+
+  // Zoom al almacén elegido desde la pestaña "Almacenes" — mismo gesto que
+  // `enfocarAeropuerto` de MapaMundi.
+  useEffect(() => {
+    if (!almacenSeleccionado || !mapInstance) return
+    const c = coordsRef.current[almacenSeleccionado]
+    if (!c) return
+    mapInstance.flyTo([c.lat, c.lng], Math.max(mapInstance.getZoom(), 5), { duration: 0.8 })
+  }, [almacenSeleccionado, mapInstance])
+
+  // Zoom al vuelo resaltado desde la pestaña "Vuelos": si ya está en el aire,
+  // se centra en su posición actual; si todavía no despegó, en el punto medio
+  // de su ruta. Solo debe reaccionar al CLICK del panel (cambio de
+  // `vueloResaltado`), no en cada tick del reloj — por eso no lleva
+  // `avionesEnAire`/`estado`/`coords` en las dependencias.
+  useEffect(() => {
+    if (!vueloResaltado || !mapInstance) return
+    const c = coordsRef.current
+    const enAire = avionesEnAire.find(v => v.vueloId.split('@')[0] === vueloResaltado)
+    if (enAire) {
+      const a = c[enAire.origenIcao]
+      const b = c[enAire.destinoIcao]
+      if (a && b) {
+        const lat = a.lat + (b.lat - a.lat) * enAire.progreso
+        const lng = a.lng + (b.lng - a.lng) * enAire.progreso
+        mapInstance.flyTo([lat, lng], Math.max(mapInstance.getZoom(), 4), { duration: 0.8 })
+      }
+      return
+    }
+    const v = estado?.vuelos?.find(x => x.vueloId.split('@')[0] === vueloResaltado)
+    if (v) {
+      const a = c[v.origenIcao]
+      const b = c[v.destinoIcao]
+      if (a && b) {
+        mapInstance.flyTo([(a.lat + b.lat) / 2, (a.lng + b.lng) / 2], Math.max(mapInstance.getZoom(), 4), { duration: 0.8 })
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vueloResaltado, mapInstance])
 
   const envio = envios.find(e => e.envioId === seleccionado) ?? null
   const estadoActual = envio ? estadosPorEnvio.get(envio.envioId) : null
@@ -554,12 +742,22 @@ export default function MapaDiaADia() {
         {!sidebarColapsado && (
           <aside className="w-96 shrink-0 bg-slate-900 border-r border-slate-700 flex flex-col">
             <div className="px-4 py-3 border-b border-slate-700">
-              <h2 className="text-sm font-semibold text-slate-200 uppercase tracking-wider">
-                Operación día a día
-              </h2>
+              <div className="flex items-center justify-between gap-2">
+                <h2 className="text-sm font-semibold text-slate-200 uppercase tracking-wider">
+                  Operación día a día
+                </h2>
+                <button
+                  type="button"
+                  onClick={limpiarTodoElFoco}
+                  title="Quita el envío/vuelo/almacén elegido y los filtros de semáforo y continente"
+                  className="shrink-0 px-2 py-1 rounded border border-slate-600 bg-slate-800 text-[10px] text-slate-300 hover:text-white hover:border-blue-500/60 transition-colors"
+                >
+                  Limpiar filtros
+                </button>
+              </div>
               <p className="text-[11px] text-slate-500 mt-0.5">
-                Almacenes, vuelos y envíos en vivo. Elegí un envío o un vuelo
-                para verlo resaltado en el mapa.
+                Almacenes, vuelos y envíos en vivo. Elegí un envío, un vuelo o
+                un almacén para verlo resaltado y centrado en el mapa.
               </p>
             </div>
 
@@ -575,9 +773,11 @@ export default function MapaDiaADia() {
                 estado={estado}
                 ahoraUtc={ahoraUtc}
                 seleccionado={seleccionado}
-                onSelectShipment={setSeleccionado}
+                onSelectShipment={seleccionarEnvioMapa}
                 vueloResaltado={vueloResaltado}
-                onSelectFlight={setVueloResaltado}
+                onSelectFlight={resaltarVueloMapa}
+                almacenSeleccionado={almacenSeleccionado}
+                onSelectAlmacen={seleccionarAlmacenMapa}
                 onCancelarVuelo={cancelarTramo}
                 cancelando={cancelando}
                 avisoCancelacion={avisoCancelacion}
@@ -609,6 +809,7 @@ export default function MapaDiaADia() {
           <MapContainer
             center={CENTRO} zoom={ZOOM} className="w-full h-full" worldCopyJump
             zoomSnap={0.25} zoomDelta={0.25} wheelPxPerZoomLevel={200}
+            ref={setMapInstance}
           >
             <TileLayer
               url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
@@ -617,20 +818,24 @@ export default function MapaDiaADia() {
 
             {/* Aeropuertos que no participan en la ruta elegida: se dejan como
                 referencia geográfica, con el mismo ícono que usa el mapa en
-                vivo (círculo + silueta de avión), solo que en gris neutro. */}
-            {aeropuertos.map(a => (
-              icaosEnRuta.has(a.codigoIcao) ? null : (
+                vivo (círculo + silueta de avión), coloreado por el semáforo de
+                ocupación de su almacén — igual que MapaMundi. El filtro de
+                almacenes/continente los oculta del todo, no solo los atenúa. */}
+            {aeropuertos.map(a => {
+              if (icaosEnRuta.has(a.codigoIcao) || icaosOcultos.has(a.codigoIcao)) return null
+              const sem = semaforoPorAeropuerto.get(a.codigoIcao)
+              return (
                 <Marker
                   key={a.codigoIcao}
                   position={[a.latitud, a.longitud]}
-                  icon={crearIconoAeropuerto(COLOR_NEUTRO)}
+                  icon={crearIconoAeropuerto(SEMAFORO_COLORES[sem] ?? COLOR_NEUTRO)}
                 >
                   <Tooltip direction="top" className="tasf-tooltip" opacity={1}>
                     <span className="text-xs">{a.codigoIcao} · {a.ciudad}</span>
                   </Tooltip>
                 </Marker>
               )
-            ))}
+            })}
 
             {/* Tramos del envío seleccionado, en orden de vuelo. Mismo criterio
                 que MapaMundi para sus rutas ("revealAt"): un tramo que TODAVÍA
@@ -728,19 +933,65 @@ export default function MapaDiaADia() {
               )
             })}
 
+            {/* Rutas de los vuelos que tocan el almacén elegido desde la
+                pestaña "Almacenes": los que ENTRAN (verde, llegan a esa sede)
+                y los que SALEN (ámbar, despegan de ella), completa aunque
+                todavía no hayan despegado — es la vista "todo lo que pasa por
+                esta sede", no solo lo que ya está en el aire. */}
+            {vuelosDelAlmacen.map(v => {
+              const a = coords[v.origenIcao]
+              const b = coords[v.destinoIcao]
+              if (!a || !b) return null
+              const entra = v.destinoIcao === almacenSeleccionado
+              return (
+                <Polyline
+                  key={`almacen-${v.vueloId}`}
+                  positions={[[a.lat, a.lng], [b.lat, b.lng]]}
+                  pathOptions={{
+                    color: v.cancelado ? '#ef4444' : entra ? '#4ade80' : '#fbbf24',
+                    weight: 2.5,
+                    opacity: 0.85,
+                    dashArray: '4 8',
+                  }}
+                >
+                  <Tooltip sticky className="tasf-tooltip" opacity={1}>
+                    <div className="text-xs">
+                      <div className="font-bold text-white mb-1">{v.origenIcao} → {v.destinoIcao}</div>
+                      <div className="font-mono text-[10px] text-slate-400 mb-1">{v.vueloId.split('@')[0]}</div>
+                      <div className={entra ? 'text-green-300' : 'text-amber-300'}>
+                        {entra ? 'Entra al almacén' : 'Sale del almacén'}
+                      </div>
+                      <div className="text-slate-300">
+                        Sale {horaConUtc(v.salidaLocal, v.gmtOrigen, v.salidaUtc)}
+                      </div>
+                      <div className="text-slate-300">
+                        Llega {horaConUtc(v.llegadaLocal, v.gmtDestino, v.llegadaUtc)}
+                      </div>
+                      {v.cancelado && <div className="text-red-400 mt-1">VUELO CANCELADO</div>}
+                    </div>
+                  </Tooltip>
+                </Polyline>
+              )
+            })}
+
             {/* Línea de la ruta de CADA avión en curso, sin necesidad de elegir
                 nada: es lo que pide el evaluador — entrar y ver de un vistazo
                 hacia dónde va cada vuelo que ya está en el aire, no solo el
                 seleccionado. Punteada y más tenue que la ruta del envío
-                elegido (esa sigue siendo la más marcada). */}
-            {avionesEnAire.map(v => {
+                elegido (esa sigue siendo la más marcada). Si hay un envío
+                elegido desde la pestaña "Envíos", `avionesVisibles` ya viene
+                filtrado a solo ese envío — el resto de la flota se oculta. */}
+            {avionesVisibles.map(v => {
               const a = coords[v.origenIcao]
               const b = coords[v.destinoIcao]
               if (!a || !b) return null
-              // Mismo filtro por semáforo que el avión: si su color está
-              // apagado en el panel de filtros, la línea se atenúa igual —
-              // antes se quedaba a toda opacidad aunque el avión desapareciera.
-              const atenuado = utsOcultas.has(getPlaneSemaforo(v.ocupacionPct))
+              // Mismo filtro por semáforo que el avión, y del mismo modo: oculta
+              // del todo, no atenúa — si el avión desaparece, su línea también.
+              // También se oculta si el aeropuerto de origen o destino está
+              // filtrado (por almacén o continente): ocultar un aeropuerto
+              // oculta sus vuelos.
+              if (utsOcultas.has(getPlaneSemaforo(v.ocupacionPct))) return null
+              if (icaosOcultos.has(v.origenIcao) || icaosOcultos.has(v.destinoIcao)) return null
               return (
                 <Polyline
                   key={`linea-${v.key}`}
@@ -748,7 +999,7 @@ export default function MapaDiaADia() {
                   pathOptions={{
                     color: v.vacio ? '#94a3b8' : '#3b82f6',
                     weight: 2,
-                    opacity: atenuado ? 0.08 : 0.55,
+                    opacity: 0.55,
                     dashArray: '4 8',
                   }}
                 />
@@ -763,35 +1014,57 @@ export default function MapaDiaADia() {
                 semáforo (blanco/gris), no se omiten. El avión del envío
                 elegido, o el que se resaltó desde la pestaña "Vuelos", se
                 destaca con un tono más claro y por encima del resto. El panel
-                de filtros de abajo puede atenuar por color de semáforo. */}
-            {avionesEnAire.map(v => {
+                de filtros de abajo puede atenuar por color de semáforo. Con un
+                envío elegido desde "Envíos", `avionesVisibles` ya trae solo
+                el suyo. */}
+            {avionesVisibles.map(v => {
               const a = coords[v.origenIcao]
               const b = coords[v.destinoIcao]
               if (!a || !b) return null
-              const lat = a.lat + (b.lat - a.lat) * v.progreso
-              const lng = a.lng + (b.lng - a.lng) * v.progreso
-              const angle = getHeadingAngle(a, b)
+              const sem = getPlaneSemaforo(v.ocupacionPct)
+              // El filtro oculta del todo, no solo atenúa: con cientos de
+              // vuelos en pantalla, dejar el avión semitransparente seguía
+              // estorbando la lectura del mapa.
+              if (utsOcultas.has(sem)) return null
+              if (icaosOcultos.has(v.origenIcao) || icaosOcultos.has(v.destinoIcao)) return null
+
+              // Posición interpolada en el MISMO espacio en que Leaflet dibuja
+              // la línea (píxeles de pantalla), no en grados lat/lng: interpolar
+              // en grados se curva al proyectar a Mercator, y en rutas largas
+              // (sobre todo cruzando el antimeridiano, ±180°) el avión terminaba
+              // lejos de su propia línea. Mismo arreglo que ya usa MapaMundi.
+              let lat = a.lat + (b.lat - a.lat) * v.progreso
+              let lng = a.lng + (b.lng - a.lng) * v.progreso
+              let angle = getHeadingAngle(a, b)
+              if (mapInstance) {
+                const pa = mapInstance.latLngToLayerPoint([a.lat, a.lng])
+                const pb = mapInstance.latLngToLayerPoint([b.lat, b.lng])
+                const p = mapInstance.layerPointToLatLng([
+                  pa.x + (pb.x - pa.x) * v.progreso,
+                  pa.y + (pb.y - pa.y) * v.progreso,
+                ])
+                lat = p.lat
+                lng = p.lng
+                angle = Math.atan2(pb.y - pa.y, pb.x - pa.x) * (180 / Math.PI)
+              }
               const esResaltadoUt = vueloResaltado && v.vueloId.split('@')[0] === vueloResaltado
               const destacado = v.seleccionado || esResaltadoUt
               // El avión del envío elegido (o del vuelo resaltado) se pinta en
               // amarillo para ubicarlo, igual que MapaMundi hace con la UT
               // resaltada desde su panel.
-              const sem = getPlaneSemaforo(v.ocupacionPct)
               const tono = getPlaneColors(v.ocupacionPct)
               const fill = destacado ? '#facc15' : tono.fill
               const stroke = destacado ? '#fde047' : tono.stroke
-              const atenuado = utsOcultas.has(sem)
               return (
                 <Marker
                   key={v.key}
                   position={[lat, lng]}
                   icon={crearIconoAvion({ fill, stroke, angle, count: v.count })}
-                  opacity={atenuado ? 0.2 : 1}
                   zIndexOffset={destacado ? 2500 : 1500}
                   eventHandlers={{
                     click: () => {
-                      if (v.envioIds[0]) setSeleccionado(v.envioIds[0])
-                      else setVueloResaltado(v.vueloId.split('@')[0])
+                      if (v.envioIds[0]) seleccionarEnvioMapa(v.envioIds[0])
+                      else resaltarVueloMapa(v.vueloId.split('@')[0])
                     },
                   }}
                 >
@@ -883,8 +1156,16 @@ export default function MapaDiaADia() {
                   Operación en vivo
                 </div>
                 <div className="flex items-center justify-between gap-3 text-[11px]">
+                  <span className="text-slate-400">Fecha UTC actual</span>
+                  <span className="font-mono text-sm font-bold text-white">{fechaCorta(ahoraUtc)}</span>
+                </div>
+                <div className="flex items-center justify-between gap-3 text-[11px]">
                   <span className="text-slate-400">Hora UTC actual</span>
                   <span className="font-mono text-sm font-bold text-white">{hhmmss(ahoraUtc)}</span>
+                </div>
+                <div className="flex items-center justify-between gap-3 text-[11px] mt-1 pt-1 border-t border-slate-800/70">
+                  <span className="text-slate-400">Hora de este equipo</span>
+                  <span className="font-mono text-sm font-bold text-emerald-300">{fechaCorta(ahoraSistema)} {hhmmss(ahoraSistema)}</span>
                 </div>
               </div>
               <div className="px-3 py-2 space-y-1 text-[11px]">
@@ -910,40 +1191,37 @@ export default function MapaDiaADia() {
             </div>
           </div>
 
-          {/* Filtro por semáforo de los aviones — mismo panel que MapaMundi,
-              mismos 4 colores. Debajo del panel de reloj/resumen, igual que
-              allá va debajo del cartel de época. */}
-          <div className="absolute top-44 left-3 z-[1000] bg-slate-900/92 backdrop-blur border border-slate-700 rounded-xl shadow-lg w-44">
+          {/* Filtros — mismo panel que MapaMundi: semáforo de almacenes,
+              semáforo de aviones y continente. Debajo del panel de
+              reloj/resumen, igual que allá va debajo del cartel de época. */}
+          <div className="absolute top-60 left-3 z-[1000] bg-slate-900/92 backdrop-blur border border-slate-700 rounded-xl shadow-lg w-44 max-h-[60vh] overflow-y-auto">
             <button
               onClick={() => setFiltroSemaforoAbierto(a => !a)}
-              className="w-full px-3 py-2 text-xs font-semibold text-slate-300 hover:text-white transition-colors text-left"
+              className="w-full px-3 py-2 text-xs font-semibold text-slate-300 hover:text-white transition-colors text-left sticky top-0 bg-slate-900/95"
             >
               {filtroSemaforoAbierto ? 'Filtros ▴' : 'Filtros ▾'}
             </button>
             {filtroSemaforoAbierto && (
-              <div className="px-3 pb-3">
-                <p className="text-[10px] text-slate-400 uppercase tracking-wider mb-1.5">Aviones</p>
-                <div className="flex flex-col gap-0.5">
-                  {SEMAFORO_FILTRO.map(s => {
-                    const marcado = !utsOcultas.has(s.color)
-                    return (
-                      <button
-                        key={s.color}
-                        onClick={() => setUtsOcultas(prev => toggleSet(prev, s.color))}
-                        title={marcado ? 'Haz clic para ocultar en el mapa' : 'Haz clic para mostrar en el mapa'}
-                        className={`w-full flex items-center gap-2 text-xs rounded px-1 py-0.5 transition-colors ${
-                          marcado ? 'text-slate-200' : 'text-slate-500'}`}
-                      >
-                        <span className={`w-3.5 h-3.5 shrink-0 rounded border flex items-center justify-center text-[9px] font-bold ${
-                          marcado ? 'bg-blue-600 border-blue-500 text-white' : 'bg-slate-800 border-slate-600 text-transparent'}`}>
-                          ✓
-                        </span>
-                        <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: s.hex, opacity: marcado ? 1 : 0.3 }} />
-                        <span className="truncate">{s.label}</span>
-                      </button>
-                    )
-                  })}
-                </div>
+              <div className="px-3 pb-3 space-y-3">
+                <FiltroSemaforo titulo="Almacenes" ocultos={almacenesOcultos}
+                  onToggle={c => setAlmacenesOcultos(prev => toggleSet(prev, c))} />
+                <div className="h-px bg-slate-700" />
+                <FiltroSemaforo titulo="Aviones" ocultos={utsOcultas}
+                  onToggle={c => setUtsOcultas(prev => toggleSet(prev, c))} />
+                {continentes.length > 1 && (
+                  <>
+                    <div className="h-px bg-slate-700" />
+                    <div>
+                      <p className="text-[10px] text-slate-400 uppercase tracking-wider mb-1.5">Continente</p>
+                      <div className="flex flex-col gap-0.5">
+                        {continentes.map(c => (
+                          <FiltroCheck key={c} marcado={!continentesOcultos.has(c)}
+                            onToggle={() => setContinentesOcultos(prev => toggleSet(prev, c))} label={c} />
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -1084,6 +1362,38 @@ export default function MapaDiaADia() {
             </div>
           )}
         </main>
+      </div>
+    </div>
+  )
+}
+
+// Casilla de filtro reutilizable (marcada = visible, desmarcada = oculto del
+// mapa) — mismo componente que usa MapaMundi para su panel de filtros.
+function FiltroCheck({ marcado, onToggle, hex, label }) {
+  return (
+    <button onClick={onToggle}
+      className={`w-full flex items-center gap-2 text-xs rounded px-1 py-0.5 transition-colors ${marcado ? 'text-slate-200' : 'text-slate-500'}`}
+      title={marcado ? 'Haz clic para ocultar en el mapa' : 'Haz clic para mostrar en el mapa'}>
+      <span className={`w-3.5 h-3.5 shrink-0 rounded border flex items-center justify-center text-[9px] font-bold ${
+        marcado ? 'bg-blue-600 border-blue-500 text-white' : 'bg-slate-800 border-slate-600 text-transparent'}`}>
+        ✓
+      </span>
+      {hex && <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: hex, opacity: marcado ? 1 : 0.3 }} />}
+      <span className="truncate">{label}</span>
+    </button>
+  )
+}
+
+/** Filtro por semáforo (4 colores), reutilizado para "Almacenes" y "Aviones". */
+function FiltroSemaforo({ titulo, ocultos, onToggle }) {
+  return (
+    <div>
+      <p className="text-[10px] text-slate-400 uppercase tracking-wider mb-1.5">{titulo}</p>
+      <div className="flex flex-col gap-0.5">
+        {SEMAFORO_FILTRO.map(s => (
+          <FiltroCheck key={s.color} marcado={!ocultos.has(s.color)}
+            onToggle={() => onToggle(s.color)} hex={s.hex} label={s.label} />
+        ))}
       </div>
     </div>
   )
