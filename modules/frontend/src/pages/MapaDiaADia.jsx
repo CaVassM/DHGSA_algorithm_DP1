@@ -42,6 +42,28 @@ function getPlaneColors(pct) {
   return { fill: '#4ade80', stroke: '#bbf7d0' }
 }
 
+/** Nombre del color de semáforo (para el panel de filtros), mismos umbrales que arriba. */
+function getPlaneSemaforo(pct) {
+  if (pct <= 0) return 'vacio'
+  if (pct > 85) return 'rojo'
+  if (pct >= 60) return 'ambar'
+  return 'verde'
+}
+
+// Alterna un color en un Set (sin mutar el original) — igual que en MapaMundi.
+function toggleSet(set, color) {
+  const next = new Set(set)
+  if (next.has(color)) next.delete(color); else next.add(color)
+  return next
+}
+
+const SEMAFORO_FILTRO = [
+  { color: 'vacio', hex: '#94a3b8', label: 'Vacío' },
+  { color: 'verde', hex: '#4ade80', label: 'Baja carga' },
+  { color: 'ambar', hex: '#fbbf24', label: 'Carga media' },
+  { color: 'rojo', hex: '#f87171', label: 'Carga alta' },
+]
+
 // Cacheados: sin esto, el mapa se re-renderiza cada segundo (reloj en vivo) y
 // cada render creaba un ícono nuevo, forzando a Leaflet a reemplazar el DOM
 // del marcador — lo que deja los tooltips de hover pegados abiertos.
@@ -247,6 +269,12 @@ export default function MapaDiaADia() {
   // Panel lateral completo: ocultable para dejar el mapa a pantalla completa.
   const [sidebarColapsado, setSidebarColapsado] = useState(false)
 
+  // T54/T55 (adaptado): filtro por semáforo de los aviones en el mapa — mismo
+  // panel que MapaMundi, mismos 4 colores (vacío/verde/ámbar/rojo). Un color
+  // "apagado" atenúa esos aviones en vez de ocultarlos del todo.
+  const [utsOcultas, setUtsOcultas] = useState(() => new Set())
+  const [filtroSemaforoAbierto, setFiltroSemaforoAbierto] = useState(false)
+
   // Cancelación desde el propio mapa. La prueba encadena "seleccionar un envío,
   // verlo en el mapa, cancelar un vuelo y comprobar la reasignación": mandar a
   // otra pantalla justo en ese punto obligaría a saltar de pestaña y volver,
@@ -389,6 +417,48 @@ export default function MapaDiaADia() {
       ocupacionPct: g.capacidad > 0 ? (g.maletas / g.capacidad) * 100 : 0,
     }))
   }, [envios, estadosPorEnvio, seleccionado])
+
+  /**
+   * C27 (adaptado): vuelos VACÍOS que están en el aire ahora mismo. `vuelosActivos`
+   * solo sale de los envíos, así que un vuelo que despegó sin carga asignada
+   * nunca aparecía — el enunciado pide poder verlo igual, en blanco/gris (el
+   * color "vacío" del semáforo). Sale del catálogo en vivo (`estado.vuelos`),
+   * que trae TODAS las salidas con su ocupación real, no solo las que llevan
+   * envíos de esta operación.
+   */
+  const vuelosVaciosEnAire = useMemo(() => {
+    if (!estado?.vuelos) return []
+    const conCarga = new Set(vuelosActivos.map(v => v.vueloId))
+    return estado.vuelos
+      .filter(v => !conCarga.has(v.vueloId) && (v.ocupado ?? 0) === 0 && !v.cancelado
+        && v.salidaUtc && v.llegadaUtc)
+      .map(v => ({ ...v, salida: new Date(v.salidaUtc), llegada: new Date(v.llegadaUtc) }))
+      .filter(v => v.salida <= ahoraUtc && ahoraUtc < v.llegada)
+      .map(v => ({
+        key: v.vueloId,
+        vueloId: v.vueloId,
+        origenIcao: v.origenIcao,
+        destinoIcao: v.destinoIcao,
+        progreso: (ahoraUtc - v.salida) / (v.llegada - v.salida),
+        llegadaLocal: v.llegadaLocal,
+        gmtDestino: v.gmtDestino,
+        capacidad: v.capacidad,
+        count: 0,
+        maletas: 0,
+        envioIds: [],
+        seleccionado: false,
+        ocupacionPct: 0,
+        vacio: true,
+      }))
+  }, [estado, vuelosActivos, ahoraUtc])
+
+  // Todos los aviones que se dibujan en el mapa: los que llevan carga
+  // (`vuelosActivos`) más los vacíos. Un solo arreglo para no repetir el
+  // mismo bloque de render dos veces.
+  const avionesEnAire = useMemo(
+    () => [...vuelosActivos, ...vuelosVaciosEnAire],
+    [vuelosActivos, vuelosVaciosEnAire],
+  )
 
   /**
    * Salidas del vuelo resaltado desde la pestaña "Vuelos" del panel (F07/F08
@@ -646,13 +716,16 @@ export default function MapaDiaADia() {
               )
             })}
 
-            {/* TODOS los vuelos en curso ahora mismo, de cualquier envío — el
-                pedido central: que el mapa de operaciones se vea como el mapa
-                en vivo, con la flota completa a la vista y no un envío a la
-                vez. El avión del envío elegido, o el que se resaltó desde la
-                pestaña "Vuelos", se destaca con un tono más claro y por
-                encima del resto. */}
-            {vuelosActivos.map(v => {
+            {/* TODOS los aviones en curso ahora mismo: los que llevan carga (de
+                cualquier envío, no solo el elegido) Y los vacíos (despegaron
+                sin carga asignada). El pedido del evaluador es ver la flota
+                completa en el aire, igual que el mapa en vivo — incluidos los
+                vacíos, que ahí también se pintan en el color "vacío" del
+                semáforo (blanco/gris), no se omiten. El avión del envío
+                elegido, o el que se resaltó desde la pestaña "Vuelos", se
+                destaca con un tono más claro y por encima del resto. El panel
+                de filtros de abajo puede atenuar por color de semáforo. */}
+            {avionesEnAire.map(v => {
               const a = coords[v.origenIcao]
               const b = coords[v.destinoIcao]
               if (!a || !b) return null
@@ -664,19 +737,22 @@ export default function MapaDiaADia() {
               // El avión del envío elegido (o del vuelo resaltado) se pinta en
               // amarillo para ubicarlo, igual que MapaMundi hace con la UT
               // resaltada desde su panel.
+              const sem = getPlaneSemaforo(v.ocupacionPct)
               const tono = getPlaneColors(v.ocupacionPct)
               const fill = destacado ? '#facc15' : tono.fill
               const stroke = destacado ? '#fde047' : tono.stroke
+              const atenuado = utsOcultas.has(sem)
               return (
                 <Marker
                   key={v.key}
                   position={[lat, lng]}
                   icon={crearIconoAvion({ fill, stroke, angle, count: v.count })}
+                  opacity={atenuado ? 0.2 : 1}
                   zIndexOffset={destacado ? 2500 : 1500}
                   eventHandlers={{
                     click: () => {
-                      setSeleccionado(v.envioIds[0])
-                      setVueloResaltado(null)
+                      if (v.envioIds[0]) setSeleccionado(v.envioIds[0])
+                      else setVueloResaltado(v.vueloId.split('@')[0])
                     },
                   }}
                 >
@@ -684,11 +760,17 @@ export default function MapaDiaADia() {
                     <div className="text-xs">
                       <div className="font-bold text-white mb-1">{v.origenIcao} → {v.destinoIcao}</div>
                       <div className="font-mono text-[10px] text-slate-400 mb-1">{v.vueloId.split('@')[0]}</div>
-                      <div className="text-slate-300">Envíos: <span className="text-blue-300 font-semibold">{v.count}</span></div>
-                      <div className="text-slate-300">
-                        Maletas: <span className="text-blue-300 font-semibold">{v.maletas}</span>
-                        {v.capacidad > 0 && <span className="text-slate-500">/{v.capacidad}</span>}
-                      </div>
+                      {v.vacio ? (
+                        <div className="text-slate-400">Vuelo vacío (sin carga asignada)</div>
+                      ) : (
+                        <>
+                          <div className="text-slate-300">Envíos: <span className="text-blue-300 font-semibold">{v.count}</span></div>
+                          <div className="text-slate-300">
+                            Maletas: <span className="text-blue-300 font-semibold">{v.maletas}</span>
+                            {v.capacidad > 0 && <span className="text-slate-500">/{v.capacidad}</span>}
+                          </div>
+                        </>
+                      )}
                       <div className="text-slate-300">Progreso: <span className="text-slate-200 font-semibold">{Math.round(v.progreso * 100)}%</span></div>
                       <div className="text-slate-300">
                         Llega: <span className="text-slate-200 font-semibold">{hhmm(v.llegadaLocal)} {v.gmtDestino}</span>
@@ -769,7 +851,13 @@ export default function MapaDiaADia() {
               <div className="px-3 py-2 space-y-1 text-[11px]">
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-slate-400">Vuelos en curso ahora</span>
-                  <span className="font-mono text-sm font-bold text-emerald-400">{vuelosActivos.length}</span>
+                  <span className="font-mono text-sm font-bold text-emerald-400">{avionesEnAire.length}</span>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-slate-400">— con carga / vacíos</span>
+                  <span className="font-mono text-sm font-bold text-slate-300">
+                    {vuelosActivos.length} / {vuelosVaciosEnAire.length}
+                  </span>
                 </div>
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-slate-400">Envíos volando</span>
@@ -781,6 +869,44 @@ export default function MapaDiaADia() {
                 </div>
               </div>
             </div>
+          </div>
+
+          {/* Filtro por semáforo de los aviones — mismo panel que MapaMundi,
+              mismos 4 colores. Debajo del panel de reloj/resumen, igual que
+              allá va debajo del cartel de época. */}
+          <div className="absolute top-44 left-3 z-[1000] bg-slate-900/92 backdrop-blur border border-slate-700 rounded-xl shadow-lg w-44">
+            <button
+              onClick={() => setFiltroSemaforoAbierto(a => !a)}
+              className="w-full px-3 py-2 text-xs font-semibold text-slate-300 hover:text-white transition-colors text-left"
+            >
+              {filtroSemaforoAbierto ? 'Filtros ▴' : 'Filtros ▾'}
+            </button>
+            {filtroSemaforoAbierto && (
+              <div className="px-3 pb-3">
+                <p className="text-[10px] text-slate-400 uppercase tracking-wider mb-1.5">Aviones</p>
+                <div className="flex flex-col gap-0.5">
+                  {SEMAFORO_FILTRO.map(s => {
+                    const marcado = !utsOcultas.has(s.color)
+                    return (
+                      <button
+                        key={s.color}
+                        onClick={() => setUtsOcultas(prev => toggleSet(prev, s.color))}
+                        title={marcado ? 'Haz clic para ocultar en el mapa' : 'Haz clic para mostrar en el mapa'}
+                        className={`w-full flex items-center gap-2 text-xs rounded px-1 py-0.5 transition-colors ${
+                          marcado ? 'text-slate-200' : 'text-slate-500'}`}
+                      >
+                        <span className={`w-3.5 h-3.5 shrink-0 rounded border flex items-center justify-center text-[9px] font-bold ${
+                          marcado ? 'bg-blue-600 border-blue-500 text-white' : 'bg-slate-800 border-slate-600 text-transparent'}`}>
+                          ✓
+                        </span>
+                        <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: s.hex, opacity: marcado ? 1 : 0.3 }} />
+                        <span className="truncate">{s.label}</span>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Ficha del envío elegido: el plan de viaje completo, tramo a tramo,
@@ -906,13 +1032,14 @@ export default function MapaDiaADia() {
             <Leyenda color={COLOR_DESTINO} label="Destino" />
             <Leyenda color="#ef4444" label="Vuelo cancelado" />
             <span className="w-px bg-slate-700" />
+            <Leyenda color="#94a3b8" label="Avión vacío" avion />
             <Leyenda color="#4ade80" label="Avión < 60% ocupado" avion />
             <Leyenda color="#fbbf24" label="Avión ≥ 60% ocupado" avion />
             <Leyenda color="#f87171" label="Avión > 85% ocupado" avion />
             <Leyenda color="#facc15" label="Avión del envío elegido" avion />
           </div>
 
-          {!envio && !cargando && envios.length > 0 && vuelosActivos.length === 0 && (
+          {!envio && !cargando && envios.length > 0 && avionesEnAire.length === 0 && (
             <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[1000] bg-slate-900/90 border border-slate-700 rounded-full px-4 py-1.5 text-xs text-slate-300 shadow-lg">
               Selecciona un envío de la lista para ver su ruta
             </div>
