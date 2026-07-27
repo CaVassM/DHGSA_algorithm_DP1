@@ -81,8 +81,81 @@ export async function getEstadoDiario() {
   return data
 }
 
+// Envíos registrados con la ruta que siguen, para dibujarlos en el mapa de
+// operaciones. Un envío reasignado tras una cancelación llega con su ruta nueva.
+export async function getEnviosDiariosConRuta() {
+  const { data } = await api.get('/daily/shipments')
+  return data
+}
+
+// Carga en lote de envíos desde un archivo de texto. Cada línea se registra por
+// el mismo camino que un envío manual, así que puede aceptarse o rechazarse por
+// los mismos motivos; el detalle llega por línea.
+export async function cargarArchivoDiario(origenIcao, file) {
+  const formData = new FormData()
+  formData.append('file', file)
+  const { data } = await api.post('/daily/shipments/upload', formData, {
+    params: { origenIcao },
+    timeout: 120000,
+  })
+  return data
+}
+
+// P&R P9: cancela un vuelo y reasigna sus maletas en el acto. Devuelve el cuerpo
+// también cuando rechaza (422), que trae el motivo.
+export async function cancelarVueloDiario(idVuelo) {
+  try {
+    const { data } = await api.post(`/daily/flights/${encodeURIComponent(idVuelo)}/cancel`)
+    return data
+  } catch (err) {
+    if (err.response?.status === 422 && err.response.data) {
+      return err.response.data
+    }
+    throw err
+  }
+}
+
 export async function reiniciarDiario() {
   const { data } = await api.post('/daily/reset')
+  return data
+}
+
+// --- Preparación del escenario de la prueba ---
+//
+// El enunciado pide dos cambios antes de empezar: capacidad 999 en las cuatro
+// sedes y unos planes de vuelo ajustados a la hora de la sesión. Se exponen
+// desde la propia pantalla para no depender de tener acceso de consola a la
+// base del despliegue, que es justo lo que no se tiene ese día.
+
+/** Capacidad actual de las sedes; dice si el entorno ya está preparado. */
+export async function getEstadoPreparacion() {
+  const { data } = await api.get('/daily/setup')
+  return data
+}
+
+/** Sube a 999 la capacidad de las cuatro sedes y reinicia la operación. */
+export async function prepararEscenarioDiario() {
+  const { data } = await api.post('/daily/setup')
+  return data
+}
+
+/** Devuelve las capacidades originales (SPIM:440, SABE:460, EKCH/VIDP:480). */
+export async function revertirEscenarioDiario() {
+  const { data } = await api.post('/daily/setup/revert')
+  return data
+}
+
+/**
+ * Genera los planes de vuelo de la prueba para una hora de inicio dada.
+ *
+ * @param hora    hora de inicio en hora de Lima, "HH:mm"
+ * @param revisar true para obtenerlos sin guardar nada; el enunciado pide
+ *                presentar el archivo antes de agregarlo
+ */
+export async function generarVuelosPrueba(hora, revisar = false) {
+  const { data } = await api.post('/daily/setup/flights', null, {
+    params: { hora, revisar },
+  })
   return data
 }
 
@@ -112,6 +185,22 @@ export async function iniciarSimulacionEnVivo(request) {
 export async function cancelarSimulacionEnVivo(runId) {
   const { data } = await api.post(`/simulacion/live/${runId}/cancel`)
   return data
+}
+
+// P&R P9 / D14: cancelar un vuelo durante la simulación. El backend elige la
+// salida afectada (la próxima con al menos una hora de margen sobre el reloj
+// simulado) y libera las maletas que llevaba. Devuelve el cuerpo también cuando
+// rechaza (422), que trae el motivo.
+export async function cancelarVuelo(idVuelo) {
+  try {
+    const { data } = await api.post(`/simulacion/flights/${encodeURIComponent(idVuelo)}/cancel`)
+    return data
+  } catch (err) {
+    if (err.response?.status === 422 && err.response.data) {
+      return err.response.data
+    }
+    throw err
+  }
 }
 
 export async function iniciarSimulacionColapso(request) {

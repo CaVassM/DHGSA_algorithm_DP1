@@ -91,6 +91,28 @@ public class LiveSimulationController {
                 "mensaje", "Cancelación solicitada."
         ));
     }
+
+    @PostMapping("/flights/{idVuelo}/cancel")
+    @Operation(
+            summary = "Cancelar un vuelo durante la simulación",
+            description = "Cancela la próxima salida del vuelo que despegue con al menos una hora "
+                    + "de antelación respecto al reloj simulado (P&R P9). El vuelo deja de usarse "
+                    + "en las épocas siguientes y las maletas que llevaba se replanifican. La "
+                    + "cancelación afecta solo a esa salida: el vuelo opera con normalidad al día "
+                    + "siguiente."
+    )
+    public ResponseEntity<SimulacionEnVivoService.CancelacionVueloResultado> cancelarVuelo(
+            @PathVariable String idVuelo
+    ) {
+        SimulacionEnVivoService.CancelacionVueloResultado resultado =
+                simulacionEnVivoService.cancelarVuelo(idVuelo);
+
+        // 422 cuando no se pudo aplicar (sin simulación en curso, o ninguna salida
+        // dentro del margen): la petición es válida, el estado no la admite.
+        return resultado.aplicada()
+                ? ResponseEntity.ok(resultado)
+                : ResponseEntity.unprocessableEntity().body(resultado);
+    }
 }
 //public class LiveSimulationController {
 //

@@ -1,11 +1,26 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
 import NavBar from '../components/NavBar'
 import { iniciarSimulacionColapso, cancelarSimulacionEnVivo } from '../services/api'
 import { suscribirSimulacion } from '../services/simulacionSocket'
 
+// G10: clave con la que ReportePeriodo localiza la corrida a reportar. Es la
+// misma que usan el Dashboard y la simulación de periodo: el reporte de la
+// última planificación estable no distingue de qué escenario viene, lo toma
+// del propio run (que ya guarda escenario, estado y motivo de cierre).
+const LS_KEY = 'tasf_runId'
+
 // Simulación de colapso logístico (escenario COLLAPSE_SIMULATION).
-// Multiplica la carga existente hasta saturar el sistema; muestra cómo los
-// almacenes se ponen rojos y, al colapsar, presenta un reporte final.
+//
+// El colapso es el momento en que el sistema "ya no cumple con entregar al menos
+// una maleta" dentro de su plazo. No se provoca inflando la carga: llega solo,
+// porque la demanda del juego de datos crece con el tiempo. Por eso la variable
+// del escenario es la FECHA DE INICIO, y encontrar el colapso consiste en
+// probar fechas sucesivas hasta acotar el día — la estrategia de aproximación
+// que describe el enunciado.
+//
+// Lo que hay que mostrar en el video es la fecha del colapso y el reporte
+// asociado; ambos se presentan destacados en cuanto llega el evento.
 
 function colorOcup(pct) {
   if (pct >= 100) return { txt: 'text-red-500', bar: 'bg-red-600' }
@@ -14,14 +29,19 @@ function colorOcup(pct) {
   return { txt: 'text-green-400', bar: 'bg-green-500' }
 }
 
-const FACTORES = [2, 5, 10, 20]
-
 export default function SimulacionColapso() {
+  const navigate = useNavigate()
   const [estado, setEstado] = useState('idle') // idle | corriendo | colapso | fin | error
-  const [factorCarga, setFactorCarga] = useState(5)
-  const [algoritmo, setAlgoritmo] = useState('DHGS')
-  const [planningStart] = useState('2026-01-02T00:00')
-  const [horizonDays] = useState(2)
+  // Fecha de inicio: es LA variable del escenario. La estrategia del enunciado
+  // es de aproximación sucesiva — se prueban fechas cada vez más cercanas hasta
+  // acotar el día en que el sistema deja de entregar a tiempo.
+  const [planningStart, setPlanningStart] = useState('2027-01-04T00:00')
+  // 5 días, como la simulación de periodo: el enunciado pide que la fecha del
+  // colapso caiga en el 4.º o 5.º día del rango elegido.
+  const [horizonDays, setHorizonDays] = useState(5)
+  // x2880: a esta velocidad 24 h simuladas duran 30 s reales, que es la medida
+  // del clip "un día previo al colapso" que pide la entrega del video.
+  const [multiplicador, setMultiplicador] = useState(2880)
 
   const [evento, setEvento] = useState(null)
   const [reporte, setReporte] = useState(null)
@@ -35,17 +55,30 @@ export default function SimulacionColapso() {
     setEstado('corriendo'); setEvento(null); setReporte(null); setMensaje(null)
     try {
       const { runId, topic } = await iniciarSimulacionColapso({
-        algorithm: algoritmo,
+        // IALNS siempre: es el algoritmo con el que se opera el escenario, y
+        // ofrecer la elección solo invitaba a grabar el video con el otro.
+        algorithm: 'IALNS',
         planningStart: `${planningStart}:00`,
         epochHours: 4,
         horizonDays,
         populationSize: 4,
         timeLimitSeconds: 1,
-        multiplicadorTemporal: 480,
-        factorCarga,
-        umbralColapso: 40,
+        multiplicadorTemporal: multiplicador,
+        // Sin multiplicar la carga: el colapso que pide el enunciado es el que
+        // llega solo, por el crecimiento real de la demanda a lo largo del
+        // tiempo. Inflar los envíos daría un colapso artificial, sin una fecha
+        // de calendario que defender.
+        factorCarga: 1,
+        // El criterio es "no entregar al menos una maleta", que el backend
+        // evalúa por incumplimiento de plazo; este umbral queda como red de
+        // seguridad y no como la condición principal.
+        umbralColapso: 100,
       })
       setRunId(runId)
+      // G10: sin esto el reporte no tiene forma de saber qué corrida mostrar
+      // (lee la clave al montarse) y el escenario de colapso quedaba fuera del
+      // reporte de la última planificación estable.
+      localStorage.setItem(LS_KEY, String(runId))
       disconnectRef.current = suscribirSimulacion(topic, (ev) => {
         if (ev.tipo === 'EPOCA') setEvento(ev)
         else if (ev.tipo === 'INICIO') setMensaje(ev.mensaje)
@@ -61,7 +94,7 @@ export default function SimulacionColapso() {
     } catch {
       setMensaje('No se pudo iniciar. ¿Backend arriba y datos cargados?'); setEstado('error')
     }
-  }, [algoritmo, planningStart, horizonDays, factorCarga])
+  }, [planningStart, horizonDays, multiplicador])
 
   const detener = useCallback(async () => {
     if (runId) { try { await cancelarSimulacionEnVivo(runId) } catch { /* noop */ } }
@@ -81,27 +114,59 @@ export default function SimulacionColapso() {
         <div className="space-y-6">
           <div className="bg-slate-800 rounded-2xl border border-slate-700 p-5">
             <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-4">Simulación de colapso</h2>
-            <p className="text-xs text-slate-500 mb-4">
-              Multiplica la carga real hasta saturar el sistema y ver cuándo colapsa.
+            <p className="text-xs text-slate-500 mb-4 leading-snug">
+              Simula desde la fecha elegida hasta que el sistema deje de entregar
+              al menos una maleta dentro de su plazo. Se busca por aproximación:
+              adelanta o retrasa la fecha de inicio hasta acotar el día del colapso.
             </p>
 
-            <label className="block text-xs text-slate-400 mb-1.5">Algoritmo</label>
-            <select value={algoritmo} onChange={e => setAlgoritmo(e.target.value)} disabled={estado === 'corriendo'}
-              className="w-full mb-3 px-3 py-2 rounded-lg bg-slate-700/60 border border-slate-600 text-sm focus:outline-none focus:border-blue-500 disabled:opacity-50">
-              <option value="DHGS">DHGS (genético)</option>
-              <option value="IALNS">IALNS (ALNS + SA)</option>
-            </select>
+            <label className="block text-xs text-slate-400 mb-1.5">Fecha de inicio</label>
+            <input
+              type="datetime-local" value={planningStart}
+              onChange={e => setPlanningStart(e.target.value)}
+              disabled={estado === 'corriendo'}
+              className="w-full mb-3 px-3 py-2 rounded-lg bg-slate-700/60 border border-slate-600 text-sm focus:outline-none focus:border-red-500 disabled:opacity-50"
+            />
 
-            <label className="block text-xs text-slate-400 mb-1.5">Factor de carga (×)</label>
-            <div className="flex gap-2 mb-4">
-              {FACTORES.map(f => (
-                <button key={f} onClick={() => setFactorCarga(f)} disabled={estado === 'corriendo'}
+            <label className="block text-xs text-slate-400 mb-1.5">Días a simular</label>
+            <input
+              type="number" min="1" max="14" value={horizonDays}
+              onChange={e => setHorizonDays(Number(e.target.value))}
+              disabled={estado === 'corriendo'}
+              className="w-full mb-3 px-3 py-2 rounded-lg bg-slate-700/60 border border-slate-600 text-sm focus:outline-none focus:border-red-500 disabled:opacity-50"
+            />
+
+            <label className="block text-xs text-slate-400 mb-1.5">Velocidad (×)</label>
+            <div className="flex gap-2 mb-1.5">
+              {/* x2880 es el valor al que 24 h simuladas duran exactamente 30 s,
+                  la medida del clip que pide la entrega. */}
+              {[480, 1440, 2880, 5760].map(m => (
+                <button key={m} onClick={() => setMultiplicador(m)} disabled={estado === 'corriendo'}
                   className={`flex-1 py-1.5 rounded text-xs font-medium transition-colors ${
-                    factorCarga === f ? 'bg-red-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'} disabled:opacity-50`}>
-                  x{f}
+                    multiplicador === m ? 'bg-red-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'} disabled:opacity-50`}>
+                  x{m}
                 </button>
               ))}
             </div>
+            {/* El video de colapso son 4 clips de ~30 s, y uno de ellos debe
+                cubrir "al menos un día previo (24 h) antes del colapso hasta el
+                colapso". 24 h simuladas en 30 s reales son x2880, así que aquí
+                las velocidades altas no son un atajo: son el ritmo que el clip
+                necesita. (La regla de los 30 minutos es de la simulación 5D, no
+                de este escenario.) */}
+            <p className="text-[11px] text-slate-500 mb-4 leading-snug">
+              {horizonDays} días duran{' '}
+              <span className="text-slate-300">
+                {Math.round((horizonDays * 24 * 3600) / multiplicador / 60)} min
+              </span>
+              {' · '}24 h simuladas ={' '}
+              <span className={multiplicador >= 1440 ? 'text-green-400' : 'text-amber-400'}>
+                {Math.round((24 * 3600) / multiplicador)} s
+              </span>
+              {multiplicador >= 1440
+                ? ' de metraje'
+                : ' — muy lento para el clip de 30 s'}
+            </p>
 
             {estado !== 'corriendo' ? (
               <button onClick={arrancar}
@@ -122,9 +187,28 @@ export default function SimulacionColapso() {
               <h2 className="text-xs font-semibold uppercase tracking-wider mb-3 flex items-center gap-2">
                 {reporte.colapso ? <span className="text-red-400">⚠ Reporte de colapso</span> : <span className="text-slate-400">Reporte final</span>}
               </h2>
+              {/* La fecha del colapso es EL dato de la entrega ("en el video
+                  debe mostrarse claramente la fecha del colapso logístico"), así
+                  que va en grande y arriba, no como una línea más del listado. */}
+              {reporte.colapso && reporte.momentoColapso && (
+                <div className="mb-3 rounded-xl bg-red-500/15 border border-red-500/40 px-4 py-3 text-center">
+                  <div className="text-[10px] text-red-300 uppercase tracking-widest mb-1">
+                    Fecha del colapso logístico
+                  </div>
+                  <div className="text-2xl font-bold font-mono text-red-300 leading-tight">
+                    {String(reporte.momentoColapso).slice(0, 10)}
+                  </div>
+                  <div className="text-sm font-mono text-red-400/80">
+                    {String(reporte.momentoColapso).slice(11, 16)} h
+                  </div>
+                </div>
+              )}
+
               <p className="text-sm text-slate-300 mb-3">{reporte.motivo}</p>
               <div className="space-y-1.5 text-sm">
-                <Linea k="Factor de carga" v={`x${reporte.factorCarga}`} />
+                {reporte.envioIncumplido && (
+                  <Linea k="Envío incumplido" v={reporte.envioIncumplido} clr="text-red-400" />
+                )}
                 <Linea k="Envíos cargados" v={reporte.totalEnviosCargados.toLocaleString()} />
                 <Linea k="Atendidos" v={reporte.totalAsignados.toLocaleString()} clr="text-green-400" />
                 <Linea k="Sin atender" v={`${reporte.totalSinAtender.toLocaleString()} (${reporte.porcentajeSinAtender}%)`} clr="text-red-400" />
@@ -133,6 +217,18 @@ export default function SimulacionColapso() {
                   <Linea k="Aeropuertos saturados" v={reporte.aeropuertosSaturados.join(', ')} clr="text-red-400" />
                 )}
               </div>
+
+              {/* G10: acceso al reporte de la última planificación estable, igual
+                  que al cerrar la simulación de periodo (G08). Lo de arriba es el
+                  resumen del colapso y vive solo en esta pestaña; el reporte lee
+                  la corrida persistida, así que sobrevive a recargas y se puede
+                  imprimir o abrir desde otro visualizador. */}
+              <button
+                onClick={() => navigate('/reporte')}
+                className="mt-4 w-full py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium transition-colors"
+              >
+                Ver reporte de planificación
+              </button>
             </div>
           )}
         </div>
@@ -149,10 +245,13 @@ export default function SimulacionColapso() {
             </div>
 
             <div className="flex items-baseline gap-3 mb-3">
-              <span className="text-3xl font-bold font-mono text-white">
+              <span className={`text-3xl font-bold font-mono ${
+                estado === 'colapso' ? 'text-red-300' : 'text-white'}`}>
                 {evento?.relojSimulado ? String(evento.relojSimulado).replace('T', ' ').slice(0, 16) : '—'}
               </span>
-              <span className="text-xs text-slate-500">reloj simulado · época {evento?.numeroEpoca ?? 0}/{evento?.totalEpocas ?? '—'}</span>
+              <span className="text-xs text-slate-500">
+                {estado === 'colapso' ? 'fecha del colapso' : 'reloj simulado'} · época {evento?.numeroEpoca ?? 0}/{evento?.totalEpocas ?? '—'}
+              </span>
             </div>
 
             {evento && (
@@ -163,6 +262,19 @@ export default function SimulacionColapso() {
               </div>
             )}
             {mensaje && <p className="mt-3 text-xs text-slate-400">{mensaje}</p>}
+
+            {/* G10: la corrida también puede cerrarse sin reporte de colapso —
+                detenida a mano, o terminada mientras el evento no llegó. La
+                planificación hecha hasta ahí sigue siendo estable y reportable,
+                así que el acceso no puede depender de que exista el reporte. */}
+            {!reporte && (estado === 'fin' || estado === 'colapso') && runId && (
+              <button
+                onClick={() => navigate('/reporte')}
+                className="mt-3 w-full py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium transition-colors"
+              >
+                Ver reporte de planificación
+              </button>
+            )}
           </div>
 
           <div className="bg-slate-800 rounded-2xl border border-slate-700 p-5">

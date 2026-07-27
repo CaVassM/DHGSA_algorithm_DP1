@@ -4,6 +4,7 @@ import {
   getFlights,
   getShipments,
   getPlanningRunRoutes,
+  cancelarVuelo,
 } from '../services/api'
 import { SEMAFORO_COLORES, getSemaforoPorOcupacion } from '../data/aeropuertos'
 
@@ -222,6 +223,30 @@ export default function PanelListas({
   const [routes, setRoutes] = useState([])
   const [cargando, setCargando] = useState(true)
   const [estadoEnvio, setEstadoEnvio] = useState('planificados')
+
+  // P&R P9 / D14: cancelación de vuelos desde el propio panel. `cancelando`
+  // evita disparar dos veces la misma petición (cada una consumiría una salida
+  // distinta del vuelo); `avisoCancelacion` deja el resultado a la vista, que es
+  // donde se lee cuántas maletas quedaron por replanificar.
+  const [cancelando, setCancelando] = useState(null)
+  const [avisoCancelacion, setAvisoCancelacion] = useState(null)
+
+  const solicitarCancelacion = async (businessId) => {
+    setCancelando(businessId)
+    setAvisoCancelacion(null)
+    try {
+      const res = await cancelarVuelo(businessId)
+      setAvisoCancelacion({ ok: res.aplicada, texto: res.mensaje, vuelo: businessId })
+    } catch {
+      setAvisoCancelacion({
+        ok: false,
+        vuelo: businessId,
+        texto: 'No se pudo contactar con el planificador.',
+      })
+    } finally {
+      setCancelando(null)
+    }
+  }
 
   useEffect(() => {
     let vivo = true
@@ -1009,6 +1034,27 @@ export default function PanelListas({
                       ? 'Ocultar productos'
                       : `Ver productos (${productos.length})`}
                   </button>
+                </div>
+
+                {/* D14: cancelar esta salida. Qué ocurrencia concreta se cancela
+                    lo decide el backend según el reloj simulado (P&R P9: al
+                    menos una hora de antelación), así que aquí basta con
+                    identificar el vuelo y mostrar el resultado. */}
+                <div className="px-3 pb-2">
+                  <button
+                    type="button"
+                    onClick={() => solicitarCancelacion(vuelo.businessId)}
+                    disabled={cancelando === vuelo.businessId}
+                    className="w-full py-1.5 rounded border border-red-500/40 bg-red-500/10 hover:bg-red-500/20 disabled:opacity-40 disabled:cursor-not-allowed text-red-300 text-[10px] font-medium transition-colors"
+                  >
+                    {cancelando === vuelo.businessId ? 'Cancelando…' : '✕ Cancelar este vuelo'}
+                  </button>
+                  {avisoCancelacion?.vuelo === vuelo.businessId && (
+                    <p className={`mt-1.5 text-[10px] leading-snug ${
+                      avisoCancelacion.ok ? 'text-red-300' : 'text-amber-300'}`}>
+                      {avisoCancelacion.texto}
+                    </p>
+                  )}
                 </div>
 
                 {abierto && (

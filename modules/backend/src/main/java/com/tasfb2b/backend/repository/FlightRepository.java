@@ -3,9 +3,11 @@ package com.tasfb2b.backend.repository;
 import com.tasfb2b.backend.domain.model.FlightEntity;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
@@ -22,6 +24,18 @@ public interface FlightRepository extends JpaRepository<FlightEntity, Long> {
     /** Solo los businessId existentes; evita un SELECT por fila al importar en masa. */
     @Query("select f.businessId from FlightEntity f")
     List<String> findAllBusinessIds();
+
+    /**
+     * Los vuelos de un conjunto de businessId, en una sola consulta. Persistir
+     * las rutas de una época los buscaba de uno en uno; con este lote el hilo
+     * de la simulación no se queda esperando a Postgres.
+     */
+    @Query("""
+    select f
+    from FlightEntity f
+    where f.businessId in :businessIds
+    """)
+    List<FlightEntity> findAllByBusinessIdIn(@Param("businessIds") Collection<String> businessIds);
     
     @Query("""
     select f
