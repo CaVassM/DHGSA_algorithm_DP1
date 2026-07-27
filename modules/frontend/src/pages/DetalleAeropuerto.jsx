@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { getAirports, getFlights, getPlanningRunRoutes } from '../services/api'
+import { getAirports, getAllFlights, getPlanningRunRoutes } from '../services/api'
 import NavBar from '../components/NavBar'
 import SemaforoBadge from '../components/SemaforoBadge'
 import BarraProgreso from '../components/BarraProgreso'
@@ -41,7 +41,9 @@ export default function DetalleAeropuerto() {
   }, [icao])
 
   useEffect(() => {
-    getFlights(0, 500).then(page => setFlights(page.content ?? [])).catch(() => {})
+    // getFlights(0, 500) dejaba fuera la mayoría del catálogo real (~2.866
+    // vuelos): getAllFlights pagina hasta traerlos todos.
+    getAllFlights().then(setFlights).catch(() => {})
   }, [])
 
   useEffect(() => {

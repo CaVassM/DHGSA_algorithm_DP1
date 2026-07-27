@@ -9,7 +9,7 @@ import { KPIS, DATOS_GRAFICO_DIAS, CONTINENTES } from '../data/simulacion'
 import NavBar from '../components/NavBar'
 import SemaforoBadge from '../components/SemaforoBadge'
 import BarraProgreso from '../components/BarraProgreso'
-import { getPlanningRun, getAirports, getFlights, getPlanningRunRoutes } from '../services/api'
+import { getPlanningRun, getAirports, getAllFlights, getPlanningRunRoutes } from '../services/api'
 
 const LS_KEY = 'tasf_runId'
 
@@ -317,8 +317,10 @@ export default function IndicadoresGlobales() {
   }, [])
 
   useEffect(() => {
-    getFlights()
-      .then(page => { if (page.content?.length > 0) setFlights(page.content) })
+    // getFlights() por defecto solo trae 100 de ~2.866 vuelos reales;
+    // getAllFlights pagina hasta traerlos todos.
+    getAllFlights()
+      .then(lista => { if (lista.length > 0) setFlights(lista) })
       .catch(() => {})
   }, [])
 
