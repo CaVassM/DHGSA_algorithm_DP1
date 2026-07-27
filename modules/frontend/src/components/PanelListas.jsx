@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import {
   getAirports,
-  getFlights,
+  getAllFlights,
   getShipments,
   getPlanningRunRoutes,
   cancelarVuelo,
@@ -254,7 +254,9 @@ export default function PanelListas({
 
     Promise.all([
       getAirports(0, 500).then(pagina => pagina?.content ?? []).catch(() => []),
-      getFlights(0, 2000).then(pagina => pagina?.content ?? []).catch(() => []),
+      // getFlights(0, 2000) se quedaba corto contra los ~2.866 vuelos reales:
+      // el panel "UT" no listaba (ni permitía cancelar) esos vuelos.
+      getAllFlights().catch(() => []),
       getShipments(0, 1000).then(pagina => pagina?.content ?? []).catch(() => []),
     ]).then(([aeropuertos, vuelos, envios]) => {
       if (!vivo) return

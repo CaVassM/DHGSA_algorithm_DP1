@@ -17,7 +17,7 @@ import {
   SEMAFORO_COLORES,
   UMBRALES_ALMACEN,
 } from '../data/aeropuertos'
-import { getAirports, getFlights, getPlanningRunRoutes } from '../services/api'
+import { getAirports, getAllFlights, getPlanningRunRoutes } from '../services/api'
 import { buildRouteLegs, RECOJO_DESTINO_MS } from '../services/rutaTramos'
 
 // Respiro entre bloques (ms): al terminar los vuelos de una época y llegar la
@@ -617,8 +617,13 @@ export default function MapaMundi({
 
 
   useEffect(() => {
-    getFlights(0, 500)
-      .then(page => setFlights(page.content ?? []))
+    // Antes: getFlights(0, 500) — una sola página. El dataset real tiene
+    // ~2.866 vuelos plantilla, así que 500 dejaba fuera a la mayoría: un tramo
+    // que usara un vuelo fuera de esos primeros 500 no encontraba su entrada en
+    // flightMap y se descartaba en silencio (buildRouteLegs), reduciendo de
+    // golpe los aviones que el mapa podía llegar a mostrar.
+    getAllFlights()
+      .then(setFlights)
       .catch(() => {})
   }, [])
 
