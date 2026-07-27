@@ -3,6 +3,7 @@ package com.tasfb2b.dhgs.demo.infraestructure.util;
 import com.tasfb2b.dhgs.demo.domain.model.Aeropuerto;
 import com.tasfb2b.dhgs.demo.domain.model.InstanciaVuelo;
 import com.tasfb2b.dhgs.demo.domain.model.Vuelo;
+import com.tasfb2b.dhgs.demo.domain.valueobject.HoraLocal;
 import com.tasfb2b.dhgs.demo.domain.valueobject.TiemposOperacion;
 import org.springframework.stereotype.Component;
 
@@ -345,7 +346,7 @@ public class GrafoVuelos {
         if (idPlantilla == null || ahora == null) {
             return null;
         }
-        LocalDateTime limite = ahora.plus(TiemposOperacion.ANTELACION_MINIMA_CANCELACION);
+        LocalDateTime limiteUtc = ahora.plus(TiemposOperacion.ANTELACION_MINIMA_CANCELACION);
 
         return adyacencia.values().stream()
                 .flatMap(Collection::stream)
@@ -356,7 +357,18 @@ public class GrafoVuelos {
                 .filter(i -> i.getFechaHoraSalida() != null)
                 // "Al menos 1 hora antes" incluye la hora exacta: cancelar a las
                 // 17:25 un vuelo de las 18:25 alcanza al de hoy (P&R P9, caso 3a).
-                .filter(i -> !i.getFechaHoraSalida().isBefore(limite))
+                //
+                // fechaHoraSalida vive en la hora LOCAL del aeropuerto de origen
+                // de ESA instancia (no en UTC): el límite hay que convertirlo a
+                // esa misma hora de pared antes de comparar. Comparar contra el
+                // límite en UTC sin convertir desalinea la selección por el huso
+                // del aeropuerto — para uno con huso negativo (Lima, GMT-5) la
+                // salida de HOY "parecía" ya pasada y la cancelación saltaba a la
+                // de MAÑANA, dejando el vuelo real de hoy sin cancelar.
+                .filter(i -> {
+                    LocalDateTime limiteLocal = HoraLocal.aLocal(limiteUtc, i.getAeropuertoOrigen());
+                    return !i.getFechaHoraSalida().isBefore(limiteLocal);
+                })
                 .min(Comparator.comparing(InstanciaVuelo::getFechaHoraSalida))
                 .orElse(null);
     }
