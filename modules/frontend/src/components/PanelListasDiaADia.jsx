@@ -109,6 +109,8 @@ export default function PanelListasDiaADia({
   onSelectShipment,
   vueloResaltado,
   onSelectFlight,
+  almacenSeleccionado,
+  onSelectAlmacen,
   onCancelarVuelo,
   cancelando,
   avisoCancelacion,
@@ -288,13 +290,20 @@ export default function PanelListasDiaADia({
   function seleccionarVuelo(plantilla) {
     const nueva = vueloResaltado === plantilla ? null : plantilla
     onSelectFlight?.(nueva)
-    if (nueva) onSelectShipment?.(null)
+    if (nueva) { onSelectShipment?.(null); onSelectAlmacen?.(null) }
   }
 
   function seleccionarEnvio(envioId) {
     const nuevo = seleccionado === envioId ? null : envioId
     onSelectShipment?.(nuevo)
-    if (nuevo) onSelectFlight?.(null)
+    if (nuevo) { onSelectFlight?.(null); onSelectAlmacen?.(null) }
+  }
+
+  function seleccionarAlmacen(codigoIcao) {
+    const abrir = almacenAbierto !== codigoIcao
+    setAlmacenAbierto(abrir ? codigoIcao : null)
+    onSelectAlmacen?.(abrir ? codigoIcao : null)
+    if (abrir) { onSelectShipment?.(null); onSelectFlight?.(null) }
   }
 
   function limpiarFiltrosVuelos() {
@@ -437,11 +446,12 @@ export default function PanelListasDiaADia({
         ) : tab === 'almacenes' ? (
           almacenesView.map(a => {
             const abierto = almacenAbierto === a.codigoIcao
+            const enfocado = almacenSeleccionado === a.codigoIcao
             return (
-              <div key={a.codigoIcao}>
+              <div key={a.codigoIcao} className={enfocado ? 'border-l-2 border-pink-400' : ''}>
                 <button
                   type="button"
-                  onClick={() => setAlmacenAbierto(abierto ? null : a.codigoIcao)}
+                  onClick={() => seleccionarAlmacen(a.codigoIcao)}
                   className={`w-full text-left px-3 py-2 transition-colors ${
                     abierto ? 'bg-slate-800/80' : 'hover:bg-slate-800/60'}`}
                 >
@@ -465,7 +475,9 @@ export default function PanelListasDiaADia({
                       <span className="text-slate-600"> · </span>
                       <span className="text-amber-400">↑ {a._salen.length} salen</span>
                     </span>
-                    <span className="text-[10px] text-slate-500">{abierto ? '▲ cerrar' : '▼ ver envíos'}</span>
+                    <span className={`text-[10px] ${enfocado ? 'text-pink-300' : 'text-slate-500'}`}>
+                      {abierto ? '▲ cerrar (enfocado en mapa)' : '▼ ver envíos y enfocar en mapa'}
+                    </span>
                   </div>
                 </button>
                 {abierto && (

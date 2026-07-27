@@ -22,7 +22,7 @@ const BASE_PLANNING_REQUEST = {
 const TERMINAL_STATUSES = new Set(['COMPLETED', 'COMPLETED_WITH_PENDING_SHIPMENTS', 'FAILED'])
 const SUCCESS_STATUSES = new Set(['COMPLETED', 'COMPLETED_WITH_PENDING_SHIPMENTS'])
 const POLL_INTERVAL_MS = 3000
-const POLL_MAX_ATTEMPTS = 240 // ~12 minutos
+const POLL_MAX_ATTEMPTS = 300 // ~15 minutos
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
